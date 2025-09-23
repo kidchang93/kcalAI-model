@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@v3
       - name: Create SSH Key
         run: | # access key를 actions 내부 워크스페이스에 pem파일로 저장하고 권한을 확보
-          echo "${{ secrets.NCP_SSH_KEY }}" > ~/private-key.pem
+          echo "${{ secrets.NCP_SSH_KEY }}" | tr -d '\r' > ~/private-key.pem     
           chmod 600 ~/private-key.pem
 
       - name: Create SSH directory # .ssh 디렉토리 생성
