@@ -33,23 +33,14 @@ jobs:
           mkdir -p ~/.ssh
           echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP << 'EOF'
-            cd $PROJECT_PATH
           
-            # 최신 코드 가져오기
-            git reset --hard
-            git pull origin main
-          
-            # 가상환경 활성화
-            python3 -m venv venv || true
-            source venv/bin/activate
-          
-            # 의존성 설치
-            pip install --upgrade pip
-            pip install -r requirements.txt
-          
-            # 기존 서버 종료
-            pkill -f "uvicorn main:app" || true
-          
-            # FastAPI 서버 백그라운드 실행
-            nohup uvicorn main:app --host 0.0.0.0 --port 8000 &
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa $SERVER_USER@$SERVER_IP "
+          cd $PROJECT_PATH
+          git reset --hard
+          git pull origin main
+          python3 -m venv venv || true
+          source venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pkill -f 'uvicorn main:app' || true
+          nohup uvicorn main:app --host 0.0.0.0 --port 8000 & "
