@@ -25,27 +25,13 @@ jobs:
 
       - name: Deploy to NCP Server
         uses: actions/checkout@v3
+
       - name: Create SSH Key
-        run: | # access key를 actions 내부 워크스페이스에 pem파일로 저장하고 권한을 확보
-          echo "${{ secrets.NCP_SSH_KEY }}" | tr -d '\r' > ~/private-key.pem     
-          chmod 600 ~/private-key.pem
-
-      - name: Create SSH directory # .ssh 디렉토리 생성
+        env:
+          SSH_USER: ${{secrets.NCP_SERVER_USER}}
+          SSH_KNOWN_HOSTS: ${{secrets.NCP_SERVER_IP}}
+          SSH_PEM_KEY: ${{secrets.NCP_SSH_KEY}}
         run: |
-          mkdir -p ~/.ssh
-
-      - name: Add known host # known host에 해당 키를 추가
-        run: |
-          ssh-keyscan ${{ secrets.NCP_SERVER_IP }} >> ~/.ssh/known_hosts
-
-      - name: Debug PEM
-        run: head -n 5 ~/private-key.pem
-
-      - name: Test SSH
-        run: ssh -i ~/private-key.pem ${{ secrets.NCP_SERVER_USER }}@${{ secrets.NCP_SERVER_IP }} "whoami"
-
-#      - name: Copy files to remote server # github repo의 모든 파일을 target 경로에 복사함.
-#        run: |
-#          cd ${{ github.workspace }}
-#          scp -i ~/private-key.pem -r ./* ${{ secrets.NCP_SERVER_USER }}@${{ secrets.NCP_SERVER_IP }}:${{ secrets.PROJECT_PATH }}
-#          echo "Copied files to remote server"
+          echo "$SSH_PEM_KEY" >> $HOME/key.pem
+          chmod 400 $HOME/key.pem
+          ssh -i $HOME/key.pem -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_KNOWN_HOSTS} 'echo "테스트 성공"'
