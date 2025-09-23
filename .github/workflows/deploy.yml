@@ -31,12 +31,12 @@ jobs:
           PROJECT_PATH: ${{ secrets.PROJECT_PATH }}  # NCP 서버 프로젝트 경로
         run: |
           # SSH 설정
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
+          mkdir -p /home/ncloud/.ssh
+          echo "$SSH_PRIVATE_KEY" > /home/ncloud/.ssh/id_rsa
+          chmod 600 /home/ncloud/.ssh/id_rsa
 
           # 서버에 접속하여 배포
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa $SERVER_USER@$SERVER_IP "
+          ssh -o StrictHostKeyChecking=no -i /home/ncloud/.ssh/id_rsa $SERVER_USER@$SERVER_IP "
           echo 'Deploy 시작'
 
           cd $PROJECT_PATH
