@@ -6,9 +6,11 @@ from starlette.responses import JSONResponse
 from transformers import pipeline
 
 app = FastAPI()
-
 # Hugging Face 이미지 분류 파이프라인(음식 특화 모델)
-classifier = pipeline("image-classification", model="nateraw/food")
+classifier = pipeline(
+    "image-classification",
+    model="nateraw/food",
+)
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
