@@ -24,14 +24,11 @@ jobs:
 #          pip install -r requirements.txt
 
       - name: Deploy to NCP Server
-        uses: actions/checkout@v3
-
-      - name: Create SSH Key
-        env:
-          SSH_USER: ${{secrets.NCP_SERVER_USER}}
-          SSH_KNOWN_HOSTS: ${{secrets.NCP_SERVER_IP}}
-          SSH_PEM_KEY: ${{secrets.NCP_SSH_KEY}}
-        run: |
-          echo "$SSH_PEM_KEY" >> $HOME/key.pem
-          chmod 400 $HOME/key.pem
-          ssh -i $HOME/key.pem -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_KNOWN_HOSTS} 'echo "테스트 성공"'
+        uses: appleboy/ssh-action@master
+        with:
+          key: ${{ secrets.NCP_SSH_KEY }}
+          host: ${{ secrets.NCP_SERVER_IP }}
+          username: ${{ secrets.NCP_SERVER_USER }}
+          script: |
+            cd streamlit_car_price_app
+            git pull
