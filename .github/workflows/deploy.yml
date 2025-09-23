@@ -30,15 +30,17 @@ jobs:
           echo "${{ secrets.NCP_SSH_KEY }}" > ~/private-key.pem
           chmod 600 ~/private-key.pem
 
+      - name: Create SSH directory # .ssh 디렉토리 생성
+        run: |
+          mkdir -p ~/.ssh
+
+      - name: Add known host # known host에 해당 키를 추가
+        run: |
+          ssh-keyscan ${{ secrets.NCP_SERVER_IP }} >> ~/.ssh/known_hosts
+
       - name: Test SSH
         run: ssh -i ~/private-key.pem ${{ secrets.NCP_SERVER_USER }}@${{ secrets.NCP_SERVER_IP }} "whoami"
-          
-#      - name: Create SSH directory # .ssh 디렉토리 생성
-#        run: |
-#          mkdir -p ~/.ssh
-#      - name: Add known host # known host에 해당 키를 추가
-#        run: |
-#          ssh-keyscan ${{ secrets.NCP_SERVER_IP }} >> ~/.ssh/known_hosts
+
 #      - name: Copy files to remote server # github repo의 모든 파일을 target 경로에 복사함.
 #        run: |
 #          cd ${{ github.workspace }}
