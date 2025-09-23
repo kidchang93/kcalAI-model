@@ -24,40 +24,16 @@ jobs:
 #          pip install -r requirements.txt
 
       - name: Deploy to NCP Server
+        uses: appleboy/ssh-action@master
         env:
           SSH_PRIVATE_KEY: ${{ secrets.NCP_SSH_KEY }}  # GitHub Secret에 SSH Key 등록
           SERVER_USER: ${{ secrets.NCP_SERVER_USER }}
           SERVER_IP: ${{ secrets.NCP_SERVER_IP }}
           PROJECT_PATH: ${{ secrets.PROJECT_PATH }}  # NCP 서버 프로젝트 경로
-        run: |
-          # SSH 설정
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-
-          # 서버에 접속하여 배포
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa $SERVER_USER@$SERVER_IP "
-          echo 'Deploy 시작'
-
-          cd $PROJECT_PATH
-
-          # 최신 코드 가져오기
-          git reset --hard
-          git pull origin dev
-
-          # 가상환경 생성 및 활성화
-          python3 -m venv venv || true
-          source venv/bin/activate
-
-          # 의존성 설치
-          pip install --upgrade pip
-          pip install -r requirements.txt
-
-          # 기존 서버 종료
-          pkill -f 'uvicorn main:app' || true
-
-          # FastAPI 서버 백그라운드 실행
-          nohup uvicorn main:app --host 0.0.0.0 --port 8000 &
-
-          echo 'Deploy 완료'
-          "
+        with:
+          host: ${{ secrets.NCP_SERVER_IP }}
+          username: ${{ secrets.NCP_SERVER_USER }}
+          key: ${{ secrets.NCP_SSH_KEY }}
+          port: '22'
+          script: |
+            whoami
