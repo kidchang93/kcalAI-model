@@ -38,6 +38,9 @@ jobs:
         run: |
           ssh-keyscan ${{ secrets.NCP_SERVER_IP }} >> ~/.ssh/known_hosts
 
+      - name: Debug PEM
+        run: head -n 5 ~/private-key.pem
+
       - name: Test SSH
         run: ssh -i ~/private-key.pem ${{ secrets.NCP_SERVER_USER }}@${{ secrets.NCP_SERVER_IP }} "whoami"
 
