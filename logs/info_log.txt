@@ -1,0 +1,15 @@
+[2025-09-24 21:11:46,176] [INFO] UploadFile(filename='비빔밥.jpg', size=72293, headers=Headers({'content-disposition': 'form-data; name="file"; filename="ë¹\x84ë¹\x94ë°¥.jpg"; filename*=UTF-8\'\'%EB%B9%84%EB%B9%94%EB%B0%A5.jpg', 'content-type': 'image/jpeg'})) 정상 수집 완료
+[2025-09-24 21:11:46,177] [INFO] exception 발생UploadFile(filename='비빔밥.jpg', size=72293, headers=Headers({'content-disposition': 'form-data; name="file"; filename="ë¹\x84ë¹\x94ë°¥.jpg"; filename*=UTF-8\'\'%EB%B9%84%EB%B9%94%EB%B0%A5.jpg', 'content-type': 'image/jpeg'}))
+[2025-09-24 21:13:50,473] [INFO] UploadFile(filename='비빔밥.jpg', size=72293, headers=Headers({'content-disposition': 'form-data; name="file"; filename="ë¹\x84ë¹\x94ë°¥.jpg"; filename*=UTF-8\'\'%EB%B9%84%EB%B9%94%EB%B0%A5.jpg', 'content-type': 'image/jpeg'})) 정상 수집 완료
+[2025-09-24 21:25:28,230] [INFO] Started server process [5824]
+[2025-09-24 21:25:28,230] [INFO] Started server process [5824]
+[2025-09-24 21:25:28,230] [INFO] Waiting for application startup.
+[2025-09-24 21:25:28,230] [INFO] Waiting for application startup.
+[2025-09-24 21:25:28,230] [INFO] Application startup complete.
+[2025-09-24 21:25:28,230] [INFO] Application startup complete.
+[2025-09-24 21:25:37,651] [INFO] Started server process [5552]
+[2025-09-24 21:25:37,651] [INFO] Started server process [5552]
+[2025-09-24 21:25:37,651] [INFO] Waiting for application startup.
+[2025-09-24 21:25:37,651] [INFO] Waiting for application startup.
+[2025-09-24 21:25:37,652] [INFO] Application startup complete.
+[2025-09-24 21:25:37,652] [INFO] Application startup complete.
