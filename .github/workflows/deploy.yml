@@ -46,6 +46,7 @@ jobs:
           ssh -i ~/private-key.pem ${{ secrets.NCP_SERVER_USER }}@${{ secrets.NCP_SERVER_IP }} 'bash -s' <<'ENDSSH'
             cd ${{ secrets.PROJECT_PATH }}
             pkill -f "uvicorn main:app" || true
+            python3 -m venv .venv
             source .venv/bin/activate
             pip install --upgrade pip
             pip install -r requirements.txt 
