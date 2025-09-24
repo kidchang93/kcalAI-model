@@ -6,7 +6,7 @@ from logging.handlers import RotatingFileHandler
 def get_level_name(level):
     return logging.getLevelName(level).lower()
 
-def setup_level_logger(level, log_dir="logs", max_bytes=1 * 1024 * 1024, backup_count=5):
+def setup_level_logger(level, log_dir="task-logs", max_bytes=1 * 1024 * 1024, backup_count=5):
     """
     지정된 로그 레벨의 로그만 기록하는 로거를 생성
     :param level:
