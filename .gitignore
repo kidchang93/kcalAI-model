@@ -1,5 +1,2 @@
 /task-logs/
-/runs/
-/prepare_data.py
-/train_korean_food.py
 /yolo_test.py
