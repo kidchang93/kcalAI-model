@@ -103,4 +103,4 @@ auto_augment: randaugment
 erasing: 0.4
 cfg: null
 tracker: botsort.yaml
-save_dir: D:\lck_data\python\utr-test\trains\runs\classify\korean_food
+save_dir: D:\lck_data\python\utr-test\runs\classify\korean_food
