@@ -1,8 +1,11 @@
 import logging
 
-from fastapi import APIRouter, UploadFile, File
+from fastapi import APIRouter, UploadFile, File, HTTPException
+
 from log_utils import setup_level_logger
+from schemas.gpt_schemas import GptError, GptResponse, GptAnswer
 from schemas.predict_schema import PredictionResponse, ErrorResponse
+from services.gpt_oss_service import answerByGptOss20B
 from services.predict_service import predict_image
 
 info_logger = setup_level_logger(logging.INFO)
@@ -23,3 +26,14 @@ async def predict(file: UploadFile = File(...)):
         info_logger.error(f"exception 발생 {file.filename}: {str(e)}")
         return {"error": str(e)}
 
+@router.post(
+    "/gpt-predict",
+    response_model=GptResponse,
+    responses={500: {"model": GptError}}
+)
+async def gptPredict(request: GptAnswer):
+    try:
+        response=answerByGptOss20B(request)
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
