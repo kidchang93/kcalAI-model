@@ -44,4 +44,4 @@ def predict_image(image_bytes: bytes) -> PredictionResponse:
     # predictions = [{"label": n, "score": c} for n, c in zip(top3_names, top3_confs)]
     # Response 타입 명시 했을 때.
     predictions = [Prediction(label=n, score=c) for n, c in zip(top3_names,top3_confs)]
-    return PredictionResponse(predictions=predictions)
+    return predictions
