@@ -46,6 +46,25 @@ class S3DeleteResponse(BaseModel):
     message: str = Field(..., description="결과 메시지")
 
 
+class DeletedKeyInfo(BaseModel):
+    """삭제된 키 정보"""
+
+    key: str = Field(..., description="삭제된 객체 키")
+    code: str = Field(..., description="오류 코드")
+    message: str = Field(..., description="오류 메시지")
+
+
+class PrefixDeleteResponse(BaseModel):
+    """Prefix 일괄 삭제 응답 스키마"""
+
+    success: bool = Field(..., description="전체 삭제 성공 여부")
+    prefix: str = Field(..., description="삭제된 prefix")
+    deleted_count: int = Field(..., description="삭제된 파일 수")
+    failed_count: int = Field(..., description="삭제 실패 파일 수")
+    deleted_keys: list[str] = Field(..., description="삭제된 파일 키 목록")
+    failed_keys: list = Field(..., description="삭제 실패 파일 정보")
+
+
 class DirectoryUploadRequest(BaseModel):
     """디렉토리 업로드 요청 스키마"""
 

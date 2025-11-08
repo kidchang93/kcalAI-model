@@ -1,5 +1,6 @@
 import os
 import logging
+import uuid
 from typing import Optional
 from datetime import datetime
 import boto3
@@ -46,7 +47,8 @@ class S3Service:
         """
         로컬 파일을 S3에 업로드
         
-        파일은 foods/{상위폴더명}/{파일명} 형식으로 저장됩니다.
+        파일은 foods/{상위폴더명}/{UUID}_{파일명} 형식으로 저장됩니다.
+        UUID 8자리를 파일명 앞에 추가하여 중복을 방지합니다.
 
         Args:
             file_path: 업로드할 로컬 파일 경로
@@ -54,6 +56,8 @@ class S3Service:
 
         Returns:
             업로드된 파일 정보를 담은 딕셔너리
+            - original_filename: 원본 파일명
+            - unique_filename: UUID가 추가된 유니크 파일명
 
         Raises:
             FileNotFoundError: 파일이 존재하지 않을 경우
@@ -66,8 +70,12 @@ class S3Service:
         filename = os.path.basename(file_path)
         parent_folder = os.path.basename(os.path.dirname(file_path))
         
-        # S3 키 생성: foods/{상위폴더명}/{파일명}
-        s3_key = f"foods/{parent_folder}/{filename}"
+        # 유니크한 식별자 생성 (UUID 8자리)
+        short_uuid = str(uuid.uuid4())[:8]
+        unique_filename = f"{short_uuid}_{filename}"
+        
+        # S3 키 생성: foods/{상위폴더명}/{UUID}_{파일명}
+        s3_key = f"foods/{parent_folder}/{unique_filename}"
 
         try:
             # 파일 업로드
@@ -90,6 +98,8 @@ class S3Service:
                 "key": s3_key,
                 "url": file_url,
                 "region": self.region,
+                "original_filename": filename,
+                "unique_filename": unique_filename,
             }
 
         except ClientError as e:
@@ -106,7 +116,8 @@ class S3Service:
         """
         파일 객체를 S3에 업로드
         
-        파일은 PATH/{상위폴더명}/{파일명} 형식으로 저장됩니다.
+        파일은 foods/{상위폴더명}/{UUID}_{파일명} 형식으로 저장됩니다.
+        UUID 8자리를 파일명 앞에 추가하여 중복을 방지합니다.
 
         Args:
             file_obj: 업로드할 파일 객체 (BytesIO 또는 파일 핸들)
@@ -116,13 +127,19 @@ class S3Service:
 
         Returns:
             업로드된 파일 정보를 담은 딕셔너리
+            - original_filename: 원본 파일명
+            - unique_filename: UUID가 추가된 유니크 파일명
 
         Raises:
             ClientError: S3 업로드 중 오류 발생 시
         """
   
-        # S3 키 생성: foods/{상위폴더명}/{파일명}
-        s3_key = f"foods/{parent_folder}/{filename}"
+        # 유니크한 식별자 생성 (UUID 8자리)
+        short_uuid = str(uuid.uuid4())[:8]
+        unique_filename = f"{short_uuid}_{filename}"
+        
+        # S3 키 생성: foods/{상위폴더명}/{UUID}_{파일명}
+        s3_key = f"foods/{parent_folder}/{unique_filename}"
         
         try:
             # 파일 객체 업로드
@@ -145,6 +162,8 @@ class S3Service:
                 "key": s3_key,
                 "url": file_url,
                 "region": self.region,
+                "original_filename": filename,
+                "unique_filename": unique_filename,
             }
 
         except ClientError as e:
@@ -170,6 +189,83 @@ class S3Service:
             return True
         except ClientError as e:
             logger.error(f"Failed to delete file from S3: {e}")
+            raise
+
+    def delete_prefix(self, prefix: str) -> dict:
+        """
+        S3에서 특정 prefix(폴더)의 모든 객체 삭제
+        
+        Args:
+            prefix: 삭제할 prefix (예: "foods/가지볶음/", "foods/가지볶음")
+            
+        Returns:
+            삭제 결과 정보를 담은 딕셔너리
+            
+        Raises:
+            ClientError: S3 삭제 중 오류 발생 시
+        """
+        # prefix가 슬래시로 끝나지 않으면 추가
+        if prefix and not prefix.endswith('/'):
+            prefix = prefix + '/'
+        
+        deleted_count = 0
+        failed_count = 0
+        deleted_keys = []
+        failed_keys = []
+        
+        try:
+            # 해당 prefix의 모든 객체 조회
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            pages = paginator.paginate(Bucket=self.bucket_name, Prefix=prefix)
+            
+            for page in pages:
+                objects = page.get('Contents', [])
+                
+                if not objects:
+                    logger.info(f"No objects found with prefix: {prefix}")
+                    break
+                
+                # 삭제할 객체 리스트 구성 (최대 1000개씩)
+                delete_keys = [{'Key': obj['Key']} for obj in objects]
+                
+                # 일괄 삭제 실행
+                response = self.s3_client.delete_objects(
+                    Bucket=self.bucket_name,
+                    Delete={'Objects': delete_keys}
+                )
+                
+                # 삭제 성공한 객체들
+                for deleted in response.get('Deleted', []):
+                    deleted_count += 1
+                    deleted_keys.append(deleted['Key'])
+                    logger.info(f"Deleted: s3://{self.bucket_name}/{deleted['Key']}")
+                
+                # 삭제 실패한 객체들
+                for error in response.get('Errors', []):
+                    failed_count += 1
+                    failed_keys.append({
+                        'key': error['Key'],
+                        'code': error['Code'],
+                        'message': error['Message']
+                    })
+                    logger.error(f"Failed to delete {error['Key']}: {error['Message']}")
+            
+            logger.info(
+                f"Deleted {deleted_count} objects with prefix '{prefix}' "
+                f"({failed_count} failures)"
+            )
+            
+            return {
+                'success': failed_count == 0,
+                'prefix': prefix,
+                'deleted_count': deleted_count,
+                'failed_count': failed_count,
+                'deleted_keys': deleted_keys,
+                'failed_keys': failed_keys,
+            }
+            
+        except ClientError as e:
+            logger.error(f"Failed to delete objects with prefix {prefix}: {e}")
             raise
 
     def file_exists(self, s3_key: str) -> bool:

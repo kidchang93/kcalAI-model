@@ -272,7 +272,34 @@ curl -X POST "http://localhost:8000/api/s3/upload/directory" \
   }'
 ```
 
-#### 4. 버킷 목록 조회
+#### 4. 단일 파일 삭제
+```bash
+curl -X DELETE "http://localhost:8000/api/s3/delete/foods/가지볶음/a1b2c3d4_photo.jpg"
+```
+
+#### 5. 폴더(prefix) 전체 삭제
+```bash
+# foods/가지볶음 폴더 내의 모든 파일 삭제
+curl -X DELETE "http://localhost:8000/api/s3/delete-prefix/foods/가지볶음"
+```
+
+응답 예시:
+```json
+{
+  "success": true,
+  "prefix": "foods/가지볶음/",
+  "deleted_count": 150,
+  "failed_count": 0,
+  "deleted_keys": [
+    "foods/가지볶음/a1b2c3d4_photo1.jpg",
+    "foods/가지볶음/e5f6g7h8_photo2.jpg",
+    "..."
+  ],
+  "failed_keys": []
+}
+```
+
+#### 7. 버킷 목록 조회
 ```bash
 curl -X GET "http://localhost:8000/api/s3/buckets"
 ```
@@ -295,7 +322,7 @@ curl -X GET "http://localhost:8000/api/s3/buckets"
 }
 ```
 
-#### 5. 버킷 내 객체 목록 조회
+#### 8. 버킷 내 객체 목록 조회
 ```bash
 # 루트 폴더 목록 조회
 curl -X GET "http://localhost:8000/api/s3/objects?prefix=&delimiter=/&max_keys=1000"

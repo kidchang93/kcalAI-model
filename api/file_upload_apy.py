@@ -12,6 +12,7 @@ from schemas.s3_schemas import (
     S3ErrorResponse,
     LocalFileUploadRequest,
     S3DeleteResponse,
+    PrefixDeleteResponse,
     DirectoryUploadRequest,
     DirectoryUploadResponse,
     BucketListResponse,
@@ -196,6 +197,44 @@ async def delete_file_from_s3(s3_key: str):
     except Exception as e:
         info_logger.error(f"Failed to delete file from S3: {str(e)}")
         raise HTTPException(status_code=500, detail=f"파일 삭제 실패: {str(e)}")
+
+
+@router.delete(
+    "/delete-prefix/{prefix:path}",
+    response_model=PrefixDeleteResponse,
+    responses={500: {"model": S3ErrorResponse}},
+    summary="S3에서 특정 prefix(폴더)의 모든 파일 삭제",
+    description="S3 버킷의 특정 prefix(폴더)에 있는 모든 객체를 일괄 삭제합니다. 예: foods/가지볶음",
+)
+async def delete_prefix_from_s3(prefix: str):
+    """
+    S3에서 특정 prefix(폴더)의 모든 파일을 삭제하는 API 엔드포인트
+
+    Args:
+        prefix: 삭제할 prefix (예: "foods/가지볶음", "foods/가지볶음/")
+
+    Returns:
+        PrefixDeleteResponse: 삭제 결과 정보
+    """
+    try:
+        # S3 서비스 인스턴스 가져오기
+        s3_service = get_s3_service()
+
+        info_logger.info(f"Starting prefix deletion: {prefix}")
+
+        # prefix의 모든 객체 삭제
+        result = s3_service.delete_prefix(prefix)
+
+        info_logger.info(
+            f"Prefix deletion completed: {result['deleted_count']} deleted, "
+            f"{result['failed_count']} failed"
+        )
+
+        return PrefixDeleteResponse(**result)
+
+    except Exception as e:
+        info_logger.error(f"Failed to delete prefix from S3: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Prefix 삭제 실패: {str(e)}")
 
 
 @router.post(

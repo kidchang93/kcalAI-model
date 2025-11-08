@@ -50,6 +50,18 @@ DELETE http://localhost:8000/api/s3/delete/foods/test_images/test_image.jpg
 
 ###
 
+### 4-1. S3에서 특정 폴더(prefix)의 모든 파일 삭제
+# foods/가지볶음 폴더 내의 모든 파일을 삭제
+DELETE http://localhost:8000/api/s3/delete-prefix/foods/%EA%B0%80%EC%A7%80%EB%B3%B6%EC%9D%8C
+
+###
+
+### 4-2. S3에서 특정 폴더(prefix)의 모든 파일 삭제 (슬래시 포함)
+# foods/김치찌개/ 폴더 내의 모든 파일을 삭제
+DELETE http://localhost:8000/api/s3/delete-prefix/foods/가지볶음/
+
+###
+
 ### 5. 버킷 목록 조회
 # 네이버 클라우드 플랫폼 Object Storage의 모든 버킷 목록 조회
 GET http://localhost:8000/api/s3/buckets
@@ -70,7 +82,7 @@ GET http://localhost:8000/api/s3/objects?prefix=foods/&delimiter=/&max_keys=1000
 
 ### 8. 특정 폴더의 모든 파일 조회
 # foods/test_images/ 폴더 내의 모든 파일 조회
-GET http://localhost:8000/api/s3/objects?prefix=foods/가지볶음/&delimiter=/&max_keys=1000
+GET http://localhost:8000/api/s3/objects?prefix=foods/훈제오리/&delimiter=/&max_keys=1000
 
 ###
 
