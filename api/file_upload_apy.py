@@ -1,10 +1,11 @@
+import json
 import logging
 import os
 from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, UploadFile, HTTPException, File, Form
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from log_utils import setup_level_logger
 from schemas.s3_schemas import (
@@ -239,61 +240,176 @@ async def delete_prefix_from_s3(prefix: str):
 
 @router.post(
     "/upload/directory",
-    response_model=DirectoryUploadResponse,
     responses={404: {"model": S3ErrorResponse}, 500: {"model": S3ErrorResponse}},
-    summary="디렉토리 내 모든 파일을 S3에 업로드",
-    description="지정된 디렉토리 내의 모든 파일을 네이버 클라우드 Object Storage에 업로드합니다. 하위 폴더 포함 여부를 선택할 수 있습니다.",
+    summary="디렉토리 내 모든 파일을 S3에 업로드 (스트리밍)",
+    description="지정된 디렉토리 내의 모든 파일을 네이버 클라우드 Object Storage에 업로드합니다. 각 파일 업로드마다 실시간으로 진행 상황을 스트리밍합니다.",
 )
 async def upload_directory_to_s3(request: DirectoryUploadRequest):
     """
-    디렉토리 내 모든 파일을 S3에 업로드하는 API 엔드포인트
+    디렉토리 내 모든 파일을 S3에 업로드하는 API 엔드포인트 (스트리밍 방식)
+    
+    대용량 파일 업로드 시 타임아웃을 방지하기 위해 각 파일 업로드마다 
+    진행 상황을 JSON Lines 형식으로 스트리밍합니다.
 
     Args:
         request: 디렉토리 업로드 요청 (directory_path, recursive, content_type)
 
     Returns:
-        DirectoryUploadResponse: 업로드 결과 정보
+        StreamingResponse: 각 파일 업로드마다 JSON 응답을 스트리밍
     """
-    try:
-        # 디렉토리 존재 확인
-        if not os.path.exists(request.directory_path):
-            raise HTTPException(
-                status_code=404, detail=f"디렉토리를 찾을 수 없습니다: {request.directory_path}"
+    # 디렉토리 존재 확인
+    if not os.path.exists(request.directory_path):
+        raise HTTPException(
+            status_code=404, detail=f"디렉토리를 찾을 수 없습니다: {request.directory_path}"
+        )
+
+    if not os.path.isdir(request.directory_path):
+        raise HTTPException(
+            status_code=400, detail=f"경로가 디렉토리가 아닙니다: {request.directory_path}"
+        )
+
+    async def generate_upload_stream():
+        """각 파일 업로드마다 진행 상황을 yield하는 제너레이터"""
+        try:
+            # S3 서비스 인스턴스 가져오기
+            s3_service = get_s3_service()
+
+            info_logger.info(
+                f"Starting directory upload: {request.directory_path} (recursive={request.recursive})"
             )
 
-        if not os.path.isdir(request.directory_path):
-            raise HTTPException(
-                status_code=400, detail=f"경로가 디렉토리가 아닙니다: {request.directory_path}"
+            # 시작 메시지 전송
+            start_message = {
+                "status": "started",
+                "message": f"디렉토리 업로드 시작: {request.directory_path}",
+                "timestamp": datetime.now().isoformat(),
+            }
+            yield json.dumps(start_message, ensure_ascii=False) + "\n"
+
+            # 파일 목록 수집
+            file_list = []
+            if request.recursive:
+                for root, dirs, files in os.walk(request.directory_path):
+                    for filename in files:
+                        file_path = os.path.join(root, filename)
+                        file_list.append(file_path)
+            else:
+                for filename in os.listdir(request.directory_path):
+                    file_path = os.path.join(request.directory_path, filename)
+                    if os.path.isfile(file_path):
+                        file_list.append(file_path)
+
+            total_files = len(file_list)
+            uploaded_count = 0
+            failed_count = 0
+            uploaded_files = []
+            failed_files = []
+
+            # 전체 파일 수 전송
+            total_message = {
+                "status": "info",
+                "message": f"총 {total_files}개 파일 발견",
+                "total_files": total_files,
+                "timestamp": datetime.now().isoformat(),
+            }
+            yield json.dumps(total_message, ensure_ascii=False) + "\n"
+
+            # 각 파일 업로드 처리
+            for index, file_path in enumerate(file_list, 1):
+                try:
+                    # 파일 업로드
+                    result = s3_service.upload_file(file_path, request.content_type)
+                    uploaded_count += 1
+                    
+                    file_info = {
+                        "file_path": file_path,
+                        "s3_key": result["key"],
+                        "url": result["url"],
+                    }
+                    uploaded_files.append(file_info)
+
+                    # 성공 메시지 전송
+                    success_message = {
+                        "status": "success",
+                        "message": f"업로드 성공: {os.path.basename(file_path)}",
+                        "file_path": file_path,
+                        "s3_key": result["key"],
+                        "url": result["url"],
+                        "progress": {
+                            "current": index,
+                            "total": total_files,
+                            "percentage": round((index / total_files) * 100, 2),
+                        },
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                    yield json.dumps(success_message, ensure_ascii=False) + "\n"
+                    
+                    info_logger.info(f"[{index}/{total_files}] Uploaded: {file_path} -> {result['key']}")
+
+                except Exception as e:
+                    failed_count += 1
+                    error_info = {
+                        "file_path": file_path,
+                        "error": str(e),
+                    }
+                    failed_files.append(error_info)
+
+                    # 실패 메시지 전송
+                    error_message = {
+                        "status": "error",
+                        "message": f"업로드 실패: {os.path.basename(file_path)}",
+                        "file_path": file_path,
+                        "error": str(e),
+                        "progress": {
+                            "current": index,
+                            "total": total_files,
+                            "percentage": round((index / total_files) * 100, 2),
+                        },
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                    yield json.dumps(error_message, ensure_ascii=False) + "\n"
+                    
+                    info_logger.error(f"[{index}/{total_files}] Failed to upload {file_path}: {e}")
+
+            # 완료 메시지 전송
+            completion_message = {
+                "status": "completed",
+                "message": "디렉토리 업로드 완료",
+                "summary": {
+                    "total_files": total_files,
+                    "uploaded_count": uploaded_count,
+                    "failed_count": failed_count,
+                    "success_rate": round((uploaded_count / total_files) * 100, 2) if total_files > 0 else 0,
+                },
+                "uploaded_files": uploaded_files,
+                "failed_files": failed_files,
+                "timestamp": datetime.now().isoformat(),
+            }
+            yield json.dumps(completion_message, ensure_ascii=False) + "\n"
+
+            info_logger.info(
+                f"Directory upload completed: {uploaded_count}/{total_files} files uploaded successfully"
             )
 
-        # S3 서비스 인스턴스 가져오기
-        s3_service = get_s3_service()
+        except Exception as e:
+            # 전체 프로세스 실패 메시지
+            error_message = {
+                "status": "fatal_error",
+                "message": f"디렉토리 업로드 중 치명적 오류 발생: {str(e)}",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat(),
+            }
+            yield json.dumps(error_message, ensure_ascii=False) + "\n"
+            info_logger.error(f"Fatal error during directory upload: {str(e)}")
 
-        # 디렉토리 업로드
-        info_logger.info(
-            f"Starting directory upload: {request.directory_path} (recursive={request.recursive})"
-        )
-        
-        result = s3_service.upload_directory(
-            directory_path=request.directory_path,
-            recursive=request.recursive,
-            content_type=request.content_type,
-        )
-
-        info_logger.info(
-            f"Directory upload completed: {result['uploaded_count']}/{result['total_files']} files uploaded successfully"
-        )
-
-        return DirectoryUploadResponse(**result)
-
-    except HTTPException:
-        raise
-    except ValueError as e:
-        info_logger.error(f"Configuration error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"설정 오류: {str(e)}")
-    except Exception as e:
-        info_logger.error(f"Failed to upload directory: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"디렉토리 업로드 실패: {str(e)}")
+    return StreamingResponse(
+        generate_upload_stream(),
+        media_type="application/x-ndjson",  # JSON Lines 형식
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # nginx 버퍼링 비활성화
+        },
+    )
 
 
 @router.get(

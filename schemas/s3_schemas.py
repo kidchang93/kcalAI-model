@@ -68,10 +68,10 @@ class PrefixDeleteResponse(BaseModel):
 class DirectoryUploadRequest(BaseModel):
     """디렉토리 업로드 요청 스키마"""
 
-    directory_path: str = Field(..., description="업로드할 디렉토리 경로", example="D:/data/foods")
+    directory_path: str = Field(..., description="업로드할 디렉토리 경로", example="D:/lck_data/dataset/foods")
     recursive: bool = Field(True, description="하위 폴더 포함 여부")
     content_type: Optional[str] = Field(
-        default=None, 
+        default=None,
         description="파일 MIME 타입 (null일 경우 자동 감지)",
         example=None
     )
