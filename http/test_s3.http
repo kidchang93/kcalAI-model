@@ -82,7 +82,7 @@ GET http://localhost:8000/api/s3/objects?prefix=foods/&delimiter=/&max_keys=1000
 
 ### 8. 특정 폴더의 모든 파일 조회
 # foods/test_images/ 폴더 내의 모든 파일 조회
-GET http://localhost:8000/api/s3/objects?prefix=foods/훈제오리/&delimiter=/&max_keys=1000
+GET http://localhost:8000/api/s3/objects?prefix=train/훈제오리/&delimiter=/&max_keys=1000
 
 ###
 

@@ -302,8 +302,6 @@ async def upload_directory_to_s3(request: DirectoryUploadRequest):
             total_files = len(file_list)
             uploaded_count = 0
             failed_count = 0
-            uploaded_files = []
-            failed_files = []
 
             # 전체 파일 수 전송
             total_message = {
@@ -320,13 +318,6 @@ async def upload_directory_to_s3(request: DirectoryUploadRequest):
                     # 파일 업로드
                     result = s3_service.upload_file(file_path, request.content_type)
                     uploaded_count += 1
-                    
-                    file_info = {
-                        "file_path": file_path,
-                        "s3_key": result["key"],
-                        "url": result["url"],
-                    }
-                    uploaded_files.append(file_info)
 
                     # 성공 메시지 전송
                     success_message = {
@@ -348,11 +339,6 @@ async def upload_directory_to_s3(request: DirectoryUploadRequest):
 
                 except Exception as e:
                     failed_count += 1
-                    error_info = {
-                        "file_path": file_path,
-                        "error": str(e),
-                    }
-                    failed_files.append(error_info)
 
                     # 실패 메시지 전송
                     error_message = {
@@ -371,7 +357,7 @@ async def upload_directory_to_s3(request: DirectoryUploadRequest):
                     
                     info_logger.error(f"[{index}/{total_files}] Failed to upload {file_path}: {e}")
 
-            # 완료 메시지 전송
+            # 완료 메시지 전송 (대용량 응답 방지를 위해 파일 목록은 제외하고 통계만 반환)
             completion_message = {
                 "status": "completed",
                 "message": "디렉토리 업로드 완료",
@@ -381,8 +367,6 @@ async def upload_directory_to_s3(request: DirectoryUploadRequest):
                     "failed_count": failed_count,
                     "success_rate": round((uploaded_count / total_files) * 100, 2) if total_files > 0 else 0,
                 },
-                "uploaded_files": uploaded_files,
-                "failed_files": failed_files,
                 "timestamp": datetime.now().isoformat(),
             }
             yield json.dumps(completion_message, ensure_ascii=False) + "\n"
