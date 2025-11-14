@@ -73,7 +73,6 @@ class DirectoryUploadRequest(BaseModel):
     content_type: Optional[str] = Field(
         default=None,
         description="파일 MIME 타입 (null일 경우 자동 감지)",
-        example=None
     )
 
 
