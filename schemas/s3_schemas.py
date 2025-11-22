@@ -130,6 +130,7 @@ class FolderInfo(BaseModel):
     """폴더 정보 스키마"""
 
     prefix: str = Field(..., description="폴더 경로 (접두사)")
+    file_count: int = Field(0, description="폴더 내 파일 개수")
 
 
 class ObjectListResponse(BaseModel):
