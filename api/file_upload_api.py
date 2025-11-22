@@ -448,7 +448,7 @@ async def list_buckets():
         BucketListResponse: 버킷 목록 정보
     """
     try:
-        # S3 서비스 인스턴스 가져오기 (BUKET_NAME 검증 없이)
+        # S3 서비스 인스턴스 가져오기 (BUCKET_NAME 검증 없이)
         # 버킷 목록 조회를 위해 임시로 클라이언트만 사용
         from services.s3_service import S3Service
         import os
@@ -461,7 +461,7 @@ async def list_buckets():
         secret_key = os.getenv("SECRET_KEY")
         region = os.getenv("REGION")
         endpoint_url = os.getenv("DOMAIN")
-        
+
         if not all([access_key, secret_key]):
             raise HTTPException(
                 status_code=500,

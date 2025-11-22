@@ -21,12 +21,12 @@ class S3Service:
         self.access_key = os.getenv("ACCESS_KEY")
         self.secret_key = os.getenv("SECRET_KEY")
         self.region = os.getenv("REGION")
-        self.bucket_name = os.getenv("BUKET_NAME")
+        self.bucket_name = os.getenv("BUCKET_NAME")
         self.endpoint_url = os.getenv("DOMAIN")
 
         if not all([self.access_key, self.secret_key, self.bucket_name]):
             raise ValueError(
-                "NCP credentials and bucket name must be set in environment variables (ACCESS_KEY, SECRET_KEY, BUKET_NAME)"
+                "NCP credentials and bucket name must be set in environment variables (ACCESS_KEY, SECRET_KEY, BUCKET_NAME)"
             )
 
         # 네이버 클라우드 플랫폼 Object Storage 클라이언트 생성
