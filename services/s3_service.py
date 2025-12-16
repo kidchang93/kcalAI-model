@@ -460,8 +460,24 @@ class S3Service:
             # 폴더 목록 (CommonPrefixes)
             folders = []
             for prefix_obj in response.get('CommonPrefixes', []):
+                folder_prefix = prefix_obj['Prefix']
+                
+                # 각 폴더 내의 파일 개수 조회 (재귀적)
+                folder_file_count = 0
+                try:
+                    paginator = self.s3_client.get_paginator('list_objects_v2')
+                    pages = paginator.paginate(Bucket=self.bucket_name, Prefix=folder_prefix)
+                    
+                    for page in pages:
+                        # Contents가 있으면 그 개수만큼 더함
+                        if 'Contents' in page:
+                            folder_file_count += len(page['Contents'])
+                except Exception as e:
+                    logger.error(f"Failed to count files in folder {folder_prefix}: {e}")
+                
                 folders.append({
-                    'prefix': prefix_obj['Prefix'],
+                    'prefix': folder_prefix,
+                    'file_count': folder_file_count
                 })
             
             result = {
