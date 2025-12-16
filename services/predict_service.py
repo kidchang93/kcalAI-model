@@ -19,7 +19,7 @@ from schemas.predict_schema import PredictionResponse, Prediction
 #
 #     return [{"label": r["label"], "score": r["score"]} for r in results[:3]]
 
-model = YOLO("runs/classify/korean_food/weights/best.pt")
+model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 
 def predict_image(image_bytes: bytes) -> PredictionResponse:
     # byte Image 를 다시 컨버팅한다. 다른 형식들로 인해 발생되는 오류 방지
