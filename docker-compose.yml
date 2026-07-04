@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kcal-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kcal
+      POSTGRES_PASSWORD: kcal
+      POSTGRES_DB: kcal
+    ports:
+      - "5432:5432"
+    volumes:
+      - kcal-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kcal -d kcal"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  kcal-postgres-data:
