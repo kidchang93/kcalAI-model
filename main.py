@@ -3,7 +3,8 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api import predict_router, file_upload_router
+from api import auth_router, predict_router, file_upload_router
+from database import init_db
 
 app = FastAPI(
     title="Food Classification API",
@@ -30,6 +31,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+def on_startup():
+    init_db()
+
+
 # 라우터 등록
+app.include_router(auth_router, prefix="/api", tags=["Auth"])
 app.include_router(predict_router, prefix="/api", tags=["Predict"])
 app.include_router(file_upload_router, prefix="/api/s3", tags=["S3 Upload"])
