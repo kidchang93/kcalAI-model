@@ -95,8 +95,9 @@ curl -X POST http://127.0.0.1:8000/api/auth/signup/request-code \
 
 | 실수 | 왜 문제인가 |
 |------|-------------|
-| `/api/predict` 실패 시 `ErrorResponse`가 나간다고 가정 | `{"error": ...}`가 `response_model` 검증에 걸려 **500 평문 `Internal Server Error`**가 나갑니다 (`api/predict_api.py:27`) |
-| `info_logger.error()`가 기록된다고 가정 | INFO 로거의 `LevelFilter`가 ERROR 레코드를 버립니다. `/api/predict` 실패는 **어디에도 남지 않습니다** |
+| `response_model`이 걸린 라우트에서 실패를 `return` | 검증에 걸려 **500 평문 `Internal Server Error`**가 나갑니다. `raise HTTPException(...)`을 쓰세요 |
+| `info_logger.error()` 호출 | INFO 로거의 `LevelFilter`가 ERROR 레코드를 버려 **어디에도 남지 않습니다.** `error_logger`를 따로 만드세요 |
+| `/api/s3/*`의 `detail`이 안전하다고 가정 | 14곳에서 `str(e)`로 boto3 내부 예외를 노출합니다 |
 | `HF_TOKEN`을 셸에 export했으니 `.env`는 필요 없다고 가정 | 반대도 성립합니다. **둘 중 하나만 있으면 됩니다.** 다만 `load_dotenv()`가 cwd에서 `.env`를 찾으므로 실행 위치에 따라 결과가 달라집니다 |
 | 아무 디렉토리에서 `uvicorn main:app` 실행 | YOLO 가중치와 `.env` 탐색이 모두 **cwd 상대**입니다 |
 | `create_all`이 컬럼 변경을 반영한다고 가정 | 신규 테이블만 만듭니다 |

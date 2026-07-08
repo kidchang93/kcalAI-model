@@ -21,7 +21,11 @@ from schemas.s3_schemas import (
 )
 from services.s3_service import get_s3_service
 
+# setup_level_logger 는 LevelFilter 로 해당 레벨만 기록한다.
+# INFO 로거로 error() 를 호출하면 레코드가 버려지므로 레벨별로 따로 만든다.
 info_logger = setup_level_logger(logging.INFO)
+error_logger = setup_level_logger(logging.ERROR)
+
 router = APIRouter()
 
 
@@ -84,10 +88,10 @@ async def upload_file_to_s3(
         )
 
     except ValueError as e:
-        info_logger.error(f"Configuration error: {str(e)}")
+        error_logger.error(f"Configuration error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"설정 오류: {str(e)}")
     except Exception as e:
-        info_logger.error(f"Failed to upload file: {str(e)}")
+        error_logger.error(f"Failed to upload file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"파일 업로드 실패: {str(e)}")
 
 
@@ -150,10 +154,10 @@ async def upload_local_file_to_s3(request: LocalFileUploadRequest):
     except HTTPException:
         raise
     except ValueError as e:
-        info_logger.error(f"Configuration error: {str(e)}")
+        error_logger.error(f"Configuration error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"설정 오류: {str(e)}")
     except Exception as e:
-        info_logger.error(f"Failed to upload local file: {str(e)}")
+        error_logger.error(f"Failed to upload local file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"로컬 파일 업로드 실패: {str(e)}")
 
 
@@ -196,7 +200,7 @@ async def delete_file_from_s3(s3_key: str):
     except HTTPException:
         raise
     except Exception as e:
-        info_logger.error(f"Failed to delete file from S3: {str(e)}")
+        error_logger.error(f"Failed to delete file from S3: {str(e)}")
         raise HTTPException(status_code=500, detail=f"파일 삭제 실패: {str(e)}")
 
 
@@ -234,7 +238,7 @@ async def delete_prefix_from_s3(prefix: str):
         return PrefixDeleteResponse(**result)
 
     except Exception as e:
-        info_logger.error(f"Failed to delete prefix from S3: {str(e)}")
+        error_logger.error(f"Failed to delete prefix from S3: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Prefix 삭제 실패: {str(e)}")
 
 
@@ -355,7 +359,7 @@ async def upload_directory_to_s3(request: DirectoryUploadRequest):
                     }
                     yield json.dumps(error_message, ensure_ascii=False) + "\n"
                     
-                    info_logger.error(f"[{index}/{total_files}] Failed to upload {file_path}: {e}")
+                    error_logger.error(f"[{index}/{total_files}] Failed to upload {file_path}: {e}")
 
             # 완료 메시지 전송 (대용량 응답 방지를 위해 파일 목록은 제외하고 통계만 반환)
             completion_message = {
@@ -384,7 +388,7 @@ async def upload_directory_to_s3(request: DirectoryUploadRequest):
                 "timestamp": datetime.now().isoformat(),
             }
             yield json.dumps(error_message, ensure_ascii=False) + "\n"
-            info_logger.error(f"Fatal error during directory upload: {str(e)}")
+            error_logger.error(f"Fatal error during directory upload: {str(e)}")
 
     return StreamingResponse(
         generate_upload_stream(),
@@ -429,7 +433,7 @@ async def get_presigned_url(s3_key: str, expiration: int = 3600):
         }
 
     except Exception as e:
-        info_logger.error(f"Failed to generate presigned URL: {str(e)}")
+        error_logger.error(f"Failed to generate presigned URL: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Presigned URL 생성 실패: {str(e)}")
 
 
@@ -497,7 +501,7 @@ async def list_buckets():
     except HTTPException:
         raise
     except Exception as e:
-        info_logger.error(f"Failed to list buckets: {str(e)}")
+        error_logger.error(f"Failed to list buckets: {str(e)}")
         raise HTTPException(status_code=500, detail=f"버킷 목록 조회 실패: {str(e)}")
 
 
@@ -556,8 +560,8 @@ async def list_objects(
         )
 
     except ValueError as e:
-        info_logger.error(f"Configuration error: {str(e)}")
+        error_logger.error(f"Configuration error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"설정 오류: {str(e)}")
     except Exception as e:
-        info_logger.error(f"Failed to list objects: {str(e)}")
+        error_logger.error(f"Failed to list objects: {str(e)}")
         raise HTTPException(status_code=500, detail=f"객체 목록 조회 실패: {str(e)}")

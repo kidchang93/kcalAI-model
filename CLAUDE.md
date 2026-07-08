@@ -101,20 +101,20 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 
 | 메서드 | 경로 | 정의 위치 |
 |--------|------|-----------|
-| `POST` | `/api/predict` | `api/predict_api.py:14` |
-| `POST` | `/api/gpt-predict` | `api/predict_api.py:29` |
+| `POST` | `/api/predict` | `api/predict_api.py:18` |
+| `POST` | `/api/gpt-predict` | `api/predict_api.py:37` |
 | `POST` | `/api/auth/signup/request-code` | `api/auth_api.py:22` |
 | `POST` | `/api/auth/signup/verify` | `api/auth_api.py:39` |
 | `POST` | `/api/auth/login/request-code` | `api/auth_api.py:56` |
 | `POST` | `/api/auth/login/verify` | `api/auth_api.py:73` |
-| `POST` | `/api/s3/upload/file` | `api/file_upload_api.py:28` |
-| `POST` | `/api/s3/upload/local-file` | `api/file_upload_api.py:94` |
-| `POST` | `/api/s3/upload/directory` | `api/file_upload_api.py:241` |
-| `DELETE` | `/api/s3/delete/{s3_key}` | `api/file_upload_api.py:160` |
-| `DELETE` | `/api/s3/delete-prefix/{prefix}` | `api/file_upload_api.py:203` |
-| `GET` | `/api/s3/presigned-url/{s3_key}` | `api/file_upload_api.py:399` |
-| `GET` | `/api/s3/buckets` | `api/file_upload_api.py:436` |
-| `GET` | `/api/s3/objects` | `api/file_upload_api.py:504` |
+| `POST` | `/api/s3/upload/file` | `api/file_upload_api.py:32` |
+| `POST` | `/api/s3/upload/local-file` | `api/file_upload_api.py:98` |
+| `POST` | `/api/s3/upload/directory` | `api/file_upload_api.py:245` |
+| `DELETE` | `/api/s3/delete/{s3_key}` | `api/file_upload_api.py:164` |
+| `DELETE` | `/api/s3/delete-prefix/{prefix}` | `api/file_upload_api.py:207` |
+| `GET` | `/api/s3/presigned-url/{s3_key}` | `api/file_upload_api.py:403` |
+| `GET` | `/api/s3/buckets` | `api/file_upload_api.py:440` |
+| `GET` | `/api/s3/objects` | `api/file_upload_api.py:508` |
 
 앱이 소비하는 계약은 `/api/predict`, `/api/gpt-predict`, `/api/auth/*` 4종입니다. S3 계열은 운영·데이터셋 관리용입니다.
 
@@ -124,16 +124,17 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 
 | # | 내용 | 근거 |
 |---|------|------|
-| 1 | **`/api/predict`의 실패 응답이 깨져 있습니다.** 예외 시 `{"error": str(e)}`를 반환하는데 `response_model=PredictionResponse` 검증에 걸려 실제로는 **500 `Internal Server Error` 평문**이 나갑니다. `ErrorResponse` 스키마는 도달 불가능합니다. | `api/predict_api.py:27` / 실측: 비이미지 업로드 시 500 + `Internal Server Error` |
-| 2 | `/api/gpt-predict`가 내부 예외를 `HTTPException(500, detail=str(e))`로 그대로 노출합니다. | `api/predict_api.py:39` |
-| 3 | `HF_TOKEN`이 `.env`에도 셸 환경변수에도 없으면 **서버가 아예 뜨지 않습니다** (import 시점 `KeyError`). `load_dotenv()`가 **cwd 기준**으로 `.env`를 찾으므로, 저장소 루트가 아닌 곳에서 실행하면 토큰을 못 찾습니다. | `services/gpt_oss_service.py:15,26` (실측 확인) |
-| 3-1 | `info_logger.error()`가 **아무 데도 기록되지 않습니다.** `setup_level_logger(logging.INFO)`의 `LevelFilter`가 ERROR 레코드를 버립니다. `/api/predict` 실패가 로그에 전혀 남지 않습니다. | `api/predict_api.py:11,26` (실측: `error_log.txt` 미생성) |
-| 4 | `AUTH_INCLUDE_DEV_CODE` 기본값이 `true`라 미설정 시 인증번호가 API 응답에 노출됩니다. | `services/auth_service.py:16,104` |
-| 5 | 세션 토큰(`AuthSession.token`)을 발급만 하고 **검증·폐기하는 코드가 없습니다.** `/api/predict`와 `/api/s3/*`는 인증 없이 공개되어 있습니다. | `services/auth_service.py`, 라우터 전수 |
+| 1 | `HF_TOKEN`이 `.env`에도 셸 환경변수에도 없으면 **서버가 아예 뜨지 않습니다** (import 시점 `KeyError`). `load_dotenv()`가 **cwd 기준**으로 `.env`를 찾으므로, 저장소 루트가 아닌 곳에서 실행하면 토큰을 못 찾습니다. | `services/gpt_oss_service.py:15,26` (실측 확인) |
+| 2 | `AUTH_INCLUDE_DEV_CODE` 기본값이 `true`라 미설정 시 인증번호가 API 응답에 노출됩니다. | `services/auth_service.py:16,104` |
+| 3 | `AUTH_CODE_PEPPER` 기본값이 `development-only-pepper`입니다. | `services/auth_service.py:15` |
+| 4 | 세션 토큰(`AuthSession.token`)을 발급만 하고 **검증·폐기하는 코드가 없습니다.** `/api/predict`와 `/api/s3/*`는 인증 없이 공개되어 있습니다. | `services/auth_service.py`, 라우터 전수 |
+| 5 | `/api/s3/*`가 `detail=f"...: {str(e)}"`로 **boto3 내부 예외를 그대로 노출**합니다. | `api/file_upload_api.py` (14곳) |
 | 6 | `api/file_upload_api.py`가 `os.getenv`로 자격증명을 직접 읽습니다. 레이어 규칙 위반입니다. | `api/file_upload_api.py` |
-| 7 | `@app.on_event("startup")`은 FastAPI 0.118에서 deprecated입니다. lifespan으로 이전이 필요합니다. | `main.py:34` |
-| 8 | DB 마이그레이션 도구가 없습니다. `Base.metadata.create_all`은 **기존 테이블의 컬럼 변경을 반영하지 않습니다.** | `database.py:32` |
-| 9 | `runs/`에 학습 산출물 74개(약 70MB)가 커밋되어 있습니다. 배포 시 `scp -r ./*`로 매번 전송됩니다. | `.github/workflows/deploy.yml:41` |
+| 7 | `DELETE /api/s3/delete-prefix/{prefix}`가 사용자 입력을 검증 없이 prefix로 씁니다. | `api/file_upload_api.py:207` |
+| 8 | `@app.on_event("startup")`은 FastAPI 0.118에서 deprecated입니다. lifespan으로 이전이 필요합니다. | `main.py:34` |
+| 9 | DB 마이그레이션 도구가 없습니다. `Base.metadata.create_all`은 **기존 테이블의 컬럼 변경을 반영하지 않습니다.** | `database.py:32` |
+| 10 | `runs/`에 학습 산출물 74개(약 70MB)가 커밋되어 있습니다. 배포 시 `scp -r ./*`로 매번 전송됩니다. | `.github/workflows/deploy.yml:41` |
+| 11 | `.env.example`에 `ACCESS_KEY`, `SECRET_KEY`, `REGION`, `BUCKET_NAME`, `DOMAIN`, `CORS_ALLOW_ORIGINS`가 누락되어 있습니다. | `.env.example` |
 
 ---
 
@@ -143,7 +144,9 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 - **`AUTH_INCLUDE_DEV_CODE`를 운영에서 `true`로 두지 않는다.** 기본값이 `true`입니다.
 - **`AUTH_CODE_PEPPER` 기본값을 그대로 배포하지 않는다.**
 - **`.env`를 커밋하지 않는다.** `HF_TOKEN`과 NCP 자격증명이 들어 있습니다.
-- **예외 메시지를 그대로 클라이언트에 반환하지 않는다.** 기존 `str(e)` 노출(문제 1·2)을 새 코드에서 반복하지 않습니다.
+- **예외 메시지를 그대로 클라이언트에 반환하지 않는다.** 내부 예외는 `error_logger`에만 남기고, 클라이언트에는 사용자용 한국어 메시지를 줍니다. `api/file_upload_api.py`의 `detail=f"...: {str(e)}"`(문제 5)를 복제하지 마세요.
+- **`response_model`이 걸린 라우트에서 실패를 `return`하지 않는다.** 검증에 걸려 500 평문이 나갑니다. `raise HTTPException(...)`을 씁니다.
+- **INFO 로거로 `.error()`를 호출하지 않는다.** `setup_level_logger`의 `LevelFilter`가 레코드를 버립니다. `error_logger = setup_level_logger(logging.ERROR)`를 따로 만듭니다.
 - **`api` 레이어에 비즈니스 로직이나 `os.getenv`를 넣지 않는다.** HTTP 입출력과 예외 변환만 담당합니다.
 - **DB 스키마를 변경할 때 마이그레이션 없이 진행하지 않는다.**
 - **모델 성능 실험과 제품 API 안정화를 같은 커밋에 섞지 않는다.**

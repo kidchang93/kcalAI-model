@@ -33,7 +33,7 @@
 
 | 항목 | 현재 상태 | 필요한 결정 |
 |------|-----------|-------------|
-| `/api/predict` 실패 응답 | `{"error": ...}`가 `response_model` 검증에 걸려 **500 평문**으로 나감 | `ErrorResponse`를 살릴지, `{"detail": ...}`로 통일할지 |
+| `/api/s3/*` 실패 응답 | `detail=f"...: {str(e)}"`로 boto3 내부 예외 노출 | `predict_api.py`처럼 로그/응답 분리 |
 | 엔드포인트 인증 | `/api/predict`, `/api/s3/*` 전부 공개 | 세션 토큰 검증 의존성을 어디에 걸지 |
 | 세션 토큰 검증 | 발급만 하고 **검증하는 코드가 없음** | `Depends(get_current_user)` 도입 |
 | 로그아웃 | `revoked_at` 컬럼만 존재 | `POST /api/auth/logout` 추가 여부 |
@@ -78,16 +78,26 @@ FastAPI 기본 형태인 `{"detail": "..."}`를 유지합니다.
 raise HTTPException(status_code=400, detail="인증번호가 올바르지 않거나 만료되었습니다.")
 ```
 
-**금지 패턴 두 가지가 코드에 남아 있습니다. 복제하지 마세요.**
+`api/predict_api.py`가 표준 형태입니다. 내부 예외는 로그에만 남기고, 클라이언트에는 사용자용 한국어 메시지를 줍니다.
 
 ```python
-# api/predict_api.py:27 — response_model 검증에 걸려 500 평문이 나갑니다
+except Exception as e:
+    error_logger.error(f"predict 실패 {file.filename}: {e!r}")
+    raise HTTPException(
+        status_code=500,
+        detail="이미지 분석에 실패했습니다. 다른 사진으로 다시 시도해주세요.",
+    ) from e
+```
+
+**두 가지를 하지 마세요.**
+
+```python
+# response_model 이 걸린 라우트에서 다른 형태를 return → 검증 실패 → 500 평문
 except Exception as e:
     return {"error": str(e)}
 
-# api/predict_api.py:39 — 내부 예외 메시지를 그대로 노출합니다
-except Exception as e:
-    raise HTTPException(status_code=500, detail=str(e))
+# 내부 예외 메시지를 그대로 노출 (api/file_upload_api.py 가 아직 이 패턴입니다)
+raise HTTPException(status_code=500, detail=f"파일 업로드 실패: {str(e)}")
 ```
 
 앱의 `readErrorMessage`는 `detail` 키만 파싱합니다 (`k-calAI-RN/services/calorie-api.ts:98`). `{"error": ...}`나 평문 응답은 사용자에게 원시 문자열로 노출됩니다.

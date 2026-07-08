@@ -78,9 +78,12 @@ api  →  services  →  models  →  database (Base, engine)
        │    └─ probs.top5[:3] → [Prediction(label, score)]   # 한국어 라벨
        ├─ info_logger.info("<filename> 정상 수집 완료")
        └─ {"predictions": [...]}  (response_model=PredictionResponse)
-```
 
-**실패 경로가 깨져 있습니다.** `except`에서 `{"error": str(e)}`를 반환하는데 `response_model` 검증에 걸려 FastAPI가 `ResponseValidationError`를 내고, 클라이언트는 **500 + 평문 `Internal Server Error`**를 받습니다. `ErrorResponse` 스키마는 도달 불가능합니다.
+  실패 시
+  └─ error_logger.error("predict 실패 <filename>: <repr(예외)>")   # 서버에만
+     raise HTTPException(500, detail="이미지 분석에 실패했습니다. ...")
+     → {"detail": "..."}  (ErrorResponse)
+```
 
 ### 칼로리 설명 (`POST /api/gpt-predict`)
 
@@ -91,7 +94,8 @@ api  →  services  →  models  →  database (Base, engine)
             └─ InferenceClient(provider="groq").chat.completions.create(
                    model="openai/gpt-oss-120b", messages=[{role:user, content:text}])
             └─ GptResponse(response_text=...)
-       ← 예외 시 HTTPException(500, detail=str(e))   # 내부 메시지 노출
+       ← 예외 시 error_logger 에 기록 후
+         HTTPException(500, detail="칼로리 설명을 생성하지 못했습니다. ...")
 ```
 
 함수·모델 이름이 `gpt_oss_20B`지만 실제 호출 모델은 **`openai/gpt-oss-120b`**, 프로바이더는 **groq**입니다.
@@ -142,18 +146,18 @@ api/file_upload_api.py  →  services/s3_service.py:S3Service
 
 두 부작용이 모두 **cwd에 묶여 있다**는 점이 중요합니다. 저장소 루트가 아닌 곳에서 실행하면 가중치도, `.env`도 찾지 못합니다.
 
-## 로깅 결함
+## 로깅 규칙
 
-`api/predict_api.py:11`은 INFO 로거 하나만 만들고, 예외 처리에서 그 로거의 `.error()`를 호출합니다.
+`setup_level_logger(level)`는 `LevelFilter`로 **해당 레벨만** 기록합니다. 따라서 레벨마다 로거를 따로 만들어야 합니다.
 
 ```python
-info_logger = setup_level_logger(logging.INFO)   # LevelFilter: levelno == INFO 만 통과
-...
-except Exception as e:
-    info_logger.error(...)                        # ← 필터에 걸려 소멸
+info_logger  = setup_level_logger(logging.INFO)    # → task-logs/info_log.txt
+error_logger = setup_level_logger(logging.ERROR)   # → task-logs/error_log.txt
 ```
 
-실측: 비이미지 업로드로 500을 유발해도 `task-logs/error_log.txt`가 생기지 않고 `info_log.txt`에도 남지 않습니다. **`/api/predict`의 실패는 어디에도 기록되지 않습니다.**
+**INFO 로거로 `.error()`를 호출하면 레코드가 소멸합니다.** `api/predict_api.py`와 `api/file_upload_api.py`가 이 버그를 갖고 있었고, 두 파일 모두 `error_logger`를 추가해 고쳤습니다.
+
+실측: 비이미지 업로드 → `error_log.txt`에 `UnidentifiedImageError` 기록, `info_log.txt`에는 ERROR 라인 0개, 응답 본문에는 내부 예외 미노출.
 
 ## 로깅
 

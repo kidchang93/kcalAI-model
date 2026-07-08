@@ -171,11 +171,15 @@ import logging
 from log_utils import setup_level_logger
 
 info_logger = setup_level_logger(logging.INFO)     # → task-logs/info_log.txt
+error_logger = setup_level_logger(logging.ERROR)   # → task-logs/error_log.txt
+
 info_logger.info(f"{file.filename} 정상 수집 완료")
+error_logger.error(f"predict 실패 {file.filename}: {e!r}")
 ```
 
 - `print()`를 쓰지 않습니다.
-- INFO 로거로 `error()`를 호출하면 **아무 데도 기록되지 않습니다.** `setup_level_logger(logging.ERROR)`를 따로 만들어야 합니다. (`api/predict_api.py:26`이 이 실수를 하고 있습니다.)
+- **INFO 로거로 `error()`를 호출하면 아무 데도 기록되지 않습니다.** `LevelFilter`가 레코드를 버립니다. 레벨마다 로거를 따로 만드세요.
+- 예외는 `{e!r}`로 남깁니다. `str(e)`는 예외 타입을 잃습니다.
 - 로그에 인증번호, 토큰, 자격증명을 남기지 않습니다.
 
 ## 주석
