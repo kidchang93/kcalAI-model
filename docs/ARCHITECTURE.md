@@ -4,22 +4,39 @@
 
 ```
 kcalAI-model/
-├── main.py                 # 앱 생성, CORS, 추론 엔드포인트, 라우터 등록, startup 훅
-├── database.py             # engine, SessionLocal, Base, get_db, init_db
+├── main.py                     # 앱 생성, CORS, 라우터 등록, startup 훅
+├── database.py                 # engine, SessionLocal, Base, get_db, init_db
+├── log_utils.py                # 레벨별 RotatingFileHandler 로거 팩토리
 ├── api/
-│   ├── __init__.py         # auth_router 재수출
-│   └── auth_api.py         # APIRouter: /auth/** (HTTP 경계)
+│   ├── __init__.py             # 라우터 3종 재수출
+│   ├── auth_api.py             # /auth/**
+│   ├── predict_api.py          # /predict, /gpt-predict
+│   └── file_upload_api.py      # S3 업로드·삭제·조회 (8 라우트)
 ├── services/
-│   └── auth_service.py     # 인증 비즈니스 로직 (코드 발급/검증, 세션 생성)
+│   ├── auth_service.py         # 인증 코드 발급/검증, 세션 생성
+│   ├── predict_service.py      # YOLO 분류
+│   ├── gpt_oss_service.py      # HF InferenceClient (groq) 텍스트 생성
+│   └── s3_service.py           # S3Service 클래스 (boto3)
 ├── schemas/
-│   └── auth_schema.py      # Pydantic 요청/응답 계약
+│   ├── auth_schema.py
+│   ├── predict_schema.py       # Prediction, PredictionResponse, ErrorResponse
+│   ├── gpt_schemas.py          # GptAnswer, GptResponse, GptError
+│   └── s3_schemas.py
 ├── models/
-│   ├── __init__.py
-│   └── auth_model.py       # SQLAlchemy ORM: User, PhoneVerificationCode, AuthSession
-├── docker-compose.yml      # postgres:16-alpine
-├── .github/workflows/
-│   └── deploy.yml          # dev 브랜치 push → NCP 배포
-└── task-logs/              # 로컬 로그 (gitignored)
+│   └── auth_model.py           # User, PhoneVerificationCode, AuthSession
+├── runs/                       # YOLO 학습 산출물 74개 (약 70MB, 커밋됨)
+│   ├── yolo11n.pt, yolo11n-cls.pt
+│   └── classify/
+│       ├── korean_food/
+│       ├── s3_korean_food_all_classes/weights/last.pt   ← 실사용 가중치
+│       ├── s3_korean_food_sequential/                   ← best_v3 ~ v8.2.1
+│       └── val/, val2/
+├── http/                       # IDE용 HTTP 요청 파일
+│   ├── test_main.http
+│   └── test_s3.http
+├── docker-compose.yml          # postgres:16-alpine
+├── .github/workflows/deploy.yml
+└── task-logs/                  # 런타임 로그 (gitignored)
 ```
 
 ## 레이어와 의존성 방향
@@ -32,47 +49,73 @@ api  →  services  →  models  →  database (Base, engine)
 
 | 레이어 | 책임 | 의존해도 되는 것 | 의존하면 안 되는 것 |
 |--------|------|------------------|---------------------|
-| `api` | HTTP 입출력, 의존성 주입, `ValueError → HTTPException` 변환 | `schemas`, `services`, `database.get_db` | `models` 직접 조작, SQLAlchemy 쿼리 |
-| `services` | 트랜잭션, 비즈니스 규칙, 외부 연동 | `models`, `database` | `fastapi` (HTTP 개념) |
+| `api` | HTTP 입출력, 의존성 주입, 예외 변환 | `schemas`, `services`, `database.get_db` | `models` 직접 조작, SQLAlchemy 쿼리, `os.getenv` |
+| `services` | 트랜잭션, 비즈니스 규칙, 외부 연동(YOLO/HF/S3) | `models`, `database`, `schemas` | `fastapi` (HTTP 개념) |
 | `schemas` | 요청/응답 계약의 단일 기준 | Pydantic | `models`, `services` |
 | `models` | 테이블 정의 | `database.Base` | `services`, `api` |
 | `database` | 엔진/세션/Base 생성 | 없음 | 상위 레이어 전부 |
 
-**역방향 의존 금지.** 단, `database.init_db()`는 `models.auth_model`을 함수 내부에서 지연 import 하여 테이블 등록만 수행합니다 (`database.py:30`). 이는 순환 import 회피용이며 예외로 인정된 유일한 지점입니다.
+**알려진 위반**
+
+| 위반 | 위치 |
+|------|------|
+| `api`가 `os.getenv`로 S3 자격증명을 직접 읽음 | `api/file_upload_api.py` |
+| `services`가 `HTTPException` 대신 `RuntimeError`를 던짐(허용) 하지만 `predict_api`가 `str(e)`를 노출 | `api/predict_api.py:27,39` |
+
+`database.init_db()`가 `models.auth_model`을 함수 내부에서 지연 import 하는 것은 순환 import 회피용이며 인정된 예외입니다 (`database.py:30`).
 
 ## 요청 흐름
+
+### 이미지 분류 (`POST /api/predict`)
+
+```
+클라이언트 (multipart/form-data, field=file)
+  └─ api/predict_api.py:predict()
+       ├─ await file.read() → bytes
+       ├─ services/predict_service.py:predict_image()
+       │    ├─ Image.open(BytesIO).convert("RGB")
+       │    ├─ model(image)              # 모듈 로드 시 생성된 전역 YOLO
+       │    └─ probs.top5[:3] → [Prediction(label, score)]   # 한국어 라벨
+       ├─ info_logger.info("<filename> 정상 수집 완료")
+       └─ {"predictions": [...]}  (response_model=PredictionResponse)
+```
+
+**실패 경로가 깨져 있습니다.** `except`에서 `{"error": str(e)}`를 반환하는데 `response_model` 검증에 걸려 FastAPI가 `ResponseValidationError`를 내고, 클라이언트는 **500 + 평문 `Internal Server Error`**를 받습니다. `ErrorResponse` 스키마는 도달 불가능합니다.
+
+### 칼로리 설명 (`POST /api/gpt-predict`)
+
+```
+클라이언트 { text, max_tokens }
+  └─ api/predict_api.py:gptPredict()
+       └─ services/gpt_oss_service.py:answerByGptOss20B()
+            └─ InferenceClient(provider="groq").chat.completions.create(
+                   model="openai/gpt-oss-120b", messages=[{role:user, content:text}])
+            └─ GptResponse(response_text=...)
+       ← 예외 시 HTTPException(500, detail=str(e))   # 내부 메시지 노출
+```
+
+함수·모델 이름이 `gpt_oss_20B`지만 실제 호출 모델은 **`openai/gpt-oss-120b`**, 프로바이더는 **groq**입니다.
 
 ### 인증 (`POST /api/auth/{mode}/{action}`)
 
 ```
-클라이언트
-  └─ FastAPI 라우팅
-       └─ api/auth_api.py  ── Depends(get_db) → Session
-            │  Pydantic이 요청 바디 검증 (schemas/auth_schema.py)
-            └─ services/auth_service.py
-                 ├─ normalize_phone_number()   숫자만 추출, 82→0 치환, 10~15자리 검증
-                 ├─ _get_user_by_phone()       select(User)
-                 ├─ _create_phone_code()       6자리 난수 → sha256 해시 저장 → commit
-                 │    또는
-                 ├─ _consume_valid_code()      해시 대조 + 미소비 + 미만료 → consumed_at 기록
-                 └─ _create_session()          token_urlsafe(48), TTL 30일
-            ← ValueError 발생 시 api 레이어가 HTTPException(400, detail=str(e))로 변환
-       └─ response_model 직렬화 (AuthTokenResponse / PhoneCodeResponse)
+api/auth_api.py  ── Depends(get_db) → Session
+  └─ services/auth_service.py
+       ├─ normalize_phone_number()   숫자만 추출, 82→0 치환, 10~15자리 검증
+       ├─ _create_phone_code()       6자리 난수 → sha256(pepper:phone:purpose:code) 저장
+       ├─ _consume_valid_code()      해시 대조 + 미소비 + 미만료 → consumed_at 기록
+       └─ _create_session()          token_urlsafe(48), TTL 30일
+  ← ValueError → HTTPException(400, detail=str(e))
 ```
 
-### 추론 (`POST /predict`)
+### S3 (`/api/s3/*`)
 
 ```
-클라이언트 (multipart/form-data, field=file)
-  └─ main.py:predict()
-       ├─ await file.read()  → bytes
-       ├─ PIL.Image.open(io.BytesIO(...))
-       ├─ classifier(image)             # 모듈 로드 시점에 생성된 전역 파이프라인
-       └─ JSONResponse({"predictions": results[:3]})
-          예외 시 JSONResponse({"error": str(e)}, 500)
+api/file_upload_api.py  →  services/s3_service.py:S3Service
+                              └─ boto3.client(endpoint_url=DOMAIN, region_name=REGION, ...)
 ```
 
-> 이 경로는 `api/` 레이어를 거치지 않고 `main.py`에 직접 정의되어 있습니다. 레이어 규칙의 예외이자 정리 대상입니다.
+`S3Service`는 `upload_file`, `upload_fileobj`, `delete_file`, `delete_prefix`, `file_exists`, `upload_directory`, `get_presigned_url`, `list_buckets`, `list_objects` 메서드를 제공합니다. NCP Object Storage(S3 호환)를 대상으로 합니다.
 
 ## 데이터 모델
 
@@ -80,37 +123,67 @@ api  →  services  →  models  →  database (Base, engine)
 |--------|-----------|------|
 | `users` | `id`, `phone_number`(unique), `is_phone_verified`, `created_at`, `updated_at` | |
 | `phone_verification_codes` | `id`, `phone_number`, `purpose`(`signup`/`login`), `code_hash`, `expires_at`, `consumed_at`, `created_at` | 평문 코드 미저장 |
-| `auth_sessions` | `id`, `user_id`(FK), `token`(unique), `expires_at`, `revoked_at`, `created_at` | `User.sessions` 역참조 |
+| `auth_sessions` | `id`, `user_id`(FK), `token`(unique), `expires_at`, `revoked_at`, `created_at` | |
 
-- 코드 해시: `sha256(f"{PEPPER}:{phone}:{purpose}:{code}")` (`services/auth_service.py:137`)
 - 스키마 생성: `Base.metadata.create_all(bind=engine)` — **마이그레이션 도구 없음**. 컬럼 변경은 반영되지 않습니다.
-- `AuthSession.revoked_at`, `AuthSession.token`을 검증하는 코드는 **아직 없습니다.** 로그아웃·세션 인증 미들웨어 미구현.
+- `AuthSession.token`을 검증하는 코드는 **없습니다.** `/api/predict`, `/api/s3/*` 모두 공개 엔드포인트입니다.
 
-## 모델 로딩
+## 전역 초기화 (import 시점)
 
-`main.py:35`에서 **모듈 import 시점에** 전역 `classifier` 파이프라인을 생성합니다.
+| 모듈 | 부작용 | 실패 조건 |
+|------|--------|-----------|
+| `services/predict_service.py:22` | `YOLO("runs/classify/.../last.pt")` 로드 | cwd가 저장소 루트가 아니면 실패 |
+| `services/gpt_oss_service.py:15` | `load_dotenv()` — **cwd 기준으로 `.env` 탐색** | — |
+| `services/gpt_oss_service.py:24` | `InferenceClient(api_key=os.environ["HF_TOKEN"])` | `.env`와 셸 환경변수 **양쪽 모두에** `HF_TOKEN`이 없으면 `KeyError` |
+| `services/s3_service.py:11` | `load_dotenv()` | — |
+| `api/predict_api.py:11` | `setup_level_logger(INFO)` → `task-logs/` 디렉토리 생성 | — |
 
-- 최초 실행 시 Hugging Face에서 `nateraw/food` 가중치를 내려받습니다.
-- 서버 시작 시간과 메모리 사용량이 여기에 묶입니다.
-- 테스트에서 `import main`만 해도 모델이 로드됩니다. 테스트 도입 시 지연 로딩 또는 lifespan 이전이 선행되어야 합니다.
+이 때문에 `import main`만 해도 모델 로드·`.env` 탐색·토큰 조회가 일어납니다. 테스트를 도입하려면 지연 로딩이 선행되어야 합니다.
 
-## 외부 시스템
+두 부작용이 모두 **cwd에 묶여 있다**는 점이 중요합니다. 저장소 루트가 아닌 곳에서 실행하면 가중치도, `.env`도 찾지 못합니다.
 
-| 시스템 | 용도 | 접점 |
-|--------|------|------|
-| PostgreSQL 16 | 사용자·인증코드·세션 저장 | `database.py`, `docker-compose.yml` |
-| Hugging Face Hub | `nateraw/food` 가중치 다운로드 | `main.py:35` (transformers) |
-| NCP 서버 | 운영 배포 대상 | `.github/workflows/deploy.yml` |
+## 로깅 결함
+
+`api/predict_api.py:11`은 INFO 로거 하나만 만들고, 예외 처리에서 그 로거의 `.error()`를 호출합니다.
+
+```python
+info_logger = setup_level_logger(logging.INFO)   # LevelFilter: levelno == INFO 만 통과
+...
+except Exception as e:
+    info_logger.error(...)                        # ← 필터에 걸려 소멸
+```
+
+실측: 비이미지 업로드로 500을 유발해도 `task-logs/error_log.txt`가 생기지 않고 `info_log.txt`에도 남지 않습니다. **`/api/predict`의 실패는 어디에도 기록되지 않습니다.**
+
+## 로깅
+
+`log_utils.setup_level_logger(level)`는 **레벨당 하나의 로거**를 만들고, `LevelFilter`로 그 레벨만 통과시킵니다.
+
+```
+task-logs/info_log.txt    ← INFO 만
+task-logs/error_log.txt   ← ERROR 만 (setup_level_logger(ERROR) 호출 시)
+```
+
+- `RotatingFileHandler(maxBytes=1MB, backupCount=5)`
+- 콘솔 핸들러도 함께 붙습니다
+- 현재 `api/predict_api.py`만 사용합니다. 다른 라우터는 로깅하지 않습니다.
 
 ## 애플리케이션 수명주기
 
 | 시점 | 동작 | 위치 |
 |------|------|------|
-| import | CORS 오리진 파싱, `classifier` 로드 | `main.py:15-38` |
-| startup | `init_db()` → `create_all` | `main.py:41` (`@app.on_event`, deprecated) |
+| import | CORS 오리진 파싱, YOLO 로드, HF 클라이언트 생성, 로거 생성 | `main.py`, `services/*` |
+| startup | `init_db()` → `create_all` | `main.py:34` (`@app.on_event`, **deprecated**) |
 | 요청마다 | `get_db()`가 세션 yield → finally close | `database.py:21` |
 
-`@app.on_event("startup")`은 FastAPI 0.117에서 deprecated입니다. lifespan 컨텍스트 매니저로의 이전이 필요합니다.
+## 외부 시스템
+
+| 시스템 | 용도 | 접점 |
+|--------|------|------|
+| PostgreSQL 16 | 사용자·인증코드·세션 | `database.py`, `docker-compose.yml` |
+| Hugging Face Inference (provider `groq`) | `openai/gpt-oss-120b` 텍스트 생성 | `services/gpt_oss_service.py` |
+| NCP Object Storage | 데이터셋·이미지 저장 | `services/s3_service.py` |
+| NCP 서버 | 운영 배포 대상 | `.github/workflows/deploy.yml` |
 
 ## 배포 파이프라인
 
@@ -118,22 +191,30 @@ api  →  services  →  models  →  database (Base, engine)
 
 ```
 push → dev 브랜치
-  └─ ubuntu-latest / Python 3.12
-       ├─ pip install -r requirements.txt   (Actions 러너에서 - 실제 배포엔 미사용)
-       └─ ssh $SERVER_USER@$SERVER_IP
-            ├─ git reset --hard && git pull origin main
-            ├─ venv 생성/활성화, pip install
-            ├─ pkill -f "uvicorn main:app"
-            └─ nohup uvicorn main:app --host 0.0.0.0 --port 8000 &
+  └─ ubuntu-latest
+       ├─ actions/checkout@v3
+       ├─ NCP_SSH_KEY 를 ~/private-key.pem 으로 저장 (chmod 600)
+       ├─ ssh-keyscan NCP_SERVER_IP >> known_hosts
+       ├─ scp -r ./*  →  $PROJECT_PATH        # 저장소 전체 복사 (runs/ 70MB 포함)
+       └─ ssh 'bash -s' <<'ENDSSH'
+            cd $PROJECT_PATH
+            pkill -f "uvicorn main:app" || true
+            python3 -m venv .venv && source .venv/bin/activate
+            pip install -r requirements.txt
+            nohup uvicorn main:app --host 0.0.0.0 --port 8000 & disown
+          ENDSSH
 ```
 
-**이 워크플로에는 다음 문제가 있습니다. 배포 관련 작업 전에 확인하세요.**
+`${{ secrets.* }}`는 Actions가 heredoc 이전에 치환하므로 `<<'ENDSSH'` 인용과 무관하게 값이 들어갑니다.
 
-| 문제 | 위치 | 설명 |
-|------|------|------|
-| 트리거 브랜치와 pull 브랜치 불일치 | `on.push.branches: dev` vs `git pull origin main` | `dev`에 push하면 서버는 `main`을 받습니다 |
-| heredoc 변수 미확장 | `<< 'EOF'` | 따옴표로 인해 `$PROJECT_PATH`가 원격에서 확장되지 않아 `cd $PROJECT_PATH`가 홈 디렉토리로 이동합니다 |
-| 환경변수 전달 없음 | `ssh` 호출 | `DATABASE_URL`, `AUTH_CODE_PEPPER`, `AUTH_INCLUDE_DEV_CODE`가 원격 셸에 전달되지 않아 **기본값으로 기동**됩니다 |
-| 무중단 배포 아님 | `pkill` → `nohup` | 모델 로딩 시간만큼 다운타임이 발생합니다 |
+**남아 있는 문제**
 
-<!-- TODO: 확인 필요 - NCP 서버의 실제 프로세스 관리 방식(systemd/pm2/nohup)과 .env 배치 경로를 확인하지 못했습니다. -->
+| 문제 | 설명 |
+|------|------|
+| 무중단 배포 아님 | `pkill` → `pip install` → 기동. YOLO 로드 시간만큼 다운타임 |
+| 매 배포마다 70MB 전송 | `scp -r ./*`가 `runs/`를 통째로 복사 |
+| 원격 `.env` 관리 부재 | 워크플로가 환경변수를 전달하지 않습니다. 서버에 `.env`가 없으면 `HF_TOKEN` KeyError로 기동 실패 |
+| 원격 Python 버전 미고정 | `python3 -m venv` — 서버의 기본 python3에 의존 |
+| 불필요한 step | `- name: Deploy to NCP Server`가 실제로는 `actions/checkout@v3`를 한 번 더 실행합니다 |
+
+<!-- TODO: 확인 필요 - NCP 서버의 .env 배치 경로와 프로세스 관리 방식(systemd 등)을 확인하지 못했습니다. -->

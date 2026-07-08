@@ -17,10 +17,13 @@
   - 리뷰                 → docs/REVIEW.md
 
 제약:
-  - 서버 실제 라우트는 /predict, /api/auth/** 뿐이다.
-    /api/predict, /api/gpt-predict, /api/s3/* 는 존재하지 않는다.
+  - 라우트는 /api/predict, /api/gpt-predict, /api/auth/**, /api/s3/** 14개다.
+    전부 /api prefix 아래에 있다.
   - api → services → models 방향으로만 의존한다.
-  - 테스트/린트 명령어가 없다. 검증은 uvicorn 기동 + /docs + curl 로 한다.
+  - 서버는 반드시 저장소 루트에서 실행한다 (YOLO 가중치가 상대경로).
+  - HF_TOKEN 이 없으면 import 단계에서 죽는다.
+  - 테스트/린트 명령어가 없다. 검증은 uvicorn 기동 + /openapi.json + curl 로 한다.
+  - dev 브랜치 push = NCP 배포. 절대 임의로 push 하지 않는다.
 ```
 
 ## 역할 분담
@@ -50,7 +53,7 @@
 | `database.py`의 `init_db()` import 목록 수정 | 같은 함수를 여러 에이전트가 건드립니다 |
 | 새 도메인 추가 (schemas → services → api → main) | 뒤 단계가 앞 단계의 시그니처에 의존합니다 |
 | DB 스키마 변경 | `create_all` 특성상 순서와 볼륨 상태에 의존합니다 |
-| `requirements.txt` 수정 | UTF-16 인코딩. 두 에이전트가 쓰면 파일이 깨집니다 |
+| `requirements.txt` 수정 | 단일 파일. 두 에이전트가 쓰면 충돌합니다 |
 
 **파일 단위로 소유권을 나눌 수 없으면 병렬화하지 않습니다.** 이 저장소는 도메인당 파일이 하나씩이라 병렬 구현의 이득이 작습니다.
 
@@ -70,10 +73,11 @@
 
 ## 에이전트에게 시키지 말 것
 
-- **서버 기동/추론 실행.** `nateraw/food` 모델 다운로드가 발생하고 시간·대역폭을 소모합니다. 필요하면 사용자에게 `! uvicorn main:app` 실행을 요청합니다.
-- **`docs/PROJECT_PLANNING.md`를 코드에 맞춰 자동 수정.** 어느 쪽이 정답인지는 제품 결정입니다. 사용자에게 확인합니다.
+- **`/api/gpt-predict` 호출.** HF Inference API를 실제로 태우므로 토큰 사용량이 발생합니다.
+- **`git push`.** 특히 `dev` 브랜치는 push 즉시 NCP 서버로 배포됩니다.
 - **배포 워크플로 수정.** `deploy.yml`은 시크릿·서버 상태에 의존하므로 사용자 확인 없이 건드리지 않습니다.
-- **`requirements.txt` 인코딩 변환.** 별도 작업으로 분리합니다.
+- **`runs/` 아래 파일 추가·삭제.** 70MB 학습 산출물입니다. 스토리지 정책은 제품 결정입니다.
+- **`.env` 수정.** `HF_TOKEN`과 NCP 자격증명이 들어 있습니다.
 
 ## 두 저장소를 함께 다루는 세션
 
