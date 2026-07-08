@@ -1,16 +1,16 @@
-import io
+
 import os
 
-from PIL import Image
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.responses import JSONResponse
-from transformers import pipeline
-
-from api import auth_router
+from api import auth_router, predict_router, file_upload_router
 from database import init_db
 
-app = FastAPI()
+app = FastAPI(
+    title="Food Classification API",
+    description="음식 이미지를 분류하는 API",
+    version="1.0.0",
+)
 
 cors_allow_origins = [
     origin.strip()
@@ -31,31 +31,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Hugging Face 이미지 분류 파이프라인(음식 특화 모델)
-classifier = pipeline(
-    "image-classification",
-    model="nateraw/food",
-)
-
-
 @app.on_event("startup")
 def on_startup():
     init_db()
 
 
-@app.post("/predict")
-async def predict(file: UploadFile = File(...)):
-    try:
-        # 이미지 파일 읽기
-        image_bytes = await file.read()
-        image = Image.open(io.BytesIO(image_bytes))
-
-        # 모델 예측
-        results = classifier(image)
-
-        return JSONResponse(content={"predictions": results[:3]})
-    except Exception as e:
-        return JSONResponse(content={"error": str(e)}, status_code=500)
-
-
+# 라우터 등록
 app.include_router(auth_router, prefix="/api", tags=["Auth"])
+app.include_router(predict_router, prefix="/api", tags=["Predict"])
+app.include_router(file_upload_router, prefix="/api/s3", tags=["S3 Upload"])

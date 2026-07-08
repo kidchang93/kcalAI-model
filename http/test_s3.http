@@ -1,0 +1,109 @@
+### S3 파일 업로드 API 테스트
+### 서버 실행: uvicorn main:app --reload
+
+### 1. 파일 객체 업로드 (Multipart Form)
+# PATH/{parent_folder}/{filename} 형식으로 저장됨
+POST http://localhost:8000/api/s3/upload/file
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="file"; filename="test_image.jpg"
+Content-Type: image/jpeg
+
+< ./test_image.jpg
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="parent_folder"
+
+test_images
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+###
+
+### 2. 로컬 파일 경로로 업로드
+# 파일 경로에서 상위 폴더명을 자동 추출하여 PATH/{상위폴더명}/{filename} 형식으로 저장됨
+# 예: D:/data/images/test.jpg -> PATH/images/test.jpg
+POST http://localhost:8000/api/s3/upload/local-file
+Content-Type: application/json
+
+{
+  "file_path": "D:/lck_data/python/kcalAI/test_images/test_image.jpg",
+  "content_type": "image/jpeg"
+}
+
+###
+
+### 3. 디렉토리 전체 업로드
+# 디렉토리 내의 모든 파일을 업로드 (하위 폴더 포함 가능)
+POST http://localhost:8000/api/s3/upload/directory
+Content-Type: application/json
+
+{
+  "directory_path": "D:/lck_data/python/kcalAI/test_images",
+  "recursive": true,
+  "content_type": null
+}
+
+###
+
+### 4. S3에서 파일 삭제
+DELETE http://localhost:8000/api/s3/delete/foods/test_images/test_image.jpg
+
+###
+
+### 4-1. S3에서 특정 폴더(prefix)의 모든 파일 삭제
+# foods/가지볶음 폴더 내의 모든 파일을 삭제
+DELETE http://localhost:8000/api/s3/delete-prefix/foods/%EA%B0%80%EC%A7%80%EB%B3%B6%EC%9D%8C
+
+###
+
+### 4-2. S3에서 특정 폴더(prefix)의 모든 파일 삭제 (슬래시 포함)
+# foods/김치찌개/ 폴더 내의 모든 파일을 삭제
+DELETE http://localhost:8000/api/s3/delete-prefix/foods/가지볶음/
+
+###
+
+### 5. 버킷 목록 조회
+# 네이버 클라우드 플랫폼 Object Storage의 모든 버킷 목록 조회
+GET http://localhost:8000/api/s3/buckets
+
+###
+
+### 6. 버킷 내 객체 목록 조회 (루트)
+# 버킷 루트의 폴더 목록 조회
+GET http://localhost:8000/api/s3/objects?prefix=&delimiter=/&max_keys=1000
+
+###
+
+### 7. 버킷 내 객체 목록 조회 (foods 폴더)
+# foods/ 폴더 내의 하위 폴더 목록 조회
+GET http://localhost:8000/api/s3/objects?prefix=foods/&delimiter=/&max_keys=1000
+
+###
+
+### 8. 특정 폴더의 모든 파일 조회
+# foods/test_images/ 폴더 내의 모든 파일 조회
+GET http://localhost:8000/api/s3/objects?prefix=train/훈제오리/&delimiter=/&max_keys=1000
+
+###
+
+### 9. 모든 객체 조회 (폴더 구분 없이)
+# delimiter를 비워서 모든 객체를 평면적으로 조회
+GET http://localhost:8000/api/s3/objects?prefix=&delimiter=&max_keys=100
+
+###
+
+### 10. Presigned URL 생성
+GET http://localhost:8000/api/s3/presigned-url/foods/test_images/test_image.jpg?expiration=3600
+
+###
+
+### 11. API 문서 (Swagger UI)
+GET http://localhost:8000/docs
+
+###
+
+### 12. API 문서 (ReDoc)
+GET http://localhost:8000/redoc
+
+###
+
