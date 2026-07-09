@@ -33,5 +33,9 @@ class AuthTokenResponse(BaseModel):
     user: AuthUser
 
 
+class LogoutResponse(BaseModel):
+    message: str
+
+
 class AuthError(BaseModel):
     detail: str

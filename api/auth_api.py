@@ -1,10 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
+from api.dependencies import extract_bearer_token, get_current_user
 from database import get_db
+from models.auth_model import User
 from schemas.auth_schema import (
     AuthError,
     AuthTokenResponse,
+    LogoutResponse,
     PhoneCodeResponse,
     PhoneNumberRequest,
     VerifyPhoneCodeRequest,
@@ -12,6 +15,7 @@ from schemas.auth_schema import (
 from services.auth_service import (
     create_login_code,
     create_signup_code,
+    revoke_session_token,
     verify_login_code,
     verify_signup_code,
 )
@@ -51,6 +55,24 @@ def verify_signup(request: VerifyPhoneCodeRequest, db: Session = Depends(get_db)
         }
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.post(
+    "/auth/logout",
+    response_model=LogoutResponse,
+    responses={401: {"model": AuthError}},
+)
+def logout(
+    _current_user: User = Depends(get_current_user),
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    # get_current_user 를 통과했으므로 토큰은 유효하다. 같은 토큰을 폐기한다.
+    token = extract_bearer_token(authorization)
+    if token is not None:
+        revoke_session_token(db, token)
+
+    return {"message": "로그아웃되었습니다."}
 
 
 @router.post(

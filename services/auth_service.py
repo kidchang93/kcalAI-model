@@ -83,6 +83,38 @@ def verify_login_code(db: Session, phone_number: str, code: str) -> tuple[User, 
     return user, session
 
 
+def get_user_by_session_token(db: Session, token: str) -> User | None:
+    now = datetime.now(UTC)
+    session = db.scalar(
+        select(AuthSession).where(
+            AuthSession.token == token,
+            AuthSession.revoked_at.is_(None),
+            AuthSession.expires_at > now,
+        )
+    )
+
+    if not session:
+        return None
+
+    return session.user
+
+
+def revoke_session_token(db: Session, token: str) -> None:
+    session = db.scalar(
+        select(AuthSession).where(
+            AuthSession.token == token,
+            AuthSession.revoked_at.is_(None),
+        )
+    )
+
+    # 이미 폐기됐거나 없는 토큰이면 조용히 통과한다 (로그아웃은 멱등).
+    if not session:
+        return
+
+    session.revoked_at = datetime.now(UTC)
+    db.commit()
+
+
 def _get_user_by_phone(db: Session, phone_number: str) -> User | None:
     return db.scalar(select(User).where(User.phone_number == phone_number))
 
