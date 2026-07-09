@@ -3,7 +3,14 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api import auth_router, predict_router, file_upload_router
+from api import (
+    auth_router,
+    predict_router,
+    file_upload_router,
+    health_router,
+    nutrition_router,
+    consent_router,
+)
 from database import init_db
 
 app = FastAPI(
@@ -40,3 +47,6 @@ def on_startup():
 app.include_router(auth_router, prefix="/api", tags=["Auth"])
 app.include_router(predict_router, prefix="/api", tags=["Predict"])
 app.include_router(file_upload_router, prefix="/api/s3", tags=["S3 Upload"])
+app.include_router(health_router, prefix="/api", tags=["Health"])
+app.include_router(nutrition_router, prefix="/api", tags=["Nutrition"])
+app.include_router(consent_router, prefix="/api", tags=["Consent"])
