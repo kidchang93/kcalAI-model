@@ -11,6 +11,8 @@ from api import (
     health_router,
     nutrition_router,
     consent_router,
+    group_router,
+    pet_router,
 )
 from database import init_db
 
@@ -51,6 +53,8 @@ app.include_router(file_upload_router, prefix="/api/s3", tags=["S3 Upload"])
 app.include_router(health_router, prefix="/api", tags=["Health"])
 app.include_router(nutrition_router, prefix="/api", tags=["Nutrition"])
 app.include_router(consent_router, prefix="/api", tags=["Consent"])
+app.include_router(group_router, prefix="/api", tags=["Groups"])
+app.include_router(pet_router, prefix="/api", tags=["Pets"])
 
 # 웹 빌드(Expo export 산출물) 정적 서빙. 반드시 모든 API 라우터 등록 뒤에 mount 해야
 # /api/** 가 라우터로 먼저 매칭된다. 빌드 산출물이 없는 개발 환경에서는 건너뛴다.

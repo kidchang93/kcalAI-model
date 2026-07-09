@@ -4,6 +4,8 @@ from .auth_api import router as auth_router
 from .health_api import router as health_router
 from .nutrition_api import router as nutrition_router
 from .consent_api import router as consent_router
+from .group_api import router as group_router
+from .pet_api import router as pet_router
 
 __all__ = [
     "predict_router",
@@ -12,4 +14,6 @@ __all__ = [
     "health_router",
     "nutrition_router",
     "consent_router",
+    "group_router",
+    "pet_router",
 ]
