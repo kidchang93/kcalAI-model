@@ -8,22 +8,36 @@ kcalAI-model/
 ├── database.py                 # engine, SessionLocal, Base, get_db, init_db
 ├── log_utils.py                # 레벨별 RotatingFileHandler 로거 팩토리
 ├── api/
-│   ├── __init__.py             # 라우터 3종 재수출
+│   ├── __init__.py             # 라우터 재수출
+│   ├── dependencies.py         # get_current_user (Bearer 세션 토큰 검증)
 │   ├── auth_api.py             # /auth/**
 │   ├── predict_api.py          # /predict, /gpt-predict
+│   ├── health_api.py           # /me/profile, /me/goal, /me/summary, /meals, /weights
+│   ├── consent_api.py          # /me/consents, /me/health-profile, /me/conditions, /me/allergies
+│   ├── nutrition_api.py        # /nutrition/estimate
 │   └── file_upload_api.py      # S3 업로드·삭제·조회 (8 라우트)
 ├── services/
-│   ├── auth_service.py         # 인증 코드 발급/검증, 세션 생성
+│   ├── auth_service.py         # 인증 코드 발급/검증, 세션 생성·검증·폐기
+│   ├── health_service.py       # 프로필·목표·끼니·체중, Mifflin-St Jeor
+│   ├── consent_service.py      # 동의 이력·유효성 검사, 민감정보 파기(물리 삭제)
+│   ├── nutrition_service.py    # food_nutrition 캐시 + LLM 구조화 추정
 │   ├── predict_service.py      # YOLO 분류
 │   ├── gpt_oss_service.py      # HF InferenceClient (groq) 텍스트 생성
 │   └── s3_service.py           # S3Service 클래스 (boto3)
 ├── schemas/
 │   ├── auth_schema.py
+│   ├── health_schema.py
+│   ├── consent_schema.py
+│   ├── nutrition_schema.py
 │   ├── predict_schema.py       # Prediction, PredictionResponse, ErrorResponse
 │   ├── gpt_schemas.py          # GptAnswer, GptResponse, GptError
 │   └── s3_schemas.py
 ├── models/
-│   └── auth_model.py           # User, PhoneVerificationCode, AuthSession
+│   ├── auth_model.py           # User, PhoneVerificationCode, AuthSession
+│   ├── health_model.py         # UserProfile, UserGoal, MealLog, MealItem, WeightLog, FoodNutrition
+│   └── consent_model.py        # UserConsent, UserHealthProfile, UserCondition, UserAllergy
+├── alembic/                    # DB 마이그레이션 (0001 auth → 0002 health → 0003 consent)
+├── webapp/                     # Expo 웹 빌드 산출물 (gitignored, 존재할 때만 정적 서빙)
 ├── runs/                       # YOLO 학습 산출물 74개 (약 70MB, 커밋됨)
 │   ├── yolo11n.pt, yolo11n-cls.pt
 │   └── classify/
@@ -121,6 +135,20 @@ api/file_upload_api.py  →  services/s3_service.py:S3Service
 
 `S3Service`는 `upload_file`, `upload_fileobj`, `delete_file`, `delete_prefix`, `file_exists`, `upload_directory`, `get_presigned_url`, `list_buckets`, `list_objects` 메서드를 제공합니다. NCP Object Storage(S3 호환)를 대상으로 합니다.
 
+## 웹 정적 서빙 (배포 구조 — `docs/DATA_MODEL.md` 8장)
+
+FastAPI가 Expo 웹 빌드를 서빙하는 **단일 배포 단위**입니다.
+
+```
+kcal/build-web.sh → npx expo export --platform web → kcalAI-model/webapp/
+                                                      └─ main.py 가 정적 서빙
+```
+
+- `main.py`는 **모든 API 라우터를 등록한 뒤** `app.mount("/", StaticFiles(directory="webapp", html=True))` 합니다. 라우트가 mount보다 먼저 매칭되므로 **`/api/**`가 항상 우선**하고, 나머지 경로가 정적 파일로 갑니다.
+- `webapp/` 디렉토리가 **없으면 mount 자체를 건너뜁니다** (개발 환경에서 없을 수 있음). 서빙을 켜려면 빌드 산출물을 넣고 서버를 재시작합니다.
+- `webapp/`은 빌드 산출물이므로 커밋하지 않습니다 (`.gitignore`).
+- 프로덕션 반영은 `deploy.yml`에 export 단계가 필요합니다 (사용자 확인 후 별도 진행).
+
 ## 데이터 모델
 
 | 테이블 | 주요 컬럼 | 비고 |
@@ -128,9 +156,15 @@ api/file_upload_api.py  →  services/s3_service.py:S3Service
 | `users` | `id`, `phone_number`(unique), `is_phone_verified`, `created_at`, `updated_at` | |
 | `phone_verification_codes` | `id`, `phone_number`, `purpose`(`signup`/`login`), `code_hash`, `expires_at`, `consumed_at`, `created_at` | 평문 코드 미저장 |
 | `auth_sessions` | `id`, `user_id`(FK), `token`(unique), `expires_at`, `revoked_at`, `created_at` | |
+| `user_profiles` `user_goals` `meal_logs` `meal_items` `weight_logs` `food_nutrition` | `docs/DATA_MODEL.md` 3장 | 리비전 0002 |
+| `user_consents` | `id`, `user_id`(FK), `kind`, `version`, `agreed_at`, `revoked_at` | 재동의는 새 행 (이력 보존). 리비전 0003 |
+| `user_health_profiles` | `id`, `user_id`(FK, unique), `blood_type`, `rh`, `deleted_at` | 민감정보. 동의 철회 시 **물리 삭제** |
+| `user_conditions` | `id`, `user_id`(FK), `condition` — `(user_id, condition)` unique | 〃 |
+| `user_allergies` | `id`, `user_id`(FK), `allergen`, `severity` — `(user_id, allergen)` unique | 〃 |
 
-- 스키마 생성: `Base.metadata.create_all(bind=engine)` — **마이그레이션 도구 없음**. 컬럼 변경은 반영되지 않습니다.
-- `AuthSession.token`을 검증하는 코드는 **없습니다.** `/api/predict`, `/api/s3/*` 모두 공개 엔드포인트입니다.
+- 스키마 변경은 **Alembic 리비전으로만** 합니다 (`alembic/versions/`). `create_all`은 신규 테이블 생성용으로만 남아 있습니다.
+- 세션 토큰 검증은 `api/dependencies.py:get_current_user`가 담당합니다. 단 `/api/predict`, `/api/gpt-predict`, `/api/s3/*`는 여전히 무인증 공개입니다.
+- `/api/me/health-profile`·`/api/me/conditions`·`/api/me/allergies`는 유효한 `sensitive_health` 동의(최신 행의 `revoked_at IS NULL`)가 없으면 **403**을 반환합니다. 401(미로그인)과 구분됩니다.
 
 ## 전역 초기화 (import 시점)
 
