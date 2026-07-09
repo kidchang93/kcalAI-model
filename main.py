@@ -3,6 +3,7 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from api import (
     auth_router,
     predict_router,
@@ -50,3 +51,8 @@ app.include_router(file_upload_router, prefix="/api/s3", tags=["S3 Upload"])
 app.include_router(health_router, prefix="/api", tags=["Health"])
 app.include_router(nutrition_router, prefix="/api", tags=["Nutrition"])
 app.include_router(consent_router, prefix="/api", tags=["Consent"])
+
+# 웹 빌드(Expo export 산출물) 정적 서빙. 반드시 모든 API 라우터 등록 뒤에 mount 해야
+# /api/** 가 라우터로 먼저 매칭된다. 빌드 산출물이 없는 개발 환경에서는 건너뛴다.
+if os.path.isdir("webapp"):
+    app.mount("/", StaticFiles(directory="webapp", html=True), name="webapp")

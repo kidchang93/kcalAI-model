@@ -17,6 +17,9 @@ task-logs/
 # Local experiment scripts
 /yolo_test.py
 
+# Expo 웹 빌드 산출물 (kcal/build-web.sh 가 생성, FastAPI 가 정적 서빙)
+webapp/
+
 # IDE and OS metadata
 .idea/
 .vscode/
