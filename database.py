@@ -29,6 +29,8 @@ def get_db() -> Generator[Session, None, None]:
 def init_db() -> None:
     import models.auth_model  # noqa: F401
     import models.consent_model  # noqa: F401
+    import models.group_model  # noqa: F401
     import models.health_model  # noqa: F401
+    import models.pet_model  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
