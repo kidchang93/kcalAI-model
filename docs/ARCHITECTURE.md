@@ -14,12 +14,16 @@ kcalAI-model/
 │   ├── predict_api.py          # /predict, /gpt-predict
 │   ├── health_api.py           # /me/profile, /me/goal, /me/summary, /meals, /weights
 │   ├── consent_api.py          # /me/consents, /me/health-profile, /me/conditions, /me/allergies
+│   ├── group_api.py            # /groups/** (생성·목록·상세·참여·펫 참여)
+│   ├── pet_api.py              # /pets/** (등록·목록·수정·삭제·급여 기록)
 │   ├── nutrition_api.py        # /nutrition/estimate
 │   └── file_upload_api.py      # S3 업로드·삭제·조회 (8 라우트)
 ├── services/
 │   ├── auth_service.py         # 인증 코드 발급/검증, 세션 생성·검증·폐기
 │   ├── health_service.py       # 프로필·목표·끼니·체중, Mifflin-St Jeor
 │   ├── consent_service.py      # 동의 이력·유효성 검사, 민감정보 파기(물리 삭제)
+│   ├── group_service.py        # 그룹 생성·참여, invite_code 생성, 멤버십·펫 참여
+│   ├── pet_service.py          # 반려동물 CRUD(soft delete), 급여 기록, 접근 권한
 │   ├── nutrition_service.py    # food_nutrition 캐시 + LLM 구조화 추정
 │   ├── predict_service.py      # YOLO 분류
 │   ├── gpt_oss_service.py      # HF InferenceClient (groq) 텍스트 생성
@@ -28,6 +32,8 @@ kcalAI-model/
 │   ├── auth_schema.py
 │   ├── health_schema.py
 │   ├── consent_schema.py
+│   ├── group_schema.py
+│   ├── pet_schema.py
 │   ├── nutrition_schema.py
 │   ├── predict_schema.py       # Prediction, PredictionResponse, ErrorResponse
 │   ├── gpt_schemas.py          # GptAnswer, GptResponse, GptError
@@ -35,8 +41,10 @@ kcalAI-model/
 ├── models/
 │   ├── auth_model.py           # User, PhoneVerificationCode, AuthSession
 │   ├── health_model.py         # UserProfile, UserGoal, MealLog, MealItem, WeightLog, FoodNutrition
-│   └── consent_model.py        # UserConsent, UserHealthProfile, UserCondition, UserAllergy
-├── alembic/                    # DB 마이그레이션 (0001 auth → 0002 health → 0003 consent)
+│   ├── consent_model.py        # UserConsent, UserHealthProfile, UserCondition, UserAllergy
+│   ├── group_model.py          # Group, GroupMember, GroupPet
+│   └── pet_model.py            # Pet, PetFeedingLog
+├── alembic/                    # DB 마이그레이션 (0001 auth → 0002 health → 0003 consent → 0004 group/pet)
 ├── webapp/                     # Expo 웹 빌드 산출물 (gitignored, 존재할 때만 정적 서빙)
 ├── runs/                       # YOLO 학습 산출물 74개 (약 70MB, 커밋됨)
 │   ├── yolo11n.pt, yolo11n-cls.pt
@@ -161,6 +169,11 @@ kcal/build-web.sh → npx expo export --platform web → kcalAI-model/webapp/
 | `user_health_profiles` | `id`, `user_id`(FK, unique), `blood_type`, `rh`, `deleted_at` | 민감정보. 동의 철회 시 **물리 삭제** |
 | `user_conditions` | `id`, `user_id`(FK), `condition` — `(user_id, condition)` unique | 〃 |
 | `user_allergies` | `id`, `user_id`(FK), `allergen`, `severity` — `(user_id, allergen)` unique | 〃 |
+| `groups` | `id`, `owner_id`(FK), `name`, `kind`, `invite_code`(unique, 서버 생성) | 리비전 0004. API 계약은 `docs/DATA_MODEL.md` 9장 |
+| `group_members` | `id`, `group_id`(FK), `user_id`(FK), `role` — `(group_id, user_id)` unique | 〃 |
+| `pets` | `id`, `owner_id`(FK), `name`, `species`, `breed`, `birth_year`, `weight_kg`, `is_neutered`, `deleted_at` | 보호자 1:N, soft delete |
+| `group_pets` | `id`, `group_id`(FK), `pet_id`(FK) — `(group_id, pet_id)` unique | 사람 멤버와 테이블 분리 (다형성 FK 회피) |
+| `pet_feeding_logs` | `id`, `pet_id`(FK), `fed_at`, `food_label`, `amount_g`, `kcal`(nullable) | 칼로리 산출(RER/MER)은 다음 단계 |
 
 - 스키마 변경은 **Alembic 리비전으로만** 합니다 (`alembic/versions/`). `create_all`은 신규 테이블 생성용으로만 남아 있습니다.
 - 세션 토큰 검증은 `api/dependencies.py:get_current_user`가 담당합니다. 단 `/api/predict`, `/api/gpt-predict`, `/api/s3/*`는 여전히 무인증 공개입니다.

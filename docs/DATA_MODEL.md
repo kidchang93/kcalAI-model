@@ -300,3 +300,96 @@ kcal/build-web.sh  →  npx expo export --platform web  →  kcalAI-model/webapp
 - DB는 Docker Postgres 유지 (같은 VM, 추가 비용 0). 관리형 DB 이전은 실사용자 데이터가 쌓이는 시점의 결정이다.
 - 스키마 변경은 계속 Alembic 리비전으로만 한다.
 - **프로덕션 웹 반영은 `deploy.yml`에 export 단계가 필요하다.** 워크플로 수정은 사용자 확인 후 별도 진행.
+
+---
+
+## 9. 그룹·반려동물 API 계약 (v2 2차 구현분 — 확정)
+
+> 2026-07-09 확정. 구현 범위: 6장의 `groups` · `group_members` · `pets` · `group_pets` · `pet_feeding_logs` 5테이블과 아래 엔드포인트 (리비전 0004). 연동·추천(`health_integrations` 이하)은 다음 차수다.
+
+7장의 규약을 그대로 따른다:
+- 전부 `Authorization: Bearer` 필수. **401** = 미로그인.
+- **403** = 로그인했지만 권한 없음 (그룹 멤버가 아님).
+- **404** = 리소스 없음. **반려동물은 남의 소유일 때도 404다** — 존재 자체를 숨긴다 (`meal_logs` 삭제와 같은 규칙).
+- 오류 본문은 `{"detail": "<한국어>"}`.
+- `Numeric` 컬럼(`weight_kg`, `amount_g`)은 JSON에서 **float**로 직렬화된다.
+- 서비스 레이어 예외 → HTTP 매핑: `ValueError`→400, `PermissionError`→403, `LookupError`→404.
+
+| 메서드 | 경로 | 역할 | 권한 |
+|---|---|---|---|
+| `POST` | `/api/groups` | 그룹 생성 → **201**. owner = 현재 사용자. `invite_code`는 **서버 생성** 8자(대문자·숫자, 혼동 문자 I/L/O/0/1 제외). 생성자는 `group_members`에 `role=owner`로 자동 참여한다 | 로그인 |
+| `GET` | `/api/groups` | 내가 속한 그룹 목록 (`GroupSummary[]`) | 로그인 |
+| `GET` | `/api/groups/{id}` | 상세 + 멤버 목록 + 참여 반려동물 목록 | **멤버만.** 아니면 403, 없는 그룹 404 |
+| `POST` | `/api/groups/join` | body `{invite_code}`로 참여 → `GroupSummary`. 코드 불일치 404, 이미 멤버 400. 대소문자는 서버가 대문자로 정규화 | 로그인 |
+| `POST` | `/api/groups/{id}/pets` | body `{pet_id}`로 그룹에 반려동물 참여 → **201** `{message}`. 이미 참여 400 | **그룹 멤버이면서 펫 소유자** (멤버 아님 403, 펫 없음/남의 펫 404) |
+| `POST` | `/api/pets` | 등록 → **201** `PetResponse`. owner = 현재 사용자 | 로그인 |
+| `GET` | `/api/pets` | 내 반려동물 목록 (`deleted_at IS NULL`) | 로그인 |
+| `PUT` | `/api/pets/{id}` | 수정 (전체 교체). 없음/남의 소유 404 | **소유자만** |
+| `DELETE` | `/api/pets/{id}` | soft delete (`deleted_at`) → `{message}` | **소유자만** |
+| `POST` | `/api/pets/{id}/feedings` | 급여 기록 → **201**. `amount_g`(g)만 필수, `kcal`은 nullable (RER/MER 산출은 다음 단계 — 6장) | **소유자 또는 펫이 참여한 그룹의 멤버** (가족이 함께 급여를 기록한다) |
+| `GET` | `/api/pets/{id}/feedings?date=YYYY-MM-DD` | 날짜별 조회. `date` 생략 시 오늘(UTC), 하루 경계는 UTC (기존 `/api/meals`와 동일) | 〃 |
+
+### 응답 스키마 (확정)
+
+`GroupSummary` — 생성·목록·참여가 같은 형태를 반환한다:
+
+```jsonc
+{
+  "id": 1, "owner_id": 3, "name": "우리집", "kind": "family",
+  "invite_code": "A7K2MPQ9",         // 멤버에게만 보인다 (목록·상세가 이미 멤버 전용)
+  "role": "owner",                    // 현재 사용자의 역할
+  "member_count": 2,
+  "created_at": "2026-07-09T05:00:00Z"
+}
+```
+
+`GET /api/groups/{id}` (`GroupDetailResponse`):
+
+```jsonc
+{
+  "id": 1, "owner_id": 3, "name": "우리집", "kind": "family",
+  "invite_code": "A7K2MPQ9", "created_at": "...",
+  "members": [
+    // 다른 멤버의 휴대폰 번호 원본은 노출하지 않는다 (개인정보 최소노출).
+    { "user_id": 3, "phone_number_masked": "010****1111", "role": "owner", "joined_at": "..." }
+  ],
+  "pets": [
+    { "pet_id": 1, "name": "콩이", "species": "dog", "joined_at": "..." }
+  ]
+}
+```
+
+`PetResponse`:
+
+```jsonc
+{
+  "id": 1, "owner_id": 3, "name": "콩이", "species": "dog",
+  "breed": "poodle",        // nullable
+  "birth_year": 2021,       // nullable
+  "weight_kg": 4.2,         // nullable, float
+  "is_neutered": true,      // nullable (모름 허용)
+  "created_at": "...", "updated_at": "..."
+}
+```
+
+`FeedingResponse`:
+
+```jsonc
+{
+  "id": 1, "pet_id": 1, "fed_at": "2026-07-09T08:00:00Z",
+  "food_label": "로얄캐닌 미니 어덜트",
+  "amount_g": 60.0,         // float
+  "kcal": null,             // MVP 에서는 항상 null 이어도 된다
+  "created_at": "..."
+}
+```
+
+### 값 제약
+
+- `groups.kind`: `family` / `couple` / `friends` / `challenge`
+- `group_members.role`: `owner` / `member`
+- `pets.species`: `dog` / `cat` / `other`, `breed` 자유 문자열(50자)
+- `invite_code`: 서버 생성 8자. 클라이언트가 지정할 수 없다
+- `amount_g`: `> 0` 필수, `kcal`: nullable (`>= 0`)
+- 중복 방지: `(group_id, user_id)` · `(group_id, pet_id)` unique
+- 펫 soft delete 후에는 그룹 상세의 `pets` 목록·급여 API에서 모두 제외된다 (`deleted_at IS NULL` 필터)
