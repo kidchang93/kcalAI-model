@@ -27,6 +27,7 @@ kcalAI-model/
 │   ├── group_service.py        # 그룹 생성·참여, invite_code 생성, 멤버십·펫 참여
 │   ├── pet_service.py          # 반려동물 CRUD(soft delete), 급여 기록, 접근 권한
 │   ├── nutrition_service.py    # food_nutrition 3단계 조회 (정확→공백 정규화→pg_trgm 유사도, 13장. LLM 없음)
+│   ├── food_synonyms.py        # 음식명 동의어·표기 변형 후보 확장 (계란↔달걀 등, 13장)
 │   ├── meta_service.py         # 참조 테이블(condition/allergen) 조회·코드 검증
 │   ├── recommendation_service.py # diet_recommendations 캐시 + mfds 후보 풀 + 시드 결정적 규칙 선정 (13장. LLM 없음)
 │   ├── predict_service.py      # YOLO 분류
