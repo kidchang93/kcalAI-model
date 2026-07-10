@@ -33,5 +33,6 @@ def init_db() -> None:
     import models.health_model  # noqa: F401
     import models.meta_model  # noqa: F401
     import models.pet_model  # noqa: F401
+    import models.recommendation_model  # noqa: F401
 
     Base.metadata.create_all(bind=engine)

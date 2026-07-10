@@ -8,6 +8,7 @@ class NutritionEstimateRequest(BaseModel):
 
 
 class NutritionEstimateResponse(BaseModel):
+    # 매칭된 DB 행의 이름 — 유사도 매칭이면 요청 라벨과 다를 수 있다 (13장).
     food_label: str
     kcal_per_serving: int
     serving_desc: str
@@ -16,7 +17,7 @@ class NutritionEstimateResponse(BaseModel):
     fat_g: float | None
     source: str
     created_at: datetime
-    # 캐시에서 나왔는지 여부. false 면 LLM 을 새로 태운 것이다.
+    # 응답 계약 유지용 — 항상 DB 조회이므로 항상 true 다 (13장, LLM 없음).
     cached: bool
 
     model_config = {"from_attributes": True}

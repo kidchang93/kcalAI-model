@@ -1,115 +1,65 @@
-import json
-from decimal import Decimal, InvalidOperation
-
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from models.health_model import FoodNutrition
-from schemas.gpt_schemas import GptAnswer
-from services.gpt_oss_service import answerByGptOss20B
 
 
-class NutritionEstimateError(RuntimeError):
-    """LLM 응답을 구조화 값으로 파싱하지 못했을 때 던진다. api 가 502 로 변환한다."""
+class FoodNotFoundError(LookupError):
+    """3단계 조회 전부 실패했을 때 던진다. api 가 404 로 변환한다 (DATA_MODEL.md 13장)."""
 
 
-_PROMPT_TEMPLATE = (
-    "너는 영양 정보 데이터베이스다. 음식 '{food_label}' 1인분의 영양 정보를 추정해라.\n"
-    "반드시 아래 키를 가진 JSON 객체 하나만 출력해라. 코드블록, 설명, 단위 문자열을 붙이지 마라.\n"
-    "{{\n"
-    '  "kcal_per_serving": <정수 kcal>,\n'
-    '  "serving_desc": "<1인분 분량 설명, 예: 1인분 (약 210g)>",\n'
-    '  "carbs_g": <탄수화물 g, 숫자>,\n'
-    '  "protein_g": <단백질 g, 숫자>,\n'
-    '  "fat_g": <지방 g, 숫자>\n'
-    "}}"
-)
+# pg_trgm similarity 하한. 실측(YOLO 721라벨 대조): 0.3 미만 구간은 오매칭이 다수
+# (새우만두→새우탕, 계란말이→계란빵)라 초기값 0.3 을 유지한다 (13장).
+SIMILARITY_THRESHOLD = 0.3
+
+# LLM 추정(llm) 행은 반환하지 않는다 — 데이터셋 파이프라인은 실측·감수 값만 쓴다 (13장).
+DATASET_SOURCES = ("mfds", "curated")
+
+_NOT_FOUND_MESSAGE = "일치하는 음식을 찾지 못했습니다. 칼로리를 직접 입력해주세요."
 
 
 def estimate_nutrition(db: Session, food_label: str) -> tuple[FoodNutrition, bool]:
+    """식약처 DB 3단계 조회: 정확 일치 → 공백 제거 일치 → pg_trgm 유사도 최고 1건.
+
+    반환 food_label 은 매칭된 DB 행의 이름이다 (요청 라벨과 다를 수 있음).
+    cached 는 응답 계약 유지용 — LLM 을 태우지 않으므로 항상 True 다.
+    """
     label = food_label.strip()
 
-    cached = db.scalar(select(FoodNutrition).where(FoodNutrition.food_label == label))
-    if cached is not None:
-        return cached, True
-
-    parsed = _call_llm(label)
-    nutrition = FoodNutrition(
-        food_label=label,
-        kcal_per_serving=parsed["kcal_per_serving"],
-        serving_desc=parsed["serving_desc"],
-        carbs_g=parsed["carbs_g"],
-        protein_g=parsed["protein_g"],
-        fat_g=parsed["fat_g"],
-        source="llm",
+    exact = db.scalar(
+        select(FoodNutrition).where(
+            FoodNutrition.food_label == label,
+            FoodNutrition.source.in_(DATASET_SOURCES),
+        )
     )
-    db.add(nutrition)
-    db.commit()
-    db.refresh(nutrition)
-    return nutrition, False
+    if exact is not None:
+        return exact, True
 
-
-def _call_llm(label: str) -> dict:
-    prompt = _PROMPT_TEMPLATE.format(food_label=label)
-
-    try:
-        answer = answerByGptOss20B(GptAnswer(text=prompt, max_tokens=512))
-    except Exception as error:  # gpt_oss_service 는 RuntimeError 를 던진다.
-        raise NutritionEstimateError("영양 정보 추정에 실패했습니다. 잠시 후 다시 시도해주세요.") from error
-
-    return _parse_payload(answer.response_text)
-
-
-def _parse_payload(raw_text: str) -> dict:
-    payload = _extract_json_object(raw_text)
-
-    try:
-        kcal = int(round(float(payload["kcal_per_serving"])))
-        serving_desc = str(payload["serving_desc"]).strip()
-        if not serving_desc:
-            raise ValueError("serving_desc 가 비어 있습니다.")
-    except (KeyError, TypeError, ValueError) as error:
-        raise NutritionEstimateError(
-            "영양 정보를 해석하지 못했습니다. 다른 음식명으로 다시 시도해주세요."
-        ) from error
-
-    return {
-        "kcal_per_serving": kcal,
-        "serving_desc": serving_desc[:100],
-        "carbs_g": _to_decimal(payload.get("carbs_g")),
-        "protein_g": _to_decimal(payload.get("protein_g")),
-        "fat_g": _to_decimal(payload.get("fat_g")),
-    }
-
-
-def _extract_json_object(raw_text: str) -> dict:
-    start = raw_text.find("{")
-    end = raw_text.rfind("}")
-
-    if start == -1 or end == -1 or end < start:
-        raise NutritionEstimateError(
-            "영양 정보를 해석하지 못했습니다. 다른 음식명으로 다시 시도해주세요."
+    normalized = label.replace(" ", "")
+    normalized_match = db.scalar(
+        select(FoodNutrition)
+        .where(
+            func.replace(FoodNutrition.food_label, " ", "") == normalized,
+            FoodNutrition.source.in_(DATASET_SOURCES),
         )
+        .order_by(FoodNutrition.id.asc())
+        .limit(1)
+    )
+    if normalized_match is not None:
+        return normalized_match, True
 
-    try:
-        parsed = json.loads(raw_text[start : end + 1])
-    except json.JSONDecodeError as error:
-        raise NutritionEstimateError(
-            "영양 정보를 해석하지 못했습니다. 다른 음식명으로 다시 시도해주세요."
-        ) from error
-
-    if not isinstance(parsed, dict):
-        raise NutritionEstimateError(
-            "영양 정보를 해석하지 못했습니다. 다른 음식명으로 다시 시도해주세요."
+    similarity = func.similarity(FoodNutrition.food_label, label)
+    similar = db.scalar(
+        select(FoodNutrition)
+        .where(
+            similarity >= SIMILARITY_THRESHOLD,
+            FoodNutrition.source.in_(DATASET_SOURCES),
         )
+        # 동률이면 id 로 tie-break — 같은 라벨은 항상 같은 행을 돌려준다.
+        .order_by(similarity.desc(), FoodNutrition.id.asc())
+        .limit(1)
+    )
+    if similar is not None:
+        return similar, True
 
-    return parsed
-
-
-def _to_decimal(value: object) -> Decimal | None:
-    if value is None:
-        return None
-    try:
-        return Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        return None
+    raise FoodNotFoundError(_NOT_FOUND_MESSAGE)

@@ -7,6 +7,7 @@ from .consent_api import router as consent_router
 from .group_api import router as group_router
 from .pet_api import router as pet_router
 from .meta_api import router as meta_router
+from .recommendation_api import router as recommendation_router
 
 __all__ = [
     "predict_router",
@@ -18,4 +19,5 @@ __all__ = [
     "group_router",
     "pet_router",
     "meta_router",
+    "recommendation_router",
 ]

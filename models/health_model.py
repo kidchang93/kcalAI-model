@@ -114,7 +114,14 @@ class FoodNutrition(Base):
     carbs_g: Mapped[Decimal | None] = mapped_column(Numeric(6, 1), nullable=True)
     protein_g: Mapped[Decimal | None] = mapped_column(Numeric(6, 1), nullable=True)
     fat_g: Mapped[Decimal | None] = mapped_column(Numeric(6, 1), nullable=True)
-    # llm / curated.
+    # 아래 5개는 식약처(mfds) 임포트 전용 실측값. llm 행은 NULL (리비전 0007, DATA_MODEL.md 12장).
+    sugar_g: Mapped[Decimal | None] = mapped_column(Numeric(6, 1), nullable=True)
+    sodium_mg: Mapped[Decimal | None] = mapped_column(Numeric(8, 1), nullable=True)
+    potassium_mg: Mapped[Decimal | None] = mapped_column(Numeric(8, 1), nullable=True)
+    phosphorus_mg: Mapped[Decimal | None] = mapped_column(Numeric(8, 1), nullable=True)
+    # 원본 식품대분류명. 추천 후보 풀이 meal_type 매핑에 쓴다.
+    food_group: Mapped[str | None] = mapped_column(String(30), index=True, nullable=True)
+    # llm / mfds / curated.
     source: Mapped[str] = mapped_column(String(20), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
