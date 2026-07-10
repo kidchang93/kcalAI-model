@@ -6,7 +6,8 @@ from pydantic import BaseModel, Field
 ConsentKind = Literal["sensitive_health", "terms", "privacy"]
 BloodType = Literal["A", "B", "O", "AB", "unknown"]
 Rh = Literal["+", "-"]
-Condition = Literal["diabetes", "pregnancy", "ckd", "cancer", "hypertension"]
+# condition · allergen 코드는 Literal 이 아니라 서비스 레이어에서
+# 참조 테이블(condition_types/allergen_types) 조회로 검증한다 (DATA_MODEL.md 10장).
 Severity = Literal["mild", "severe"]
 
 
@@ -49,7 +50,7 @@ class HealthProfileResponse(BaseModel):
 
 class ConditionsPutRequest(BaseModel):
     # replace-all. 빈 배열 = 전체 삭제.
-    conditions: list[Condition]
+    conditions: list[str]
 
 
 class ConditionsResponse(BaseModel):

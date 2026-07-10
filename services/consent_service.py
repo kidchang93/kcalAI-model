@@ -4,6 +4,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from models.consent_model import UserAllergy, UserCondition, UserConsent, UserHealthProfile
+from services import meta_service
 
 SENSITIVE_HEALTH = "sensitive_health"
 
@@ -111,6 +112,12 @@ def list_conditions(db: Session, user_id: int) -> list[str]:
 
 
 def replace_conditions(db: Session, user_id: int, conditions: list[str]) -> list[str]:
+    # 코드 검증은 Literal 이 아니라 참조 테이블 조회로 한다 (DATA_MODEL.md 10장).
+    valid_codes = meta_service.active_condition_codes(db)
+    invalid = [code for code in dict.fromkeys(conditions) if code not in valid_codes]
+    if invalid:
+        raise ValueError(f"선택할 수 없는 질병 코드입니다: {', '.join(invalid)}")
+
     # replace-all. 빈 배열이면 전체 삭제로 끝난다.
     db.execute(delete(UserCondition).where(UserCondition.user_id == user_id))
 
@@ -135,6 +142,16 @@ def list_allergies(db: Session, user_id: int) -> list[UserAllergy]:
 
 
 def replace_allergies(db: Session, user_id: int, allergies: list[dict]) -> list[UserAllergy]:
+    # 코드 검증은 Literal 이 아니라 참조 테이블 조회로 한다 (DATA_MODEL.md 10장).
+    valid_codes = meta_service.active_allergen_codes(db)
+    invalid = [
+        allergen
+        for allergen in dict.fromkeys(allergy["allergen"] for allergy in allergies)
+        if allergen not in valid_codes
+    ]
+    if invalid:
+        raise ValueError(f"선택할 수 없는 알러지 코드입니다: {', '.join(invalid)}")
+
     # replace-all. 빈 배열이면 전체 삭제로 끝난다.
     db.execute(delete(UserAllergy).where(UserAllergy.user_id == user_id))
 

@@ -18,6 +18,7 @@ import models.auth_model  # noqa: E402,F401
 import models.consent_model  # noqa: E402,F401
 import models.group_model  # noqa: E402,F401
 import models.health_model  # noqa: E402,F401
+import models.meta_model  # noqa: E402,F401
 import models.pet_model  # noqa: E402,F401
 
 # this is the Alembic Config object, which provides

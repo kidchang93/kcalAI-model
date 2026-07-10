@@ -133,14 +133,18 @@ def read_conditions(
 @router.put(
     "/me/conditions",
     response_model=ConditionsResponse,
-    responses={401: {"model": ConsentError}, 403: {"model": ConsentError}},
+    responses={400: {"model": ConsentError}, 401: {"model": ConsentError}, 403: {"model": ConsentError}},
 )
 def replace_conditions(
     request: ConditionsPutRequest,
     current_user: User = Depends(require_sensitive_consent),
     db: Session = Depends(get_db),
 ):
-    conditions = consent_service.replace_conditions(db, current_user.id, list(request.conditions))
+    try:
+        conditions = consent_service.replace_conditions(db, current_user.id, list(request.conditions))
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
     return {"conditions": conditions}
 
 
@@ -161,16 +165,20 @@ def read_allergies(
 @router.put(
     "/me/allergies",
     response_model=AllergiesResponse,
-    responses={401: {"model": ConsentError}, 403: {"model": ConsentError}},
+    responses={400: {"model": ConsentError}, 401: {"model": ConsentError}, 403: {"model": ConsentError}},
 )
 def replace_allergies(
     request: AllergiesPutRequest,
     current_user: User = Depends(require_sensitive_consent),
     db: Session = Depends(get_db),
 ):
-    allergies = consent_service.replace_allergies(
-        db,
-        current_user.id,
-        [allergy.model_dump() for allergy in request.allergies],
-    )
+    try:
+        allergies = consent_service.replace_allergies(
+            db,
+            current_user.id,
+            [allergy.model_dump() for allergy in request.allergies],
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
     return {"allergies": allergies}
