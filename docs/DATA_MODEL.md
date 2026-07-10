@@ -276,8 +276,8 @@ MVP 구현 기준:
 
 - `consents.kind`: `sensitive_health` / `terms` / `privacy`
 - `blood_type`: `A` / `B` / `O` / `AB` / `unknown`, `rh`: `+` / `-` (둘 다 nullable — 모름 허용)
-- `condition`: `diabetes` / `pregnancy` / `ckd` / `cancer` / `hypertension`
-- `allergen`: 자유 문자열(100자), `severity`: `mild` / `severe` (nullable)
+- `condition`: ~~`diabetes` / `pregnancy` / `ckd` / `cancer` / `hypertension`~~ → 10장의 `condition_types` 참조 테이블로 검증한다 (2026-07-09 v3)
+- `allergen`: ~~자유 문자열(100자)~~ → 10장의 `allergen_types` 표준 코드로 검증한다 (2026-07-09 v3), `severity`: `mild` / `severe` (nullable)
 - replace-all PUT에 빈 배열 → 전체 삭제로 처리
 
 ### 온보딩 게이트 (앱)
@@ -393,3 +393,82 @@ kcal/build-web.sh  →  npx expo export --platform web  →  kcalAI-model/webapp
 - `amount_g`: `> 0` 필수, `kcal`: nullable (`>= 0`)
 - 중복 방지: `(group_id, user_id)` · `(group_id, pet_id)` unique
 - 펫 soft delete 후에는 그룹 상세의 `pets` 목록·급여 API에서 모두 제외된다 (`deleted_at IS NULL` 필터)
+
+---
+
+## 10. 선택지 참조 테이블 · 메타 API (v2 3차 — 확정)
+
+> 2026-07-09 확정. 구현 범위: `condition_types` · `allergen_types` 2테이블(리비전 0005, 시드 포함)과 `GET /api/meta/options`. 식단 추천(`diet_recommendations`)의 선행 작업이다 — 추천의 제외 재료·식이 규칙이 이 테이블을 조인한다.
+
+### 규칙 — 어떤 선택지를 DB로 관리하는가
+
+**선택지가 서비스 로직의 데이터와 조인되거나 릴리즈 없이 늘어나야 하면 참조 테이블, 화면 구조·계산식 자체에 붙어 있으면 코드 enum.**
+
+| 선택지 | 판정 | 이유 |
+|---|---|---|
+| 질병(condition) | **참조 테이블** | 추천의 식이 규칙 태그가 붙는다 |
+| 알러지(allergen) | **참조 테이블** | 추천의 제외 재료 키워드가 붙는다. 자유 문자열은 조인 불가 |
+| 끼니(meal_type) | 코드 enum 유지 | summary 계약이 4종 고정 키를 반환하는 구조적 값 |
+| 섭취량 비율 | 코드 enum 유지 | UI 프리셋일 뿐, 값 자체는 자유 숫자 |
+| 혈액형/Rh | 코드 enum 유지 | 보편·불변, 붙는 로직 없음 |
+| 그룹 kind, 펫 species | 코드 enum 유지 | 로직이 붙는 시점에 참조 테이블로 승격 |
+
+### 테이블
+
+| 테이블 | 컬럼 |
+|---|---|
+| `condition_types` | `code` `String(30)` PK · `label_ko` `String(50)` NOT NULL · `dietary_tags` JSONB(문자열 배열) · `sort_order` `Integer` · `is_active` `Boolean` default true |
+| `allergen_types` | `code` `String(30)` PK · `label_ko` `String(50)` NOT NULL · `exclude_keywords` JSONB(문자열 배열) · `sort_order` `Integer` · `is_active` `Boolean` default true |
+
+`dietary_tags` · `exclude_keywords`는 **추천 엔진 내부용**이다. 메타 API로 노출하지 않는다.
+
+### 시드 (0005 데이터 마이그레이션에 포함)
+
+| condition_types.code | label_ko | dietary_tags |
+|---|---|---|
+| `diabetes` | 당뇨 | `["low_sugar", "low_gi"]` |
+| `pregnancy` | 임신 중 | `["no_alcohol", "no_raw"]` |
+| `ckd` | 신장 질환 | `["low_sodium", "low_potassium", "low_phosphorus"]` |
+| `cancer` | 암 치료 중 | `["high_protein", "food_safety"]` |
+| `hypertension` | 고혈압 | `["low_sodium"]` |
+
+| allergen_types.code | label_ko | exclude_keywords |
+|---|---|---|
+| `peanut` | 땅콩 | `["땅콩", "피넛"]` |
+| `milk` | 우유 | `["우유", "유제품", "치즈", "버터", "크림"]` |
+| `shellfish` | 갑각류 | `["새우", "게", "랍스터", "갑각류"]` |
+| `egg` | 계란 | `["계란", "달걀", "마요네즈"]` |
+| `wheat` | 밀 | `["밀", "밀가루", "빵", "면", "파스타"]` |
+| `soy` | 대두 | `["대두", "콩", "두부", "간장", "된장"]` |
+| `peach` | 복숭아 | `["복숭아"]` |
+
+### 기존 데이터 마이그레이션 (0005)
+
+- `user_conditions.condition`에 FK(`condition_types.code`) 추가. 기존 값 5종은 코드와 동일하므로 변환 불필요.
+- `user_allergies.allergen`은 지금까지 **한국어 자유 문자열**이 저장됐다. 0005에서 시드의 `label_ko → code` 역매핑으로 변환한 뒤 FK(`allergen_types.code`)를 건다. 매핑 불가 행은 **삭제**한다 (로컬 dev 데이터뿐이며, 재온보딩으로 복구 가능).
+
+### API
+
+| 메서드 | 경로 | 역할 |
+|---|---|---|
+| `GET` | `/api/meta/options` | 온보딩 선택지 목록. **Bearer 필수** (7장 규약 일관), `sensitive_health` 동의는 요구하지 않는다 — 동의 화면 다음이 질병 선택이다 |
+
+응답 (확정 — `is_active=true`만, `sort_order` 오름차순):
+
+```jsonc
+{
+  "conditions": [ { "code": "diabetes", "label": "당뇨" }, ... ],
+  "allergens":  [ { "code": "peanut",   "label": "땅콩" }, ... ]
+}
+```
+
+### 검증 방식 변경
+
+- `PUT /api/me/conditions` · `PUT /api/me/allergies`의 값 검증을 Pydantic `Literal`에서 **서비스 레이어의 참조 테이블 조회**로 바꾼다. 없는 코드는 400 `{"detail": "<한국어>"}`.
+- `PUT /api/me/allergies` 요청의 `allergen` 값 의미가 자유 문자열 → **표준 코드**로 바뀐다. 앱도 같은 작업 단위에서 코드 전송으로 변경한다.
+- `severity`는 `mild`/`severe` `Literal` 유지 (구조적 값).
+
+### 앱 규칙
+
+- 온보딩 질병·알러지 화면은 진입 시 `GET /api/meta/options`를 읽어 칩을 그린다. 실패 시 **번들 폴백 상수**(시드와 동일 code/label)로 그린다 — 온보딩이 네트워크 오류로 막히면 안 된다.
+- '없음' 칩은 서버 값이 아니라 앱 전용 (`replace-all PUT` 빈 배열).

@@ -97,26 +97,23 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 
 ---
 
-## API 목록 (코드 실측)
+## API 목록 (코드 실측, 2026-07-10 기준 47개)
 
-| 메서드 | 경로 | 정의 위치 |
-|--------|------|-----------|
-| `POST` | `/api/predict` | `api/predict_api.py:18` |
-| `POST` | `/api/gpt-predict` | `api/predict_api.py:37` |
-| `POST` | `/api/auth/signup/request-code` | `api/auth_api.py:22` |
-| `POST` | `/api/auth/signup/verify` | `api/auth_api.py:39` |
-| `POST` | `/api/auth/login/request-code` | `api/auth_api.py:56` |
-| `POST` | `/api/auth/login/verify` | `api/auth_api.py:73` |
-| `POST` | `/api/s3/upload/file` | `api/file_upload_api.py:32` |
-| `POST` | `/api/s3/upload/local-file` | `api/file_upload_api.py:98` |
-| `POST` | `/api/s3/upload/directory` | `api/file_upload_api.py:245` |
-| `DELETE` | `/api/s3/delete/{s3_key}` | `api/file_upload_api.py:164` |
-| `DELETE` | `/api/s3/delete-prefix/{prefix}` | `api/file_upload_api.py:207` |
-| `GET` | `/api/s3/presigned-url/{s3_key}` | `api/file_upload_api.py:403` |
-| `GET` | `/api/s3/buckets` | `api/file_upload_api.py:440` |
-| `GET` | `/api/s3/objects` | `api/file_upload_api.py:508` |
+계약 상세는 `docs/DATA_MODEL.md`가 정본입니다 (4장 CRUD, 7장 사용자 층, 9장 그룹·반려동물, 10장 메타).
 
-앱이 소비하는 계약은 `/api/predict`, `/api/gpt-predict`, `/api/auth/*` 4종입니다. S3 계열은 운영·데이터셋 관리용입니다.
+| 도메인 | 라우트 | 정의 파일 |
+|--------|--------|-----------|
+| Auth | `POST /api/auth/signup/request-code` · `signup/verify` · `login/request-code` · `login/verify` · `logout` | `api/auth_api.py` |
+| Predict | `POST /api/predict` · `POST /api/gpt-predict` | `api/predict_api.py` |
+| Nutrition | `POST /api/nutrition/estimate` | `api/nutrition_api.py` |
+| Health | `GET·PUT /api/me/profile` · `GET·PUT /api/me/goal` · `GET /api/me/summary` · `POST·GET /api/meals` · `DELETE /api/meals/{meal_id}` · `POST·GET /api/weights` | `api/health_api.py` |
+| Consent | `GET·POST /api/me/consents` · `POST /api/me/consents/revoke` · `GET·PUT /api/me/health-profile` · `GET·PUT /api/me/conditions` · `GET·PUT /api/me/allergies` | `api/consent_api.py` |
+| Groups | `POST·GET /api/groups` · `POST /api/groups/join` · `GET /api/groups/{group_id}` · `POST /api/groups/{group_id}/pets` | `api/group_api.py` |
+| Pets | `POST·GET /api/pets` · `PUT·DELETE /api/pets/{pet_id}` · `POST·GET /api/pets/{pet_id}/feedings` | `api/pet_api.py` |
+| Meta | `GET /api/meta/options` | `api/meta_api.py` |
+| S3 | `POST /api/s3/upload/file` · `upload/local-file` · `upload/directory` · `DELETE /api/s3/delete/{s3_key}` · `delete-prefix/{prefix}` · `GET /api/s3/presigned-url/{s3_key}` · `buckets` · `objects` | `api/file_upload_api.py` |
+
+S3·Predict와 Auth의 가입·로그인 4종을 제외한 전 라우트가 Bearer 인증(`api/dependencies.py`의 `get_current_user`)을 요구합니다 (`/api/auth/logout`도 Bearer 필요). `/api/predict`와 `/api/s3/*`가 무인증 공개인 것은 알려진 문제입니다(아래 표 참고).
 
 ---
 

@@ -17,6 +17,7 @@ kcalAI-model/
 │   ├── group_api.py            # /groups/** (생성·목록·상세·참여·펫 참여)
 │   ├── pet_api.py              # /pets/** (등록·목록·수정·삭제·급여 기록)
 │   ├── nutrition_api.py        # /nutrition/estimate
+│   ├── meta_api.py             # /meta/options (온보딩 선택지 목록)
 │   └── file_upload_api.py      # S3 업로드·삭제·조회 (8 라우트)
 ├── services/
 │   ├── auth_service.py         # 인증 코드 발급/검증, 세션 생성·검증·폐기
@@ -25,6 +26,7 @@ kcalAI-model/
 │   ├── group_service.py        # 그룹 생성·참여, invite_code 생성, 멤버십·펫 참여
 │   ├── pet_service.py          # 반려동물 CRUD(soft delete), 급여 기록, 접근 권한
 │   ├── nutrition_service.py    # food_nutrition 캐시 + LLM 구조화 추정
+│   ├── meta_service.py         # 참조 테이블(condition/allergen) 조회·코드 검증
 │   ├── predict_service.py      # YOLO 분류
 │   ├── gpt_oss_service.py      # HF InferenceClient (groq) 텍스트 생성
 │   └── s3_service.py           # S3Service 클래스 (boto3)
@@ -35,6 +37,7 @@ kcalAI-model/
 │   ├── group_schema.py
 │   ├── pet_schema.py
 │   ├── nutrition_schema.py
+│   ├── meta_schema.py          # OptionItem, MetaOptionsResponse
 │   ├── predict_schema.py       # Prediction, PredictionResponse, ErrorResponse
 │   ├── gpt_schemas.py          # GptAnswer, GptResponse, GptError
 │   └── s3_schemas.py
@@ -43,8 +46,9 @@ kcalAI-model/
 │   ├── health_model.py         # UserProfile, UserGoal, MealLog, MealItem, WeightLog, FoodNutrition
 │   ├── consent_model.py        # UserConsent, UserHealthProfile, UserCondition, UserAllergy
 │   ├── group_model.py          # Group, GroupMember, GroupPet
-│   └── pet_model.py            # Pet, PetFeedingLog
-├── alembic/                    # DB 마이그레이션 (0001 auth → 0002 health → 0003 consent → 0004 group/pet)
+│   ├── pet_model.py            # Pet, PetFeedingLog
+│   └── meta_model.py           # ConditionType, AllergenType (참조 테이블)
+├── alembic/                    # DB 마이그레이션 (0001 auth → 0002 health → 0003 consent → 0004 group/pet → 0005 option ref)
 ├── webapp/                     # Expo 웹 빌드 산출물 (gitignored, 존재할 때만 정적 서빙)
 ├── runs/                       # YOLO 학습 산출물 74개 (약 70MB, 커밋됨)
 │   ├── yolo11n.pt, yolo11n-cls.pt
