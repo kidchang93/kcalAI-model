@@ -18,6 +18,7 @@ kcalAI-model/
 │   ├── pet_api.py              # /pets/** (등록·목록·수정·삭제·급여 기록)
 │   ├── nutrition_api.py        # /nutrition/estimate
 │   ├── meta_api.py             # /meta/options (온보딩 선택지 목록)
+│   ├── recommendation_api.py   # /recommendations (식단 추천, sensitive_health 동의 필수)
 │   └── file_upload_api.py      # S3 업로드·삭제·조회 (8 라우트)
 ├── services/
 │   ├── auth_service.py         # 인증 코드 발급/검증, 세션 생성·검증·폐기
@@ -25,8 +26,9 @@ kcalAI-model/
 │   ├── consent_service.py      # 동의 이력·유효성 검사, 민감정보 파기(물리 삭제)
 │   ├── group_service.py        # 그룹 생성·참여, invite_code 생성, 멤버십·펫 참여
 │   ├── pet_service.py          # 반려동물 CRUD(soft delete), 급여 기록, 접근 권한
-│   ├── nutrition_service.py    # food_nutrition 캐시 + LLM 구조화 추정
+│   ├── nutrition_service.py    # food_nutrition 3단계 조회 (정확→공백 정규화→pg_trgm 유사도, 13장. LLM 없음)
 │   ├── meta_service.py         # 참조 테이블(condition/allergen) 조회·코드 검증
+│   ├── recommendation_service.py # diet_recommendations 캐시 + mfds 후보 풀 + 시드 결정적 규칙 선정 (13장. LLM 없음)
 │   ├── predict_service.py      # YOLO 분류
 │   ├── gpt_oss_service.py      # HF InferenceClient (groq) 텍스트 생성
 │   └── s3_service.py           # S3Service 클래스 (boto3)
@@ -38,6 +40,7 @@ kcalAI-model/
 │   ├── pet_schema.py
 │   ├── nutrition_schema.py
 │   ├── meta_schema.py          # OptionItem, MetaOptionsResponse
+│   ├── recommendation_schema.py # RecommendationItem, ExcludedCriterion/Filtered, RecommendationResponse
 │   ├── predict_schema.py       # Prediction, PredictionResponse, ErrorResponse
 │   ├── gpt_schemas.py          # GptAnswer, GptResponse, GptError
 │   └── s3_schemas.py
@@ -47,8 +50,11 @@ kcalAI-model/
 │   ├── consent_model.py        # UserConsent, UserHealthProfile, UserCondition, UserAllergy
 │   ├── group_model.py          # Group, GroupMember, GroupPet
 │   ├── pet_model.py            # Pet, PetFeedingLog
-│   └── meta_model.py           # ConditionType, AllergenType (참조 테이블)
-├── alembic/                    # DB 마이그레이션 (0001 auth → 0002 health → 0003 consent → 0004 group/pet → 0005 option ref)
+│   ├── meta_model.py           # ConditionType, AllergenType (참조 테이블)
+│   └── recommendation_model.py # DietRecommendation (추천 캐시)
+├── alembic/                    # DB 마이그레이션 (0001 auth → 0002 health → 0003 consent → 0004 group/pet → 0005 option ref → 0006 diet rec → 0007 food nutrition mfds → 0008 food_label pg_trgm)
+├── scripts/
+│   └── import_mfds_food.py     # 식약처 음식 CSV → food_nutrition 임포트 (원본 CSV 는 레포 밖, 커밋 금지)
 ├── webapp/                     # Expo 웹 빌드 산출물 (gitignored, 존재할 때만 정적 서빙)
 ├── runs/                       # YOLO 학습 산출물 74개 (약 70MB, 커밋됨)
 │   ├── yolo11n.pt, yolo11n-cls.pt
@@ -168,7 +174,7 @@ kcal/build-web.sh → npx expo export --platform web → kcalAI-model/webapp/
 | `users` | `id`, `phone_number`(unique), `is_phone_verified`, `created_at`, `updated_at` | |
 | `phone_verification_codes` | `id`, `phone_number`, `purpose`(`signup`/`login`), `code_hash`, `expires_at`, `consumed_at`, `created_at` | 평문 코드 미저장 |
 | `auth_sessions` | `id`, `user_id`(FK), `token`(unique), `expires_at`, `revoked_at`, `created_at` | |
-| `user_profiles` `user_goals` `meal_logs` `meal_items` `weight_logs` `food_nutrition` | `docs/DATA_MODEL.md` 3장 | 리비전 0002 |
+| `user_profiles` `user_goals` `meal_logs` `meal_items` `weight_logs` `food_nutrition` | `docs/DATA_MODEL.md` 3장 | 리비전 0002. `food_nutrition`은 0007에서 `sugar_g`·`sodium_mg`·`potassium_mg`·`phosphorus_mg`·`food_group` 추가 (식약처 실측, 12장). 적재는 `scripts/import_mfds_food.py` |
 | `user_consents` | `id`, `user_id`(FK), `kind`, `version`, `agreed_at`, `revoked_at` | 재동의는 새 행 (이력 보존). 리비전 0003 |
 | `user_health_profiles` | `id`, `user_id`(FK, unique), `blood_type`, `rh`, `deleted_at` | 민감정보. 동의 철회 시 **물리 삭제** |
 | `user_conditions` | `id`, `user_id`(FK), `condition` — `(user_id, condition)` unique | 〃 |
@@ -178,6 +184,7 @@ kcal/build-web.sh → npx expo export --platform web → kcalAI-model/webapp/
 | `pets` | `id`, `owner_id`(FK), `name`, `species`, `breed`, `birth_year`, `weight_kg`, `is_neutered`, `deleted_at` | 보호자 1:N, soft delete |
 | `group_pets` | `id`, `group_id`(FK), `pet_id`(FK) — `(group_id, pet_id)` unique | 사람 멤버와 테이블 분리 (다형성 FK 회피) |
 | `pet_feeding_logs` | `id`, `pet_id`(FK), `fed_at`, `food_label`, `amount_g`, `kcal`(nullable) | 칼로리 산출(RER/MER)은 다음 단계 |
+| `diet_recommendations` | `id`, `user_id`(FK), `rec_date`, `meal_type`, `items`(JSONB), `excluded`(JSONB), `source` — `(user_id, rec_date, meal_type)` unique | 리비전 0006. 추천 캐시. 계약은 `docs/DATA_MODEL.md` 11장, 후보 생성·선정은 12·13장 (순수 규칙, `source` 항상 `rule`) |
 
 - 스키마 변경은 **Alembic 리비전으로만** 합니다 (`alembic/versions/`). `create_all`은 신규 테이블 생성용으로만 남아 있습니다.
 - 세션 토큰 검증은 `api/dependencies.py:get_current_user`가 담당합니다. 단 `/api/predict`, `/api/gpt-predict`, `/api/s3/*`는 여전히 무인증 공개입니다.

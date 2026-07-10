@@ -54,6 +54,8 @@ open http://127.0.0.1:8000/docs
 
 **워크스페이스 원클릭 실행기**: `../dev.sh` (Postgres + 서버 + Expo 앱). `../dev.sh server`로 서버만 띄울 수 있습니다.
 
+**식약처 음식 DB 적재** (칼로리 측정 `/api/nutrition/estimate`과 식단 추천의 데이터 원천 — 둘 다 LLM 없이 이 DB만 씁니다, `docs/DATA_MODEL.md` 12·13장): `venv/bin/python scripts/import_mfds_food.py <식약처 음식 CSV 경로>` — 저장소 루트에서 실행, idempotent upsert(재실행 안전). 원본 CSV(`../data/`)는 커밋하지 않습니다.
+
 ### 반드시 저장소 루트에서 실행할 것
 
 `services/predict_service.py:22`가 가중치를 **상대경로**로 로드합니다.
@@ -97,9 +99,9 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 
 ---
 
-## API 목록 (코드 실측, 2026-07-10 기준 47개)
+## API 목록 (코드 실측, 2026-07-10 기준 48개)
 
-계약 상세는 `docs/DATA_MODEL.md`가 정본입니다 (4장 CRUD, 7장 사용자 층, 9장 그룹·반려동물, 10장 메타).
+계약 상세는 `docs/DATA_MODEL.md`가 정본입니다 (4장 CRUD, 7장 사용자 층, 9장 그룹·반려동물, 10장 메타, 11장 식단 추천).
 
 | 도메인 | 라우트 | 정의 파일 |
 |--------|--------|-----------|
@@ -111,6 +113,7 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 | Groups | `POST·GET /api/groups` · `POST /api/groups/join` · `GET /api/groups/{group_id}` · `POST /api/groups/{group_id}/pets` | `api/group_api.py` |
 | Pets | `POST·GET /api/pets` · `PUT·DELETE /api/pets/{pet_id}` · `POST·GET /api/pets/{pet_id}/feedings` | `api/pet_api.py` |
 | Meta | `GET /api/meta/options` | `api/meta_api.py` |
+| Recommendations | `GET /api/recommendations` (Bearer + `sensitive_health` 동의 필수, 캐시 우선) | `api/recommendation_api.py` |
 | S3 | `POST /api/s3/upload/file` · `upload/local-file` · `upload/directory` · `DELETE /api/s3/delete/{s3_key}` · `delete-prefix/{prefix}` · `GET /api/s3/presigned-url/{s3_key}` · `buckets` · `objects` | `api/file_upload_api.py` |
 
 S3·Predict와 Auth의 가입·로그인 4종을 제외한 전 라우트가 Bearer 인증(`api/dependencies.py`의 `get_current_user`)을 요구합니다 (`/api/auth/logout`도 Bearer 필요). `/api/predict`와 `/api/s3/*`가 무인증 공개인 것은 알려진 문제입니다(아래 표 참고).
