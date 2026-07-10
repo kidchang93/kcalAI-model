@@ -1,20 +1,15 @@
-import logging
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from api.dependencies import get_current_user
 from database import get_db
-from log_utils import setup_level_logger
 from models.auth_model import User
 from schemas.nutrition_schema import (
     NutritionError,
     NutritionEstimateRequest,
     NutritionEstimateResponse,
 )
-from services.nutrition_service import NutritionEstimateError, estimate_nutrition
-
-error_logger = setup_level_logger(logging.ERROR)
+from services.nutrition_service import FoodNotFoundError, estimate_nutrition
 
 router = APIRouter()
 
@@ -22,7 +17,7 @@ router = APIRouter()
 @router.post(
     "/nutrition/estimate",
     response_model=NutritionEstimateResponse,
-    responses={401: {"model": NutritionError}, 502: {"model": NutritionError}},
+    responses={401: {"model": NutritionError}, 404: {"model": NutritionError}},
 )
 def estimate(
     request: NutritionEstimateRequest,
@@ -31,10 +26,10 @@ def estimate(
 ):
     try:
         nutrition, cached = estimate_nutrition(db, request.food_label)
-    except NutritionEstimateError as error:
-        error_logger.error(f"nutrition estimate 실패 label={request.food_label!r}: {error!r}")
+    except FoodNotFoundError as error:
+        # 미매칭은 오류가 아니라 앱의 kcal 수동 입력 경로로 유도한다 (DATA_MODEL.md 13장).
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail=str(error),
         ) from error
 
