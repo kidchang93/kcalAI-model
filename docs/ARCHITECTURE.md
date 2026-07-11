@@ -12,7 +12,7 @@ kcalAI-model/
 │   ├── dependencies.py         # get_current_user (Bearer 세션 토큰 검증)
 │   ├── auth_api.py             # /auth/**
 │   ├── predict_api.py          # /predict, /gpt-predict
-│   ├── health_api.py           # /me/profile, /me/goal, /me/summary, /meals, /weights
+│   ├── health_api.py           # /me/profile, /me/goal, /me/summary, /me/trends, /meals, /weights
 │   ├── consent_api.py          # /me/consents, /me/health-profile, /me/conditions, /me/allergies
 │   ├── group_api.py            # /groups/** (생성·목록·상세·참여·펫 참여)
 │   ├── pet_api.py              # /pets/** (등록·목록·수정·삭제·급여 기록)
@@ -22,7 +22,7 @@ kcalAI-model/
 │   └── file_upload_api.py      # S3 업로드·삭제·조회 (8 라우트)
 ├── services/
 │   ├── auth_service.py         # 인증 코드 발급/검증, 세션 생성·검증·폐기
-│   ├── health_service.py       # 프로필·목표·끼니·체중, Mifflin-St Jeor
+│   ├── health_service.py       # 프로필·목표·끼니·체중·추이 집계, Mifflin-St Jeor
 │   ├── consent_service.py      # 동의 이력·유효성 검사, 민감정보 파기(물리 삭제)
 │   ├── group_service.py        # 그룹 생성·참여, invite_code 생성, 멤버십·펫 참여
 │   ├── pet_service.py          # 반려동물 CRUD(soft delete), 급여 기록, 접근 권한
