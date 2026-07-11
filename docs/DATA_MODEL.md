@@ -97,7 +97,7 @@
 | `serving_ratio` | `Numeric(4,2)` | `0.5` / `1.0` / `1.5` … |
 | `kcal` | `Integer` | `serving_ratio × food_nutrition.kcal_per_serving` |
 | `source` | `String(10)` | `ai` / `manual`. **모델 개선의 근거가 된다** |
-| `confidence` | `Numeric(4,3)` | nullable. `source='ai'`일 때 YOLO score |
+| `confidence` | `Numeric(5,4)` | nullable. `source='ai'`일 때 YOLO score. (4,3)이던 것을 리비전 0009에서 확장 — 0.9995 이상이 1.0으로 반올림되던 문제 |
 | `created_at` | `DateTime(tz=True)` | |
 
 ### `weight_logs` — 체중 추이

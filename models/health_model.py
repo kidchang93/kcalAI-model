@@ -80,8 +80,8 @@ class MealItem(Base):
     kcal: Mapped[int] = mapped_column(Integer, nullable=False)
     # ai / manual. 모델 개선의 근거가 된다.
     source: Mapped[str] = mapped_column(String(10), nullable=False)
-    # source='ai'일 때 YOLO score.
-    confidence: Mapped[Decimal | None] = mapped_column(Numeric(4, 3), nullable=True)
+    # source='ai'일 때 YOLO score. (5,4) — 0.9995 이상이 1.0으로 반올림되지 않게 소수 4자리 보존 (리비전 0009).
+    confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 4), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
