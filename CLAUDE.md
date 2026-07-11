@@ -103,15 +103,15 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 
 ---
 
-## API 목록 (코드 실측, 2026-07-11 기준 49개)
+## API 목록 (코드 실측, 2026-07-11 기준 50개)
 
-계약 상세는 `docs/DATA_MODEL.md`가 정본입니다 (4장 CRUD, 7장 사용자 층, 9장 그룹·반려동물, 10장 메타, 11장 식단 추천, 15장 추이 집계).
+계약 상세는 `docs/DATA_MODEL.md`가 정본입니다 (4장 CRUD, 7장 사용자 층, 9장 그룹·반려동물, 10장 메타, 11장 식단 추천, 15장 추이 집계, 16장 기록 경고 판정).
 
 | 도메인 | 라우트 | 정의 파일 |
 |--------|--------|-----------|
 | Auth | `POST /api/auth/signup/request-code` · `signup/verify` · `login/request-code` · `login/verify` · `logout` | `api/auth_api.py` |
 | Predict | `POST /api/predict` · `POST /api/gpt-predict` | `api/predict_api.py` |
-| Nutrition | `POST /api/nutrition/estimate` | `api/nutrition_api.py` |
+| Nutrition | `POST /api/nutrition/estimate` · `POST /api/nutrition/warnings` (Bearer + `sensitive_health` 동의 필수) | `api/nutrition_api.py` |
 | Health | `GET·PUT /api/me/profile` · `GET·PUT /api/me/goal` · `GET /api/me/summary` · `GET /api/me/trends` · `POST·GET /api/meals` · `DELETE /api/meals/{meal_id}` · `POST·GET /api/weights` | `api/health_api.py` |
 | Consent | `GET·POST /api/me/consents` · `POST /api/me/consents/revoke` · `GET·PUT /api/me/health-profile` · `GET·PUT /api/me/conditions` · `GET·PUT /api/me/allergies` | `api/consent_api.py` |
 | Groups | `POST·GET /api/groups` · `POST /api/groups/join` · `GET /api/groups/{group_id}` · `POST /api/groups/{group_id}/pets` | `api/group_api.py` |

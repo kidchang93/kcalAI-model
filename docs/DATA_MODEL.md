@@ -684,3 +684,67 @@ UNIQUE(`user_id`, `rec_date`, `meal_type`).
 - **날짜별 GROUP BY 단일 쿼리**로 집계한다. 날짜 수만큼 쿼리를 반복하지 않는다.
 - `target_kcal`은 조회 시점의 열린 목표 하나다. 과거 목표 이력별 달성률이 필요해지면 그때 별도 계약으로 확장한다.
 - **체중은 이 API에 넣지 않는다.** 앱은 기존 `GET /api/weights`를 그대로 쓴다.
+
+---
+
+## 16. 기록 시 알러지·질병 경고 판정 API (2026-07-11 확정)
+
+> 기획 근거: `k-calAI-RN/docs/HEALTHCARE_EXPANSION.md` 12장 — "사진 분석 결과에 제외 재료가 보이면 기록할 때 경고합니다". 앱이 사진 분석(`/api/predict`) 결과를 끼니로 기록하기 전에 호출해, 사용자의 질병·알러지에 걸리는 라벨이 있으면 경고를 그린다.
+
+### 노출 원칙 — 판정 결과만 내려준다
+
+`condition_types.exclude_keywords` · `allergen_types.exclude_keywords`는 추천 엔진 내부용이며 **메타 API로 노출하지 않는다**(10장). 이 API도 키워드 사전을 내려주지 않고 **서버가 판정한 결과만** 반환한다.
+
+단, 응답의 `matched_keyword`로 **걸린 키워드 원문 1개**는 노출한다 — "왜 걸렸는지"를 앱이 설명하는 데 필요한 최소 노출이며, 전체 키워드 사전은 여전히 비노출이다. (2026-07-11 확정)
+
+### 테이블 변경 — `condition_types.exclude_keywords` (리비전 0010)
+
+10장의 `condition_types`에는 `dietary_tags`(정렬용 상대 우선순위)만 있어 문자열 키워드 판정이 불가능했다. 0010에서 `exclude_keywords` JSONB(문자열 배열, NOT NULL)를 추가하고 시드를 넣는다:
+
+| condition_types.code | exclude_keywords |
+|---|---|
+| `diabetes` | `["설탕", "시럽", "꿀", "사탕", "초콜릿", "케이크"]` |
+| `pregnancy` | `["소주", "맥주", "와인", "막걸리", "육회", "생선회"]` |
+| `ckd` | `["젓갈", "장아찌", "라면"]` |
+| `cancer` | `["육회", "생선회"]` |
+| `hypertension` | `["젓갈", "장아찌", "라면"]` |
+
+시드는 초기값이며 전문가 감수 전까지의 잠정 사전이다. **추천 엔진은 이 컬럼을 읽지 않는다** — 추천의 질병 반영은 기존대로 `dietary_tags` 정렬(13장), 알러지 키워드 제외만 후보 필터에 쓴다. 추천 동작 불변.
+
+### API
+
+| 메서드 | 경로 | 역할 |
+|---|---|---|
+| `POST` | `/api/nutrition/warnings` | 기록 직전 경고 판정. **Bearer + `sensitive_health` 동의 필수(403)** — 질병·알러지를 조회에 사용하므로 7장 규약을 따른다 |
+
+요청:
+
+```jsonc
+{ "food_labels": ["계란찜", "달걀찜"] }   // 1~10개, 중복 허용 — 서버가 dedupe
+```
+
+- 빈 배열 / 10개 초과 / 문자열 아님 → **422** (스키마 검증). 라벨은 각 1~100자.
+
+응답 (200 — 해당 없으면 빈 배열):
+
+```jsonc
+{
+  "warnings": [
+    {
+      "source": "condition",        // "condition" | "allergy"
+      "code": "diabetes",           // condition_types.code 또는 allergen_types.code
+      "label": "당뇨",               // 한국어 표시명 (label_ko)
+      "matched_keyword": "설탕",     // 어떤 키워드에 걸렸는지 (최소 노출 — 위 원칙)
+      "matched_label": "설탕물"      // 입력 중 어떤 라벨이 걸렸는지
+    }
+  ]
+}
+```
+
+### 판정 규칙
+
+- 사용자의 `user_conditions` · `user_allergies`에 연결된 참조 행의 `exclude_keywords`를 모아, 각 `food_label` 문자열에 키워드가 **부분 문자열로 포함**되는지 검사한다 — 추천 후처리 필터(11장)와 **같은 매칭 함수**를 쓴다 (`services/meta_service.py:match_exclude_keyword`, 추천·경고 공용).
+- 행 순서는 condition 먼저, 각 소스 안에서는 `sort_order` 오름차순. 라벨은 입력 순서(중복 제거 후).
+- 한 (참조 행, 라벨) 쌍에서는 **첫 매칭 키워드 1개**만 보고한다 (추천 필터와 동일).
+- dedupe 단위: `(source, code, matched_label)` — 입력에 같은 라벨이 중복돼도 경고는 1건이다.
+- `is_active=false`인 참조 행도 사용자에게 이미 연결돼 있으면 판정에 포함한다 (사용자 데이터가 남아 있는 한 경고가 우선).

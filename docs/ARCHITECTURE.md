@@ -16,7 +16,7 @@ kcalAI-model/
 │   ├── consent_api.py          # /me/consents, /me/health-profile, /me/conditions, /me/allergies
 │   ├── group_api.py            # /groups/** (생성·목록·상세·참여·펫 참여)
 │   ├── pet_api.py              # /pets/** (등록·목록·수정·삭제·급여 기록)
-│   ├── nutrition_api.py        # /nutrition/estimate
+│   ├── nutrition_api.py        # /nutrition/estimate, /nutrition/warnings (기록 경고 판정, sensitive_health 동의 필수)
 │   ├── meta_api.py             # /meta/options (온보딩 선택지 목록)
 │   ├── recommendation_api.py   # /recommendations (식단 추천, sensitive_health 동의 필수)
 │   └── file_upload_api.py      # S3 업로드·삭제·조회 (8 라우트)
@@ -26,9 +26,9 @@ kcalAI-model/
 │   ├── consent_service.py      # 동의 이력·유효성 검사, 민감정보 파기(물리 삭제)
 │   ├── group_service.py        # 그룹 생성·참여, invite_code 생성, 멤버십·펫 참여
 │   ├── pet_service.py          # 반려동물 CRUD(soft delete), 급여 기록, 접근 권한
-│   ├── nutrition_service.py    # food_nutrition 3단계 조회 (정확→공백 정규화→pg_trgm 유사도, 13장. LLM 없음)
+│   ├── nutrition_service.py    # food_nutrition 3단계 조회 (정확→공백 정규화→pg_trgm 유사도, 13장. LLM 없음) + 기록 경고 판정 (16장)
 │   ├── food_synonyms.py        # 음식명 동의어·표기 변형 후보 확장 (계란↔달걀 등, 13장)
-│   ├── meta_service.py         # 참조 테이블(condition/allergen) 조회·코드 검증
+│   ├── meta_service.py         # 참조 테이블(condition/allergen) 조회·코드 검증, 사용자 연결 참조 행 조회, exclude_keywords 매칭 (추천·경고 공용, 16장)
 │   ├── recommendation_service.py # diet_recommendations 캐시 + mfds 후보 풀 + 시드 결정적 규칙 선정 (13장. LLM 없음)
 │   ├── predict_service.py      # YOLO 분류
 │   ├── gpt_oss_service.py      # HF InferenceClient (groq) 텍스트 생성
@@ -53,7 +53,7 @@ kcalAI-model/
 │   ├── pet_model.py            # Pet, PetFeedingLog
 │   ├── meta_model.py           # ConditionType, AllergenType (참조 테이블)
 │   └── recommendation_model.py # DietRecommendation (추천 캐시)
-├── alembic/                    # DB 마이그레이션 (0001 auth → 0002 health → 0003 consent → 0004 group/pet → 0005 option ref → 0006 diet rec → 0007 food nutrition mfds → 0008 food_label pg_trgm)
+├── alembic/                    # DB 마이그레이션 (0001 auth → 0002 health → 0003 consent → 0004 group/pet → 0005 option ref → 0006 diet rec → 0007 food nutrition mfds → 0008 food_label pg_trgm → 0009 meal_items confidence → 0010 condition exclude_keywords)
 ├── scripts/
 │   └── import_mfds_food.py     # 식약처 음식 CSV → food_nutrition 임포트 (원본 CSV 는 레포 밖, 커밋 금지)
 ├── webapp/                     # Expo 웹 빌드 산출물 (gitignored, 존재할 때만 정적 서빙)
