@@ -14,13 +14,14 @@ class FoodNotFoundError(LookupError):
 SIMILARITY_THRESHOLD = 0.3
 
 # LLM 추정(llm) 행은 반환하지 않는다 — 데이터셋 파이프라인은 실측·감수 값만 쓴다 (13장).
-DATASET_SOURCES = ("mfds", "curated")
+# mfds_processed 는 가공식품 대표식품 집계(중앙값) — estimate 조회 전용이다 (14장).
+DATASET_SOURCES = ("mfds", "curated", "mfds_processed")
 
 _NOT_FOUND_MESSAGE = "일치하는 음식을 찾지 못했습니다. 칼로리를 직접 입력해주세요."
 
 
 def estimate_nutrition(db: Session, food_label: str) -> tuple[FoodNutrition, bool]:
-    """식약처 DB 3단계 조회: 정확 일치 → 공백 제거 일치 → pg_trgm 유사도 최고 1건.
+    """식약처 DB 4단계 조회: 정확 → 공백 제거 → '_' 뒤 이름 정확 → pg_trgm 유사도.
 
     각 단계는 동의어 변형 후보 전체(expand_variants)를 대상으로 한다 —
     "계란찜"은 정확 일치 단계에서 이미 "달걀찜" 행을 찾는다.
@@ -55,6 +56,23 @@ def estimate_nutrition(db: Session, food_label: str) -> tuple[FoodNutrition, boo
         )
         if normalized_match is not None:
             return normalized_match, True
+
+    # 2b단계: 식약처 라벨은 "카테고리_이름" 패턴이다("과ㆍ채주스_사과주스"). 접두어가
+    # trgm 유사도를 깎아 짧은 라벨이 오폭하므로("토마토주스"→케첩), '_' 뒤 이름과의
+    # 정확(공백 무시) 일치를 유사도보다 먼저 본다.
+    for variant in variants:
+        suffix_match = db.scalar(
+            select(FoodNutrition)
+            .where(
+                func.replace(func.split_part(FoodNutrition.food_label, "_", -1), " ", "")
+                == variant.replace(" ", ""),
+                FoodNutrition.source.in_(DATASET_SOURCES),
+            )
+            .order_by(FoodNutrition.id.asc())
+            .limit(1)
+        )
+        if suffix_match is not None:
+            return suffix_match, True
 
     # 3단계: 변형 후보 전체에서 유사도 최고 1건. 변형 내부는 쿼리가 낮은 id 를,
     # 변형 간 동률은 앞선 변형을 우선한다 — 같은 라벨은 항상 같은 행 (결정성, 13장).
