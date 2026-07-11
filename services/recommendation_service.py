@@ -5,11 +5,10 @@ from math import ceil
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from models.consent_model import UserAllergy, UserCondition
 from models.health_model import FoodNutrition
 from models.meta_model import AllergenType, ConditionType
 from models.recommendation_model import DietRecommendation
-from services import health_service
+from services import health_service, meta_service
 
 MAX_ITEMS = 3
 # 12장 확정 범위(30~50) 안에서 고정.
@@ -86,8 +85,8 @@ def get_recommendation(
 
     # 남은 칼로리는 summary 와 동일 산식 (target_kcal - consumed, 목표 미설정이면 None).
     remaining_kcal = health_service.get_summary(db, user_id, rec_date)["remaining_kcal"]
-    conditions = _user_condition_types(db, user_id)
-    allergens = _user_allergen_types(db, user_id)
+    conditions = meta_service.list_user_condition_types(db, user_id)
+    allergens = meta_service.list_user_allergen_types(db, user_id)
 
     excluded: list[dict] = [
         {"type": "condition", "code": row.code, "label": row.label_ko} for row in conditions
@@ -112,28 +111,6 @@ def get_recommendation(
     db.commit()
     db.refresh(recommendation)
     return recommendation, False
-
-
-def _user_condition_types(db: Session, user_id: int) -> list[ConditionType]:
-    return list(
-        db.scalars(
-            select(ConditionType)
-            .join(UserCondition, UserCondition.condition == ConditionType.code)
-            .where(UserCondition.user_id == user_id)
-            .order_by(ConditionType.sort_order.asc())
-        ).all()
-    )
-
-
-def _user_allergen_types(db: Session, user_id: int) -> list[AllergenType]:
-    return list(
-        db.scalars(
-            select(AllergenType)
-            .join(UserAllergy, UserAllergy.allergen == AllergenType.code)
-            .where(UserAllergy.user_id == user_id)
-            .order_by(AllergenType.sort_order.asc())
-        ).all()
-    )
 
 
 def _candidate_pool(
@@ -291,8 +268,9 @@ def _filter_by_exclude_keywords(
 
 
 def _match_exclude_keyword(name: str, allergens: list[AllergenType]) -> str | None:
+    # 매칭 규칙은 기록 경고 판정과 공용이다 (16장).
     for allergen in allergens:
-        for keyword in allergen.exclude_keywords:
-            if keyword in name:
-                return keyword
+        matched = meta_service.match_exclude_keyword(name, allergen.exclude_keywords)
+        if matched is not None:
+            return matched
     return None

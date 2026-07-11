@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
@@ -21,6 +22,27 @@ class NutritionEstimateResponse(BaseModel):
     cached: bool
 
     model_config = {"from_attributes": True}
+
+
+class NutritionWarningsRequest(BaseModel):
+    # 1~10개, 중복 허용 — 서버가 dedupe 한다. 라벨은 각 1~100자 (DATA_MODEL.md 16장).
+    food_labels: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(
+        ..., min_length=1, max_length=10
+    )
+
+
+class NutritionWarningItem(BaseModel):
+    source: Literal["condition", "allergy"]
+    # condition_types.code 또는 allergen_types.code
+    code: str
+    label: str
+    # 걸린 키워드 원문 1개만 노출한다 — 전체 사전은 비노출 (16장).
+    matched_keyword: str
+    matched_label: str
+
+
+class NutritionWarningsResponse(BaseModel):
+    warnings: list[NutritionWarningItem]
 
 
 class NutritionError(BaseModel):

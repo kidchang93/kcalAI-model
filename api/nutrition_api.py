@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from api.consent_api import require_sensitive_consent
 from api.dependencies import get_current_user
 from database import get_db
 from models.auth_model import User
@@ -8,8 +9,10 @@ from schemas.nutrition_schema import (
     NutritionError,
     NutritionEstimateRequest,
     NutritionEstimateResponse,
+    NutritionWarningsRequest,
+    NutritionWarningsResponse,
 )
-from services.nutrition_service import FoodNotFoundError, estimate_nutrition
+from services.nutrition_service import FoodNotFoundError, estimate_nutrition, get_record_warnings
 
 router = APIRouter()
 
@@ -44,3 +47,17 @@ def estimate(
         "created_at": nutrition.created_at,
         "cached": cached,
     }
+
+
+@router.post(
+    "/nutrition/warnings",
+    response_model=NutritionWarningsResponse,
+    responses={401: {"model": NutritionError}, 403: {"model": NutritionError}},
+)
+def read_record_warnings(
+    request: NutritionWarningsRequest,
+    # 질병·알러지를 조회에 사용하므로 sensitive_health 동의 필수 (DATA_MODEL.md 16장, 7장 규약).
+    current_user: User = Depends(require_sensitive_consent),
+    db: Session = Depends(get_db),
+):
+    return {"warnings": get_record_warnings(db, current_user.id, request.food_labels)}

@@ -2,6 +2,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from models.health_model import FoodNutrition
+from services import meta_service
 from services.food_synonyms import expand_variants
 
 
@@ -99,3 +100,42 @@ def estimate_nutrition(db: Session, food_label: str) -> tuple[FoodNutrition, boo
         return best[1], True
 
     raise FoodNotFoundError(_NOT_FOUND_MESSAGE)
+
+
+def get_record_warnings(db: Session, user_id: int, food_labels: list[str]) -> list[dict]:
+    """기록 직전 알러지·질병 경고 판정 (DATA_MODEL.md 16장).
+
+    사용자의 질병·알러지 참조 행의 exclude_keywords 를 각 라벨에 대조한다.
+    매칭 규칙은 추천 후처리 필터와 공용이다 (meta_service.match_exclude_keyword).
+    키워드 사전은 노출하지 않고 걸린 키워드 1개(matched_keyword)만 내려준다.
+    """
+    # 입력 순서를 보존하며 중복 라벨을 제거한다 (16장 — 서버 dedupe).
+    labels = list(dict.fromkeys(food_labels))
+
+    sources = (
+        ("condition", meta_service.list_user_condition_types(db, user_id)),
+        ("allergy", meta_service.list_user_allergen_types(db, user_id)),
+    )
+
+    warnings: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for source, rows in sources:
+        for row in rows:
+            for label in labels:
+                matched = meta_service.match_exclude_keyword(label, row.exclude_keywords)
+                if matched is None:
+                    continue
+                key = (source, row.code, label)
+                if key in seen:
+                    continue
+                seen.add(key)
+                warnings.append(
+                    {
+                        "source": source,
+                        "code": row.code,
+                        "label": row.label_ko,
+                        "matched_keyword": matched,
+                        "matched_label": label,
+                    }
+                )
+    return warnings
