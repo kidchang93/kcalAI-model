@@ -56,6 +56,8 @@ open http://127.0.0.1:8000/docs
 
 **식약처 음식 DB 적재** (칼로리 측정 `/api/nutrition/estimate`과 식단 추천의 데이터 원천 — 둘 다 LLM 없이 이 DB만 씁니다, `docs/DATA_MODEL.md` 12·13장): `venv/bin/python scripts/import_mfds_food.py <식약처 음식 CSV 경로>` — 저장소 루트에서 실행, idempotent upsert(재실행 안전). 원본 CSV(`../data/`)는 커밋하지 않습니다.
 
+**식약처 가공식품 DB 선별 적재** (음료·주류·과자·조미료 보강, estimate 전용 — 추천 후보에는 안 들어갑니다, `docs/DATA_MODEL.md` 14장): `venv/bin/python scripts/import_mfds_processed.py <가공식품 xlsx 경로>` — 대표식품명 단위 중앙값 집계(249행), 기존 mfds(요리)·curated 행은 덮지 않습니다.
+
 ### 반드시 저장소 루트에서 실행할 것
 
 `services/predict_service.py:22`가 가중치를 **상대경로**로 로드합니다.
