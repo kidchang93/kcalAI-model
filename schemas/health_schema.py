@@ -67,6 +67,21 @@ class SummaryResponse(BaseModel):
     meals: MealBreakdown
 
 
+class TrendDay(BaseModel):
+    date: str
+    consumed_kcal: int
+    meal_count: int
+
+
+class TrendsResponse(BaseModel):
+    start_date: str
+    end_date: str
+    # 열린 목표가 없으면 null. 0 이 아니다 — summary 와 동일 규칙.
+    target_kcal: int | None
+    # 범위 내 모든 날짜를 오름차순으로 채운다. 기록 없는 날도 0 으로 존재한다 (그래프용).
+    days: list[TrendDay]
+
+
 class MealItemInput(BaseModel):
     food_label: str = Field(..., min_length=1, max_length=100)
     serving_ratio: float = Field(..., gt=0, le=99)

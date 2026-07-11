@@ -22,6 +22,9 @@ GOAL_ADJUSTMENTS: dict[str, int] = {
 
 MEAL_TYPES = ("breakfast", "lunch", "dinner", "snack")
 
+# 추이 조회 상한 (양끝 포함). 3개월 그래프까지만 허용한다.
+TRENDS_MAX_DAYS = 92
+
 
 # ---- 목표 칼로리 산출 (Mifflin-St Jeor) ----
 
@@ -165,6 +168,64 @@ def get_summary(db: Session, user_id: int, target_date: date) -> dict:
         "consumed_kcal": consumed,
         "remaining_kcal": remaining,
         "meals": breakdown,
+    }
+
+
+# ---- 주/월 추이 ----
+
+def get_trends(db: Session, user_id: int, start_date: date, end_date: date) -> dict:
+    if end_date < start_date:
+        raise ValueError("종료일이 시작일보다 빠릅니다. 날짜 범위를 확인해주세요.")
+
+    total_days = (end_date - start_date).days + 1
+    if total_days > TRENDS_MAX_DAYS:
+        raise ValueError(f"조회 범위는 최대 {TRENDS_MAX_DAYS}일입니다. 범위를 줄여 다시 시도해주세요.")
+
+    start, _ = _day_bounds(start_date)
+    _, end = _day_bounds(end_date)
+
+    # 세션 타임존과 무관하게 summary 와 같은 UTC 날짜 경계로 절단해 GROUP BY 한다.
+    # 날짜 수만큼 쿼리를 반복하지 않는다 — 단일 쿼리 집계.
+    day_column = func.date(func.timezone("UTC", MealLog.logged_at))
+    rows = db.execute(
+        select(
+            day_column.label("day"),
+            func.coalesce(func.sum(MealLog.total_kcal), 0),
+            func.count(MealLog.id),
+        )
+        .where(
+            MealLog.user_id == user_id,
+            MealLog.deleted_at.is_(None),
+            MealLog.logged_at >= start,
+            MealLog.logged_at < end,
+        )
+        .group_by(day_column)
+    ).all()
+
+    aggregated = {day: (int(kcal), int(count)) for day, kcal, count in rows}
+
+    # 기록 없는 날도 0 으로 채운다 (그래프용 — 빈 날이 빠지면 축이 어긋난다).
+    days = []
+    for offset in range(total_days):
+        day = start_date + timedelta(days=offset)
+        consumed_kcal, meal_count = aggregated.get(day, (0, 0))
+        days.append(
+            {
+                "date": day.isoformat(),
+                "consumed_kcal": consumed_kcal,
+                "meal_count": meal_count,
+            }
+        )
+
+    # 열린 목표가 없으면 null 이다. 목표 없음과 목표 0kcal 은 다르다 (summary 와 동일 규칙).
+    goal = get_open_goal(db, user_id)
+    target = int(goal.target_kcal) if goal is not None else None
+
+    return {
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "target_kcal": target,
+        "days": days,
     }
 
 

@@ -18,6 +18,7 @@ from schemas.health_schema import (
     ProfileResponse,
     ProfileUpsertRequest,
     SummaryResponse,
+    TrendsResponse,
     WeightCreateRequest,
     WeightResponse,
 )
@@ -119,6 +120,25 @@ def read_summary(
 ):
     resolved_date = target_date if target_date is not None else datetime.now(UTC).date()
     return health_service.get_summary(db, current_user.id, resolved_date)
+
+
+# ---- 주/월 추이 ----
+
+@router.get(
+    "/me/trends",
+    response_model=TrendsResponse,
+    responses={400: {"model": HealthError}, 401: {"model": HealthError}},
+)
+def read_trends(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return health_service.get_trends(db, current_user.id, start_date, end_date)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
 # ---- 끼니 ----
