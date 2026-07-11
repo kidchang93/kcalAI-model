@@ -14,8 +14,8 @@ class FoodNotFoundError(LookupError):
 SIMILARITY_THRESHOLD = 0.3
 
 # LLM 추정(llm) 행은 반환하지 않는다 — 데이터셋 파이프라인은 실측·감수 값만 쓴다 (13장).
-# mfds_processed 는 가공식품 대표식품 집계(중앙값) — estimate 조회 전용이다 (14장).
-DATASET_SOURCES = ("mfds", "curated", "mfds_processed")
+# mfds_processed(가공식품 집계)·mfds_raw(원재료성 집계)는 estimate 조회 전용이다 (14장).
+DATASET_SOURCES = ("mfds", "curated", "mfds_processed", "mfds_raw")
 
 _NOT_FOUND_MESSAGE = "일치하는 음식을 찾지 못했습니다. 칼로리를 직접 입력해주세요."
 
