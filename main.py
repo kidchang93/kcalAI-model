@@ -7,7 +7,6 @@ from fastapi.staticfiles import StaticFiles
 from api import (
     auth_router,
     predict_router,
-    file_upload_router,
     health_router,
     nutrition_router,
     consent_router,
@@ -52,7 +51,6 @@ def on_startup():
 # 라우터 등록
 app.include_router(auth_router, prefix="/api", tags=["Auth"])
 app.include_router(predict_router, prefix="/api", tags=["Predict"])
-app.include_router(file_upload_router, prefix="/api/s3", tags=["S3 Upload"])
 app.include_router(health_router, prefix="/api", tags=["Health"])
 app.include_router(nutrition_router, prefix="/api", tags=["Nutrition"])
 app.include_router(consent_router, prefix="/api", tags=["Consent"])
