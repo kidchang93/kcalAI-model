@@ -7,12 +7,15 @@ from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
 from api.dependencies import get_current_user
 from log_utils import setup_level_logger
 from models.auth_model import User
-from schemas.predict_schema import PredictionResponse, ErrorResponse
+from schemas.predict_schema import Prediction, PredictionResponse, ErrorResponse
+from services.gemini_vision_service import GEMINI_MODEL, VisionError, identify_food
 from services.predict_service import MODEL_WEIGHTS, predict_image
 from services.upload_validation import validate_image_upload
 
 # 관측 로그에 남길 모델 식별자 (가중치 파일명).
 MODEL_NAME = os.path.basename(MODEL_WEIGHTS)
+# 이미지 인식 백엔드: yolo(기본, 안전) | gemini.
+VISION_BACKEND = os.getenv("VISION_BACKEND", "yolo").lower()
 
 # setup_level_logger 는 LevelFilter 로 해당 레벨만 기록한다.
 # INFO 로거로 error() 를 호출하면 레코드가 버려지므로 레벨별로 따로 만든다.
@@ -24,6 +27,21 @@ MAX_UPLOAD_MB = int(os.getenv("PREDICT_MAX_UPLOAD_MB", "10"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 
 router = APIRouter()
+
+
+def _run_vision(image_bytes: bytes, content_type: str | None) -> tuple[list[Prediction], str]:
+    """이미지에서 음식 후보를 얻는다. (predictions, backend).
+
+    VISION_BACKEND=gemini면 Gemini로 이름을 식별하고, 실패(타임아웃·429·오류) 시 YOLO로
+    폴백한다. 기본은 YOLO.
+    """
+    if VISION_BACKEND == "gemini":
+        try:
+            return identify_food(image_bytes, content_type), "gemini"
+        except VisionError as error:
+            error_logger.error(f"vision gemini 실패 → yolo 폴백: {error!r}")
+    return predict_image(image_bytes), "yolo"
+
 
 @router.post(
     "/predict",
@@ -53,14 +71,15 @@ async def predict(
 
     started = time.perf_counter()
     try:
-        results = predict_image(image_bytes)
+        results, backend = _run_vision(image_bytes, file.content_type)
         duration_ms = (time.perf_counter() - started) * 1000
-        # 관측 지표: 응답 시간·상위 예측·모델 버전을 구조적으로 남긴다.
+        # 관측 지표: 백엔드·응답 시간·상위 예측·모델을 구조적으로 남긴다.
+        model = GEMINI_MODEL if backend == "gemini" else MODEL_NAME
         top = results[0] if results else None
         top_label = top.label if top else "-"
         top_score = float(top.score) if top else 0.0
         info_logger.info(
-            f"predict ok model={MODEL_NAME} duration_ms={duration_ms:.1f} "
+            f"predict ok backend={backend} model={model} duration_ms={duration_ms:.1f} "
             f"top_label={top_label} top_score={top_score:.4f}"
         )
         return {"predictions" : results}
@@ -68,7 +87,7 @@ async def predict(
         duration_ms = (time.perf_counter() - started) * 1000
         # 내부 예외는 로그에만 남기고, 클라이언트에는 사용자용 메시지를 준다.
         error_logger.error(
-            f"predict fail model={MODEL_NAME} duration_ms={duration_ms:.1f} "
+            f"predict fail backend={VISION_BACKEND} duration_ms={duration_ms:.1f} "
             f"file={file.filename}: {e!r}"
         )
         raise HTTPException(
