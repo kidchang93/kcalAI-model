@@ -1,6 +1,7 @@
 import logging
+import os
 
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
 
 from api.dependencies import get_current_user
 from log_utils import setup_level_logger
@@ -9,25 +10,46 @@ from schemas.gpt_schemas import GptError, GptResponse, GptAnswer
 from schemas.predict_schema import PredictionResponse, ErrorResponse
 from services.gpt_oss_service import answerByGptOss20B
 from services.predict_service import predict_image
+from services.upload_validation import validate_image_upload
 
 # setup_level_logger 는 LevelFilter 로 해당 레벨만 기록한다.
 # INFO 로거로 error() 를 호출하면 레코드가 버려지므로 레벨별로 따로 만든다.
 info_logger = setup_level_logger(logging.INFO)
 error_logger = setup_level_logger(logging.ERROR)
 
+# 업로드 상한 (기본 10MB). 리버스 프록시(nginx client_max_body_size)와 함께 방어한다.
+MAX_UPLOAD_MB = int(os.getenv("PREDICT_MAX_UPLOAD_MB", "10"))
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+
 router = APIRouter()
 
 @router.post(
     "/predict",
     response_model=PredictionResponse,
-    responses={401: {"model": ErrorResponse}, 500: {"model": ErrorResponse}}
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        413: {"model": ErrorResponse},
+        415: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+    },
 )
 async def predict(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
 ):
+    # 입력 검증은 try 밖에서 — 4xx가 아래 except의 500으로 뭉개지면 안 된다.
+    if file.size is not None and file.size > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"이미지 용량이 너무 큽니다. {MAX_UPLOAD_MB}MB 이하로 업로드해주세요.",
+        )
+
+    # size가 없을 수도 있으므로 상한+1까지만 읽어 메모리를 묶는다.
+    image_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
+    validate_image_upload(file.content_type, image_bytes, MAX_UPLOAD_BYTES)
+
     try:
-        image_bytes = await file.read()
         results = predict_image(image_bytes)
         info_logger.info(f"{file.filename} 정상 수집 완료")
         return {"predictions" : results}

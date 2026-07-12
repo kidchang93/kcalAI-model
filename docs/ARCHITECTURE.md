@@ -32,6 +32,7 @@ kcalAI-model/
 │   ├── meta_service.py         # 참조 테이블(condition/allergen) 조회·코드 검증, 사용자 연결 참조 행 조회, exclude_keywords 매칭 (추천·경고 공용, 16장)
 │   ├── recommendation_service.py # diet_recommendations 캐시 + mfds 후보 풀 + 시드 결정적 규칙 선정 (13장. LLM 없음)
 │   ├── predict_service.py      # YOLO 분류
+│   ├── upload_validation.py    # 업로드 이미지 크기·타입·디코드 검증 (torch 비의존, 라우트가 호출)
 │   └── gpt_oss_service.py      # HF InferenceClient (groq) 텍스트 생성
 ├── schemas/
 │   ├── auth_schema.py
