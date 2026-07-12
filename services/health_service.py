@@ -1,7 +1,7 @@
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from models.health_model import MealItem, MealLog, UserGoal, UserProfile, WeightLog
@@ -231,30 +231,15 @@ def get_trends(db: Session, user_id: int, start_date: date, end_date: date) -> d
 
 # ---- 끼니 ----
 
-def create_meal(
-    db: Session,
-    user_id: int,
-    meal_type: str,
-    logged_at: datetime | None,
-    photo_s3_key: str | None,
-    items: list[dict],
-) -> MealLog:
-    total_kcal = sum(int(item["kcal"]) for item in items)
+def _total_kcal(items: list[dict]) -> int:
+    return sum(int(item["kcal"]) for item in items)
 
-    meal = MealLog(
-        user_id=user_id,
-        meal_type=meal_type,
-        logged_at=logged_at if logged_at is not None else datetime.now(UTC),
-        photo_s3_key=photo_s3_key,
-        total_kcal=total_kcal,
-    )
-    db.add(meal)
-    db.flush()
 
+def _insert_meal_items(db: Session, meal_log_id: int, items: list[dict]) -> None:
     for item in items:
         db.add(
             MealItem(
-                meal_log_id=meal.id,
+                meal_log_id=meal_log_id,
                 food_label=item["food_label"],
                 serving_ratio=Decimal(str(item["serving_ratio"])),
                 kcal=int(item["kcal"]),
@@ -264,6 +249,63 @@ def create_meal(
                 ),
             )
         )
+
+
+def create_meal(
+    db: Session,
+    user_id: int,
+    meal_type: str,
+    logged_at: datetime | None,
+    photo_s3_key: str | None,
+    items: list[dict],
+) -> MealLog:
+    meal = MealLog(
+        user_id=user_id,
+        meal_type=meal_type,
+        logged_at=logged_at if logged_at is not None else datetime.now(UTC),
+        photo_s3_key=photo_s3_key,
+        total_kcal=_total_kcal(items),
+    )
+    db.add(meal)
+    db.flush()
+
+    _insert_meal_items(db, meal.id, items)
+
+    db.commit()
+    db.refresh(meal)
+    return meal
+
+
+def update_meal(
+    db: Session,
+    user_id: int,
+    meal_id: int,
+    meal_type: str,
+    logged_at: datetime | None,
+    photo_s3_key: str | None,
+    items: list[dict],
+) -> MealLog:
+    meal = db.scalar(
+        select(MealLog).where(
+            MealLog.id == meal_id,
+            MealLog.deleted_at.is_(None),
+        )
+    )
+
+    # 존재하지 않거나 남의 소유면 존재 자체를 숨긴다 (soft_delete_meal 과 같은 규칙).
+    if meal is None or meal.user_id != user_id:
+        raise LookupError("끼니 기록을 찾을 수 없습니다.")
+
+    meal.meal_type = meal_type
+    # 전체 교체지만 logged_at 은 not-null 컬럼이므로 생략 시 기존 기록 시각을 유지한다.
+    if logged_at is not None:
+        meal.logged_at = logged_at
+    meal.photo_s3_key = photo_s3_key
+    meal.total_kcal = _total_kcal(items)
+
+    # 항목은 전체 교체 — 기존 행을 지우고 다시 넣는다. 합계는 meal_items 가 단일 진실이다.
+    db.execute(delete(MealItem).where(MealItem.meal_log_id == meal.id))
+    _insert_meal_items(db, meal.id, items)
 
     db.commit()
     db.refresh(meal)

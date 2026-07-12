@@ -14,6 +14,7 @@ from schemas.health_schema import (
     HealthError,
     MealCreateRequest,
     MealResponse,
+    MealUpdateRequest,
     MessageResponse,
     ProfileResponse,
     ProfileUpsertRequest,
@@ -176,6 +177,31 @@ def list_meals(
 ):
     resolved_date = target_date if target_date is not None else datetime.now(UTC).date()
     return health_service.list_meals(db, current_user.id, resolved_date)
+
+
+@router.put(
+    "/meals/{meal_id}",
+    response_model=MealResponse,
+    responses={401: {"model": HealthError}, 404: {"model": HealthError}},
+)
+def update_meal(
+    meal_id: int,
+    request: MealUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return health_service.update_meal(
+            db,
+            current_user.id,
+            meal_id,
+            meal_type=request.meal_type,
+            logged_at=request.logged_at,
+            photo_s3_key=request.photo_s3_key,
+            items=[item.model_dump() for item in request.items],
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
 
 @router.delete(
