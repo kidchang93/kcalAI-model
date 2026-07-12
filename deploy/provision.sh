@@ -94,8 +94,18 @@ sed -e "s#__APP_USER__#${APP_USER}#g" -e "s#__APP_DIR__#${APP_DIR}#g" \
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}"
 systemctl restart "${SERVICE_NAME}"
-sleep 2
+
+# 기동 대기(최대 ~30초 폴링).
+ok=0
+for _ in $(seq 1 15); do
+  if curl -sf -o /dev/null http://127.0.0.1:8000/openapi.json; then ok=1; break; fi
+  sleep 2
+done
 systemctl --no-pager --lines=5 status "${SERVICE_NAME}" || true
 
-log "완료. 헬스체크: curl -sf http://127.0.0.1:8000/openapi.json >/dev/null && echo OK"
+if [ "$ok" = 1 ]; then
+  log "완료. 서버 응답 정상 (http://127.0.0.1:8000)"
+else
+  log "⚠️ 기동 확인 실패(약 30초) — journalctl -u ${SERVICE_NAME} -n 50 확인"
+fi
 log "HTTPS는 DEPLOY.md의 Caddy 단계를 따르세요(도메인 필요)."
