@@ -16,8 +16,13 @@ import hashlib
 import os
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from dotenv import load_dotenv
 from sqlalchemy import String
 from sqlalchemy.types import TypeDecorator
+
+# crypto가 database보다 먼저 import되는 경로가 있어(consent_model) 여기서도 .env를 로드한다.
+# load_dotenv는 멱등이라 중복 호출이 안전하다.
+load_dotenv()
 
 # 개발 전용 기본 키 (sha256으로 정확히 32바이트 도출). 운영에서는 반드시 교체한다.
 _DEFAULT_KEY = base64.b64encode(hashlib.sha256(b"kcal-development-only").digest()).decode("ascii")

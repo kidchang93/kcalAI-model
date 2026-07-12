@@ -6,9 +6,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
 from api.dependencies import get_current_user
 from log_utils import setup_level_logger
 from models.auth_model import User
-from schemas.gpt_schemas import GptError, GptResponse, GptAnswer
 from schemas.predict_schema import PredictionResponse, ErrorResponse
-from services.gpt_oss_service import answerByGptOss20B
 from services.predict_service import predict_image
 from services.upload_validation import validate_image_upload
 
@@ -59,23 +57,4 @@ async def predict(
         raise HTTPException(
             status_code=500,
             detail="이미지 분석에 실패했습니다. 다른 사진으로 다시 시도해주세요.",
-        ) from e
-
-@router.post(
-    "/gpt-predict",
-    response_model=GptResponse,
-    responses={401: {"model": GptError}, 500: {"model": GptError}}
-)
-async def gptPredict(
-    request: GptAnswer,
-    current_user: User = Depends(get_current_user),
-):
-    try:
-        response=answerByGptOss20B(request)
-        return response
-    except Exception as e:
-        error_logger.error(f"gpt-predict 실패: {e!r}")
-        raise HTTPException(
-            status_code=500,
-            detail="칼로리 설명을 생성하지 못했습니다. 잠시 후 다시 시도해주세요.",
         ) from e

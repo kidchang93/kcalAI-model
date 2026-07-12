@@ -1,9 +1,13 @@
 import os
 from typing import Generator
 
+from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
+# .env를 환경변수로 로드한다 (cwd 기준 — 저장소 루트에서 실행할 것). 예전엔 gpt_oss_service가
+# 이 역할을 했으나 제거되어, 설정을 읽는 최하위 모듈에서 직접 로드한다 (load_dotenv는 멱등).
+load_dotenv()
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",

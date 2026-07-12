@@ -12,7 +12,7 @@ kcalAI-model/
 │   ├── __init__.py             # 라우터 재수출
 │   ├── dependencies.py         # get_current_user (Bearer 세션 토큰 검증)
 │   ├── auth_api.py             # /auth/**
-│   ├── predict_api.py          # /predict, /gpt-predict
+│   ├── predict_api.py          # /predict (업로드 검증 + YOLO)
 │   ├── health_api.py           # /me/profile, /me/goal, /me/summary, /me/trends, /meals (PUT 전체 교체 포함), /weights
 │   ├── consent_api.py          # /me/consents, /me/health-profile, /me/conditions, /me/allergies
 │   ├── group_api.py            # /groups/** (생성·목록·상세·참여·펫 참여 + 탈퇴·삭제·멤버 제거·펫 해제)
@@ -33,8 +33,7 @@ kcalAI-model/
 │   ├── meta_service.py         # 참조 테이블(condition/allergen) 조회·코드 검증, 사용자 연결 참조 행 조회, exclude_keywords 매칭 (추천·경고 공용, 16장)
 │   ├── recommendation_service.py # diet_recommendations 캐시 + mfds 후보 풀 + 시드 결정적 규칙 선정 (13장. LLM 없음)
 │   ├── predict_service.py      # YOLO 분류
-│   ├── upload_validation.py    # 업로드 이미지 크기·타입·디코드 검증 (torch 비의존, 라우트가 호출)
-│   └── gpt_oss_service.py      # HF InferenceClient (groq) 텍스트 생성
+│   └── upload_validation.py    # 업로드 이미지 크기·타입·디코드 검증 (torch 비의존, 라우트가 호출)
 ├── schemas/
 │   ├── auth_schema.py
 │   ├── health_schema.py
@@ -117,21 +116,9 @@ api  →  services  →  models  →  database (Base, engine)
      → {"detail": "..."}  (ErrorResponse)
 ```
 
-### 칼로리 설명 (`POST /api/gpt-predict`) — Bearer 필수
+### 레거시 `/api/gpt-predict` — **제거됨 (2026-07-12)**
 
-```
-클라이언트 { text, max_tokens } + Authorization: Bearer <token>
-  └─ api/predict_api.py:gptPredict()
-       ├─ Depends(get_current_user)   # 무토큰/무효 토큰 → 401
-       └─ services/gpt_oss_service.py:answerByGptOss20B()
-            └─ InferenceClient(provider="groq").chat.completions.create(
-                   model="openai/gpt-oss-120b", messages=[{role:user, content:text}])
-            └─ GptResponse(response_text=...)
-       ← 예외 시 error_logger 에 기록 후
-         HTTPException(500, detail="칼로리 설명을 생성하지 못했습니다. ...")
-```
-
-함수·모델 이름이 `gpt_oss_20B`지만 실제 호출 모델은 **`openai/gpt-oss-120b`**, 프로바이더는 **groq**입니다.
+HF LLM으로 칼로리를 **서술 문자열**로 생성하던 라우트. 앱 신규 흐름은 숫자 kcal이 필요해 `POST /api/nutrition/estimate`(식약처 DB 조회)를 쓰므로 이 라우트를 소비하지 않았다. `api/predict_api.py`의 라우트와 `services/gpt_oss_service.py`·`schemas/gpt_schemas.py`를 삭제해 **`HF_TOKEN` 하드의존(import 시점 `KeyError`)을 제거**했다. `.env` 로딩은 `database.py`·`crypto.py`로 이관했다.
 
 ### 인증 (`POST /api/auth/{mode}/{action}`)
 
@@ -203,7 +190,7 @@ kcal/build-web.sh → npx expo export --platform web → kcalAI-model/webapp/
 | `diet_recommendations` | `id`, `user_id`(FK), `rec_date`, `meal_type`, `items`(JSONB), `excluded`(JSONB), `source` — `(user_id, rec_date, meal_type)` unique | 리비전 0006. 추천 캐시. 계약은 `docs/DATA_MODEL.md` 11장, 후보 생성·선정은 12·13장 (순수 규칙, `source` 항상 `rule`) |
 
 - 스키마 변경은 **Alembic 리비전으로만** 합니다 (`alembic/versions/`). `create_all`은 신규 테이블 생성용으로만 남아 있습니다.
-- 세션 토큰 검증은 `api/dependencies.py:get_current_user`가 담당합니다. `/api/predict`·`/api/gpt-predict`도 2026-07-12부터 Bearer 필수입니다 (무인증 공개 라우트는 Auth 가입·로그인 4종뿐).
+- 세션 토큰 검증은 `api/dependencies.py:get_current_user`가 담당합니다. `/api/predict`도 2026-07-12부터 Bearer 필수입니다 (무인증 공개 라우트는 Auth 가입·로그인 4종뿐).
 - `/api/me/health-profile`·`/api/me/conditions`·`/api/me/allergies`는 유효한 `sensitive_health` 동의(최신 행의 `revoked_at IS NULL`)가 없으면 **403**을 반환합니다. 401(미로그인)과 구분됩니다.
 
 ## 전역 초기화 (import 시점)
@@ -211,8 +198,7 @@ kcal/build-web.sh → npx expo export --platform web → kcalAI-model/webapp/
 | 모듈 | 부작용 | 실패 조건 |
 |------|--------|-----------|
 | `services/predict_service.py:22` | `YOLO("runs/classify/.../last.pt")` 로드 | cwd가 저장소 루트가 아니면 실패 |
-| `services/gpt_oss_service.py:15` | `load_dotenv()` — **cwd 기준으로 `.env` 탐색** | — |
-| `services/gpt_oss_service.py:24` | `InferenceClient(api_key=os.environ["HF_TOKEN"])` | `.env`와 셸 환경변수 **양쪽 모두에** `HF_TOKEN`이 없으면 `KeyError` |
+| `database.py` · `crypto.py` | `load_dotenv()` — **cwd 기준으로 `.env` 탐색** (설정 최하위 모듈, 멱등) | — |
 | `api/predict_api.py` | `setup_level_logger(INFO)` → `task-logs/` 디렉토리 생성 | — |
 
 이 때문에 `import main`만 해도 모델 로드·`.env` 탐색·토큰 조회가 일어납니다. 테스트를 도입하려면 지연 로딩이 선행되어야 합니다.
@@ -258,7 +244,6 @@ task-logs/error_log.txt   ← ERROR 만 (setup_level_logger(ERROR) 호출 시)
 | 시스템 | 용도 | 접점 |
 |--------|------|------|
 | PostgreSQL 16 | 사용자·인증코드·세션 | `database.py`, `docker-compose.yml` |
-| Hugging Face Inference (provider `groq`) | `openai/gpt-oss-120b` 텍스트 생성 | `services/gpt_oss_service.py` |
 | NCP 서버 | 운영 배포 대상 | `.github/workflows/deploy.yml` |
 
 > NCP Object Storage 연동은 2026-07-12에 제거됐습니다 (자원 중단 확정).
@@ -291,7 +276,7 @@ push → dev 브랜치
 |------|------|
 | 무중단 배포 아님 | `pkill` → `pip install` → 기동. YOLO 로드 시간만큼 다운타임 |
 | 매 배포마다 70MB 전송 | `scp -r ./*`가 `runs/`를 통째로 복사 |
-| 원격 `.env` 관리 부재 | 워크플로가 환경변수를 전달하지 않습니다. 서버에 `.env`가 없으면 `HF_TOKEN` KeyError로 기동 실패 |
+| 원격 `.env` 관리 부재 | 워크플로가 환경변수를 전달하지 않습니다. `.env`가 없으면 기본값 폴백으로 뜨지만(HF_TOKEN 하드의존은 제거됨), 운영 pepper·암호화 키는 반드시 설정해야 합니다(`APP_ENV=production` fail-fast) |
 | 원격 Python 버전 미고정 | `python3 -m venv` — 서버의 기본 python3에 의존 |
 | 불필요한 step | `- name: Deploy to NCP Server`가 실제로는 `actions/checkout@v3`를 한 번 더 실행합니다 |
 

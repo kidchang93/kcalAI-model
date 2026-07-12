@@ -4,7 +4,7 @@
 
 ## 프로젝트 개요
 
-**kcalAI-model**은 헬스케어 앱의 식단 분석 기능을 지원하는 **FastAPI 기반 AI 추론 서버**입니다. 음식 이미지 분류(YOLO), 칼로리 설명 생성(LLM), 휴대폰 인증을 담당하며 `k-calAI-RN` 앱이 주 소비자입니다. (NCP Object Storage 연동 `/api/s3/*`는 자원 중단 확정으로 2026-07-12에 제거했습니다. `meals.photo_s3_key` 컬럼만 선반영 상태로 남아 있습니다.)
+**kcalAI-model**은 헬스케어 앱의 식단 분석 기능을 지원하는 **FastAPI 기반 AI 추론 서버**입니다. 음식 이미지 분류(YOLO), 칼로리·영양 추정(식약처 DB 조회), 휴대폰 인증을 담당하며 `k-calAI-RN` 앱이 주 소비자입니다. (2026-07-12에 `/api/s3/*`(NCP Object Storage 중단)와 레거시 `/api/gpt-predict`(HF LLM 서술 생성 — 앱 미사용)를 제거했습니다. `meals.photo_s3_key` 컬럼만 선반영 상태로 남아 있습니다.)
 
 메인 제품이 아니라 상위 앱의 기능 서버라는 위치를 유지합니다. 제품 맥락은 `docs/SERVICE_POSITIONING.md`를 참조하세요.
 
@@ -24,7 +24,7 @@
 | 배포 | GitHub Actions(`dev` 브랜치) → scp → NCP 서버 |
 | 테스트 | **없음** (프레임워크 미도입) |
 
-> `torch`는 ultralytics가 내부적으로 사용합니다. 반면 **`transformers`는 어디에서도 호출되지 않습니다** — `predict_service.py`와 `gpt_oss_service.py`가 `pipeline`을 import하지만 사용부가 전부 주석 처리된 로컬 모델 잔재입니다.
+> `torch`는 ultralytics가 내부적으로 사용합니다. 반면 **`transformers`는 어디에서도 호출되지 않습니다** — `predict_service.py`가 `pipeline`을 import하지만 사용부가 전부 주석 처리된 로컬 모델 잔재입니다 (별도 정리 후보). `huggingface_hub`도 `gpt_oss_service` 제거로 직접 사용처가 없습니다.
 
 ---
 
@@ -40,9 +40,8 @@ source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# 3. 환경변수 (HF_TOKEN 없으면 import 단계에서 죽습니다)
+# 3. 환경변수 (모두 선택값 — 기본값 폴백이 있어 .env 없이도 로컬 기동됩니다)
 cp .env.example .env
-#   .env 에 HF_TOKEN 채우기
 
 # 4. 서버 실행 (반드시 저장소 루트에서)
 uvicorn main:app --reload --port 8000
@@ -86,11 +85,10 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 
 ## 환경변수
 
-`load_dotenv()`는 `services/gpt_oss_service.py`에서만 호출됩니다. 이 모듈이 import되므로 결과적으로 `.env`가 로드됩니다.
+`load_dotenv()`는 `database.py`와 `crypto.py`에서 호출됩니다(둘 다 설정을 읽는 최하위 모듈, 멱등). cwd 기준으로 `.env`를 찾으므로 저장소 루트에서 실행합니다.
 
 | 변수 | 필수 | 기본값 | 읽는 곳 |
 |------|:----:|--------|---------|
-| `HF_TOKEN` | **예** | 없음 | `services/gpt_oss_service.py:26` — `os.environ["HF_TOKEN"]`. `.env`와 셸 환경변수 **양쪽 모두에 없으면 import 단계 KeyError** (실측) |
 | `DATABASE_URL` | 아니오 | `postgresql+psycopg2://kcal:kcal@localhost:5432/kcal` | `database.py:8` |
 | `AUTH_CODE_TTL_MINUTES` | 아니오 | `5` | `services/auth_service.py:13` |
 | `AUTH_SESSION_TTL_DAYS` | 아니오 | `30` | `services/auth_service.py:14` |
@@ -106,14 +104,14 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 
 ---
 
-## API 목록 (코드 실측, 2026-07-12 기준 48개)
+## API 목록 (코드 실측, 2026-07-12 기준 47개)
 
 계약 상세는 `docs/DATA_MODEL.md`가 정본입니다 (4장 CRUD, 7장 사용자 층, 9장 그룹·반려동물, 10장 메타, 11장 식단 추천, 15장 추이 집계, 16장 기록 경고 판정, 17장 그룹 라이프사이클, 18장 회원 탈퇴·펫 권장 칼로리).
 
 | 도메인 | 라우트 | 정의 파일 |
 |--------|--------|-----------|
 | Auth | `POST /api/auth/signup/request-code` · `signup/verify` · `login/request-code` · `login/verify` · `logout` | `api/auth_api.py` |
-| Predict | `POST /api/predict` · `POST /api/gpt-predict` (둘 다 Bearer 필수, `sensitive_health` 동의는 불필요) | `api/predict_api.py` |
+| Predict | `POST /api/predict` (Bearer 필수, `sensitive_health` 동의 불필요, 업로드 검증 413/415/400) | `api/predict_api.py` |
 | Nutrition | `POST /api/nutrition/estimate` (Bearer만 — 질병·알러지 미사용이라 동의 불필요) · `POST /api/nutrition/warnings` (Bearer + `sensitive_health` 동의 필수) | `api/nutrition_api.py` |
 | Health | `GET·PUT /api/me/profile` · `GET·PUT /api/me/goal` · `GET /api/me/summary` · `GET /api/me/trends` · `POST·GET /api/meals` · `PUT·DELETE /api/meals/{meal_id}` · `POST·GET /api/weights` | `api/health_api.py` |
 | Consent | `GET·POST /api/me/consents` · `POST /api/me/consents/revoke` · `GET·PUT /api/me/health-profile` · `GET·PUT /api/me/conditions` · `GET·PUT /api/me/allergies` | `api/consent_api.py` |
@@ -123,7 +121,7 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 | Account | `DELETE /api/me` (회원 탈퇴 — 개인 데이터 전부 물리 삭제, 소유 그룹은 그룹째 삭제. `docs/DATA_MODEL.md` 18장) | `api/account_api.py` |
 | Recommendations | `GET /api/recommendations` (Bearer + `sensitive_health` 동의 필수, 캐시 우선) | `api/recommendation_api.py` |
 
-Auth의 가입·로그인 4종(`signup/request-code`, `signup/verify`, `login/request-code`, `login/verify`)을 제외한 **전 라우트**가 Bearer 인증(`api/dependencies.py`의 `get_current_user`)을 요구합니다 (`/api/auth/logout`도 Bearer 필요). `/api/predict`·`/api/gpt-predict`는 2026-07-12에 Bearer 필수로 전환했습니다. `/api/s3/*` 8개 라우트는 같은 날 제거됐습니다 (NCP Object Storage 자원 중단 확정).
+Auth의 가입·로그인 4종(`signup/request-code`, `signup/verify`, `login/request-code`, `login/verify`)을 제외한 **전 라우트**가 Bearer 인증(`api/dependencies.py`의 `get_current_user`)을 요구합니다 (`/api/auth/logout`도 Bearer 필요). `/api/predict`는 2026-07-12에 Bearer 필수로 전환했습니다. 같은 날 `/api/s3/*` 8개 라우트(NCP Object Storage 중단)와 레거시 `/api/gpt-predict`(HF LLM 서술 생성 — 앱 미사용, HF_TOKEN 하드의존)를 제거했습니다.
 
 ---
 
@@ -131,7 +129,7 @@ Auth의 가입·로그인 4종(`signup/request-code`, `signup/verify`, `login/re
 
 | # | 내용 | 근거 |
 |---|------|------|
-| 1 | `HF_TOKEN`이 `.env`에도 셸 환경변수에도 없으면 **서버가 아예 뜨지 않습니다** (import 시점 `KeyError`). `load_dotenv()`가 **cwd 기준**으로 `.env`를 찾으므로, 저장소 루트가 아닌 곳에서 실행하면 토큰을 못 찾습니다. | `services/gpt_oss_service.py:15,26` (실측 확인) |
+| 1 | ~~`HF_TOKEN`이 없으면 서버가 import 시점 `KeyError`로 안 뜬다.~~ **해소** (2026-07-12): 유일 소비처 `gpt_oss_service.py`(`/api/gpt-predict`)를 제거해 HF_TOKEN 하드의존이 사라졌습니다. `load_dotenv()`는 이제 `database.py`·`crypto.py`가 호출하며 **cwd 기준**이라 저장소 루트에서 실행해야 `.env`를 찾습니다. | `database.py`, `crypto.py` |
 | 2 | `AUTH_INCLUDE_DEV_CODE` 기본값이 `true`라 미설정 시 인증번호가 API 응답에 노출됩니다. **완화됨** (2026-07-12): `APP_ENV=production`이면 `true`일 때 기동 자체가 실패합니다 (`ensure_production_auth_config`). | `services/auth_service.py` |
 | 3 | `AUTH_CODE_PEPPER` 기본값이 `development-only-pepper`입니다. **완화됨** (2026-07-12): `APP_ENV=production`이면 기본값·플레이스홀더일 때 기동 실패. | `services/auth_service.py` |
 | 4 | ~~세션 토큰을 발급만 하고 검증·폐기하는 코드가 없습니다.~~ **해결됨** (2026-07-09). `get_current_user`(`api/dependencies.py`) + `get_user_by_session_token`/`revoke_session_token`(`services/auth_service.py`) + `POST /api/auth/logout`. ~~단 `/api/predict`, `/api/gpt-predict`는 무인증 공개~~ → **해결됨** (2026-07-12, 둘 다 Bearer 필수). | `api/dependencies.py`, `api/predict_api.py` |

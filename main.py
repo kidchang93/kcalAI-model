@@ -20,7 +20,7 @@ from crypto import ensure_production_crypto_config
 from database import init_db
 from services.auth_service import ensure_production_auth_config
 
-# api import 시점에 services가 load_dotenv()를 이미 수행했으므로 .env 값이 반영돼 있다.
+# database·crypto가 import 시점에 load_dotenv()를 수행하므로 .env 값이 반영돼 있다.
 APP_ENV = os.getenv("APP_ENV", "development")
 
 # 운영 기동 fail-fast: 개발 기본값(pepper·dev_code 노출·암호화 키)을 그대로 배포하면 서버가 뜨지 않는다.

@@ -44,8 +44,7 @@ __all__ = ["predict_router", "auth_router"]
 
 | 위반 | 위치 | 따라야 할 이름 |
 |------|------|----------------|
-| `answerByGptOss20B` | `services/gpt_oss_service.py:29` | `answer_by_gpt_oss` |
-| `gptPredict` | `api/predict_api.py:34` | `gpt_predict` |
+| (과거 `answerByGptOss20B`·`gptPredict`는 gpt-predict 제거로 삭제됨) | — | 함수는 `snake_case` |
 
 함수명이 모델 버전(`20B`)을 담고 있으나 실제 호출 모델은 `openai/gpt-oss-120b`입니다. **함수명에 모델 버전을 넣지 마세요.**
 
@@ -157,9 +156,9 @@ CODE_TTL_MINUTES = int(os.getenv("AUTH_CODE_TTL_MINUTES", "5"))
 AUTH_INCLUDE_DEV_CODE = os.getenv("AUTH_INCLUDE_DEV_CODE", "true").lower() == "true"
 ```
 
-새 환경변수를 추가하면 **`.env.example`에 반드시 함께 추가합니다.** 현재 `CORS_ALLOW_ORIGINS`가 누락된 상태입니다.
+새 환경변수를 추가하면 **`.env.example`에 반드시 함께 추가합니다.**
 
-`load_dotenv()`는 `services/gpt_oss_service.py`에서만 호출합니다. 새 서비스에서 중복 호출하지 마세요.
+`load_dotenv()`는 `database.py`·`crypto.py`(설정 최하위 모듈)에서 호출합니다. 멱등이라 안전하지만, 새 서비스에서 굳이 추가 호출하지 마세요.
 
 ## 로깅
 
@@ -238,8 +237,8 @@ pytest를 씁니다 (`requirements-dev.txt`, 실행은 `venv/bin/python -m pytes
 | 부작용 | 위치 | 해결 |
 |--------|------|------|
 | YOLO 가중치를 즉시 로드 (cwd 의존) | `services/predict_service.py:22` | 지연 로딩 |
-| `load_dotenv()` + `os.environ["HF_TOKEN"]` (cwd 의존) | `services/gpt_oss_service.py:15,26` | 지연 초기화 또는 `os.getenv` |
-| `init_db()`가 실제 PostgreSQL에 연결 | `main.py:34` | 테스트용 `DATABASE_URL` 오버라이드 |
+| `load_dotenv()` (cwd 기준 `.env` 탐색) | `database.py`·`crypto.py` | 저장소 루트에서 실행 |
+| `init_db()`가 실제 PostgreSQL에 연결 | `main.py` | 테스트용 `DATABASE_URL` 오버라이드 |
 | `api/__init__.py`가 predict(→torch) 라우터를 즉시 import | `api/__init__.py:1` | 라우터 lazy import |
 
 즉 현재는 `import main`(또는 `api` 패키지 import)만 해도 모델 로드·`.env` 탐색·DB 연결이 일어납니다. 서비스 레이어 테스트는 이 부작용을 건드리지 않으므로 지금 바로 가능합니다.
