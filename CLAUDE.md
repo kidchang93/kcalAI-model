@@ -59,6 +59,8 @@ open http://127.0.0.1:8000/docs
 
 **원재료성식품 DB 적재** (원물 과일·채소·견과·수산물 보강, estimate 전용, `docs/DATA_MODEL.md` 14장): `venv/bin/python scripts/import_mfds_raw.py <농진청 CSV> <해수부 CSV>` — 일반명 중앙값 집계(1,384행), '생것' 우선·차류는 추출만. 요리·가공식품 행은 덮지 않습니다.
 
+**curated 시드 적재** (식약처 범위 밖 라벨 — 외국 요리·생선/일반명 한식·간식·음료 보강, estimate 전용, `docs/DATA_MODEL.md` 14장): `venv/bin/python scripts/seed_curated_foods.py` — 데이터는 스크립트에 인라인으로 커밋(외부 파일 불필요), `source='curated'` 멱등 upsert, `WHERE source='curated'`라 mfds 행은 안 건드립니다. 항목은 스크립트의 `CURATED_FOODS`에 추가하면 됩니다.
+
 ### 반드시 저장소 루트에서 실행할 것
 
 `services/predict_service.py:22`가 가중치를 **상대경로**로 로드합니다.
