@@ -48,47 +48,44 @@ CLI로 대신할 수 없는 단계다.
 
 ---
 
-## 2. 서버 접속 & repo 배치
+## 2. 배포 방식 — 로컬 주도 (권장)
 
+**모든 작업을 개발 머신에서** 한다: 로컬에서 (선택)웹 빌드 → `rsync`로 서버에 코드/웹 업로드 →
+원격 재시작. 서버는 git pull 하지 않는다. `deploy/local_deploy.sh`가 이걸 한 번에 처리한다.
+
+준비(로컬 환경변수):
 ```bash
-ssh -i <your-key>.pem ubuntu@<STATIC_IP>
-
-# repo를 /opt/kcalAI-model 에 release 브랜치로 clone
-sudo mkdir -p /opt/kcalAI-model && sudo chown ubuntu:ubuntu /opt/kcalAI-model
-git clone -b release <REPO_URL> /opt/kcalAI-model
+export SSH_HOST=ubuntu@<STATIC_IP>
+export SSH_KEY=~/.ssh/<your-key>.pem      # Lightsail SSH 키
+export REMOTE_DIR=/opt/kcalAI-model        # (기본값)
 ```
 
-> `<REPO_URL>`은 이 서버 repo의 원격 주소. private면 배포 키/토큰이 필요하다.
-
----
-
-## 3. 초기 프로비저닝
-
-`deploy/provision.sh`가 시스템 패키지·Postgres·venv·.env·마이그레이션·systemd를 한 번에 세운다.
-
+배포 전 로컬에서 배포할 상태를 `release`로 맞춘다(작업 트리를 그대로 올리므로):
 ```bash
-cd /opt/kcalAI-model
-# DB_PASSWORD·GEMINI_API_KEY는 환경변수로 주거나(권장), 안 주면 프롬프트로 입력받는다.
-sudo -E env APP_USER=ubuntu APP_DIR=/opt/kcalAI-model DOMAIN=https://api.example.com \
-  bash deploy/provision.sh
+git checkout release && git merge master   # 배포할 코드를 release로
 ```
 
-수행 내용:
-- apt: `python3-venv postgresql caddy(별도)` 등 설치
-- Postgres 유저(`kcal`)·DB(`kcal`)·`pg_trgm` 확장 생성
+> `.env`·`venv/`·`task-logs/`·`.git/`는 rsync에서 **제외**된다 — 서버의 운영 `.env`(pepper·암호화 키)와
+> 서버용 리눅스 venv가 보존된다. rsync는 `--delete`라 서버의 오래된 파일(구 코드 등)은 정리된다.
+
+## 3. 최초 1회: 프로비저닝 (로컬에서 트리거)
+
+인스턴스가 처음이면 `--provision`으로 코드를 올리고 서버에서 `provision.sh`를 실행한다
+(시스템 패키지·Postgres·venv·`.env`·마이그레이션·systemd를 세팅. secret은 서버에서 프롬프트로 입력).
+
+```bash
+bash kcalAI-model/deploy/local_deploy.sh --provision
+```
+
+수행 내용(원격 provision.sh):
+- apt: `python3-venv postgresql` 등, Postgres 유저(`kcal`)·DB(`kcal`)·`pg_trgm` 생성
 - 경량 venv + `pip install -r requirements.txt`
-- **`.env` 생성** — `AUTH_CODE_PEPPER`·`HEALTH_ENCRYPTION_KEY`를 난수로 생성, `GEMINI_API_KEY`·DB 비번은 입력값
-- `alembic upgrade head`
-- `kcalai` systemd 서비스 등록·기동(재부팅 자동복구, 127.0.0.1:8000)
+- **`.env` 생성** — `AUTH_CODE_PEPPER`·`HEALTH_ENCRYPTION_KEY` 난수 생성, `GEMINI_API_KEY`·DB 비번은 프롬프트
+- `alembic upgrade head`, `kcalai` systemd 등록·기동(재부팅 자동복구, 127.0.0.1:8000)
 
-> ⚠️ **`HEALTH_ENCRYPTION_KEY`를 안전한 곳에 백업**한다. 분실하면 저장된 민감정보(혈액형·Rh)를 복호화할 수 없다.
-> `.env`는 커밋 금지(gitignore).
+> ⚠️ **`HEALTH_ENCRYPTION_KEY`를 안전한 곳에 백업**한다(서버 `.env`에 있음). 분실 시 민감정보 복호화 불가.
 
-헬스체크:
-```bash
-curl -sf http://127.0.0.1:8000/openapi.json >/dev/null && echo OK
-systemctl status kcalai
-```
+헬스체크(로컬에서): `ssh -i $SSH_KEY $SSH_HOST 'curl -sf http://127.0.0.1:8000/openapi.json && echo OK'`
 
 ---
 
@@ -115,19 +112,30 @@ Caddy가 인증서를 자동 발급·갱신한다. 확인: `https://api.example.
 
 ---
 
-## 5. 재배포 (코드 업데이트 시)
+## 5. 재배포 (코드 업데이트 시) — 로컬에서 한 줄
 
-`release` 브랜치에 새 커밋이 올라간 뒤:
+프로비저닝 이후에는 로컬에서 이 한 줄이면 끝이다:
 
 ```bash
-cd /opt/kcalAI-model
-bash deploy/redeploy.sh
+# (release 상태로 맞춘 뒤) 코드만 배포
+bash kcalAI-model/deploy/local_deploy.sh
+
+# 웹 프런트도 함께: 웹 빌드 + webapp/ 업로드
+bash kcalAI-model/deploy/local_deploy.sh --web
+
+# DB 스키마가 바뀐 배포: 원격 마이그레이션 포함
+bash kcalAI-model/deploy/local_deploy.sh --web --migrate
 ```
 
-`release` pull → `pip install` → `alembic upgrade head` → `systemctl restart kcalai` → 헬스체크.
+`local_deploy.sh`가 하는 일: (`--web`이면)웹 번들 빌드 → rsync 업로드 →
+원격 `pip install` → (`--migrate`면)`alembic upgrade` → `systemctl restart kcalai` → 헬스체크.
 
-> 배포 흐름: 로컬에서 개발/커밋 → `release` 브랜치를 갱신(예: `git checkout release && git merge master && git push`)
-> → 서버에서 `redeploy.sh`. (GitHub Actions 자동 배포는 현재 미구성 — `deploy.yml`은 NCP/dev용 레거시.)
+**웹 프런트 서빙**: `--web`을 주면 `build-web.sh`가 Expo 웹을 `webapp/`으로 내보내고 서버에 올린다.
+FastAPI가 `webapp/`를 `/`로 서빙하므로, 서브도메인(`https://api.example.com`)에서 웹으로도 접속된다.
+
+> **대안(서버 git pull 방식)**: 서버에 repo를 clone해 두고 `deploy/redeploy.sh`로 `release`를
+> pull·재시작할 수도 있다. 로컬 주도 방식을 쓰면 서버에 git/원격 접근이 필요 없다.
+> GitHub Actions 자동 배포는 미구성(`deploy.yml`은 NCP/dev용 레거시 — 건드리지 않음).
 
 ---
 
