@@ -15,6 +15,7 @@ from api import (
     pet_router,
     meta_router,
     recommendation_router,
+    account_router,
 )
 from database import init_db
 
@@ -59,6 +60,7 @@ app.include_router(group_router, prefix="/api", tags=["Groups"])
 app.include_router(pet_router, prefix="/api", tags=["Pets"])
 app.include_router(meta_router, prefix="/api", tags=["Meta"])
 app.include_router(recommendation_router, prefix="/api", tags=["Recommendations"])
+app.include_router(account_router, prefix="/api", tags=["Account"])
 
 # 웹 빌드(Expo export 산출물) 정적 서빙. 반드시 모든 API 라우터 등록 뒤에 mount 해야
 # /api/** 가 라우터로 먼저 매칭된다. 빌드 산출물이 없는 개발 환경에서는 건너뛴다.
