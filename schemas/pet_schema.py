@@ -25,6 +25,9 @@ class PetResponse(BaseModel):
     birth_year: int | None
     weight_kg: float | None
     is_neutered: bool | None
+    # 권장 일일 칼로리(MER = RER × 종 계수). 응답 시 계산하며 저장하지 않는다.
+    # 체중 없음·species=other 는 null (DATA_MODEL.md 18장).
+    recommended_kcal: int | None
     created_at: datetime
     updated_at: datetime
 

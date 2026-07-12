@@ -45,6 +45,42 @@ def _get_accessible_pet(db: Session, user_id: int, pet_id: int) -> Pet:
     return pet
 
 
+# ---- 권장 칼로리 (RER/MER) ----
+
+# MER 계수 — 성체·중성화 가정의 보수적 잠정값 (DATA_MODEL.md 18장. 전문가 감수 전까지의 초기값).
+# species=other 는 계수 근거가 없어 산출하지 않는다.
+MER_FACTORS = {"dog": 1.6, "cat": 1.2}
+
+
+def compute_recommended_kcal(species: str, weight_kg: Decimal | None) -> int | None:
+    # RER = 70 × 체중(kg)^0.75. 저장하지 않고 응답 시마다 계산한다 (체중 수정에 항상 따라간다).
+    if weight_kg is None:
+        return None
+
+    factor = MER_FACTORS.get(species)
+    if factor is None:
+        return None
+
+    rer = 70 * float(weight_kg) ** 0.75
+    return round(rer * factor)
+
+
+def _pet_response(pet: Pet) -> dict:
+    return {
+        "id": pet.id,
+        "owner_id": pet.owner_id,
+        "name": pet.name,
+        "species": pet.species,
+        "breed": pet.breed,
+        "birth_year": pet.birth_year,
+        "weight_kg": pet.weight_kg,
+        "is_neutered": pet.is_neutered,
+        "recommended_kcal": compute_recommended_kcal(pet.species, pet.weight_kg),
+        "created_at": pet.created_at,
+        "updated_at": pet.updated_at,
+    }
+
+
 # ---- 반려동물 ----
 
 def create_pet(
@@ -56,7 +92,7 @@ def create_pet(
     birth_year: int | None,
     weight_kg: float | None,
     is_neutered: bool | None,
-) -> Pet:
+) -> dict:
     pet = Pet(
         owner_id=owner_id,
         name=name,
@@ -69,17 +105,16 @@ def create_pet(
     db.add(pet)
     db.commit()
     db.refresh(pet)
-    return pet
+    return _pet_response(pet)
 
 
-def list_pets(db: Session, owner_id: int) -> list[Pet]:
-    return list(
-        db.scalars(
-            select(Pet)
-            .where(Pet.owner_id == owner_id, Pet.deleted_at.is_(None))
-            .order_by(Pet.id.asc())
-        ).all()
-    )
+def list_pets(db: Session, owner_id: int) -> list[dict]:
+    pets = db.scalars(
+        select(Pet)
+        .where(Pet.owner_id == owner_id, Pet.deleted_at.is_(None))
+        .order_by(Pet.id.asc())
+    ).all()
+    return [_pet_response(pet) for pet in pets]
 
 
 def update_pet(
@@ -92,7 +127,7 @@ def update_pet(
     birth_year: int | None,
     weight_kg: float | None,
     is_neutered: bool | None,
-) -> Pet:
+) -> dict:
     pet = _get_owned_pet(db, user_id, pet_id)
 
     pet.name = name
@@ -104,7 +139,7 @@ def update_pet(
 
     db.commit()
     db.refresh(pet)
-    return pet
+    return _pet_response(pet)
 
 
 def soft_delete_pet(db: Session, user_id: int, pet_id: int) -> None:
