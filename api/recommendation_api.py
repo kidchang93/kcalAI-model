@@ -1,4 +1,6 @@
-from datetime import UTC, date, datetime
+from datetime import date, datetime
+
+from timeutil import UTC
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session

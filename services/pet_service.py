@@ -1,4 +1,6 @@
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
+
+from timeutil import UTC
 from decimal import Decimal
 
 from sqlalchemy import select

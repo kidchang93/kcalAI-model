@@ -7,7 +7,9 @@ v18 인증 견고화(OTP 브루트포스 방어·발급 레이트리밋·세션 
 (레이트리밋 카운트가 기존 행에 오염되는 것을 피하기 위함).
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
+
+from timeutil import UTC
 
 import pytest
 from sqlalchemy import select, update

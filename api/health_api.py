@@ -1,5 +1,7 @@
 import logging
-from datetime import UTC, date, datetime
+from datetime import date, datetime
+
+from timeutil import UTC
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session

@@ -2,7 +2,9 @@ import hashlib
 import os
 import re
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
+
+from timeutil import UTC
 
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session

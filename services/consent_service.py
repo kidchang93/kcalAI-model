@@ -1,4 +1,6 @@
-from datetime import UTC, datetime
+from datetime import datetime
+
+from timeutil import UTC
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
