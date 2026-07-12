@@ -1,0 +1,22 @@
+[Unit]
+Description=kcalAI-model FastAPI (Gemini vision + 식약처 DB)
+# Postgres 동거이므로 DB 준비 후 기동한다.
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+# provision.sh가 채워 넣는다(설치 사용자·경로).
+User=__APP_USER__
+Group=__APP_USER__
+# repo 루트. load_dotenv()가 cwd 기준으로 .env를 찾으므로 WorkingDirectory가 중요하다.
+WorkingDirectory=__APP_DIR__
+# 리버스 프록시(Caddy/nginx) 뒤에 두므로 로컬호스트에만 바인딩한다.
+ExecStart=__APP_DIR__/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+# 크래시·재부팅 자동 복구.
+KillSignal=SIGINT
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

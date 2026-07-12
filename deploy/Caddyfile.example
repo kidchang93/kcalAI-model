@@ -1,0 +1,12 @@
+# Caddy 리버스 프록시 — 자동 HTTPS(Let's Encrypt). /etc/caddy/Caddyfile 에 배치.
+# 요구: (1) 도메인이 이 서버의 Lightsail 고정 IP를 가리키는 A 레코드, (2) 80·443 포트 개방.
+# Caddy가 인증서 발급·갱신을 자동 처리한다. 도메인이 없으면 HTTPS 불가(DEPLOY.md 참고).
+
+your.domain.com {
+    encode zstd gzip
+    # 업로드 상한(앱 이미지)와 서버 PREDICT_MAX_UPLOAD_MB를 함께 맞춘다.
+    request_body {
+        max_size 12MB
+    }
+    reverse_proxy 127.0.0.1:8000
+}
