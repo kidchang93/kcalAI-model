@@ -100,6 +100,10 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 | `CORS_ALLOW_ORIGINS` | 아니오 | localhost:3000,5173 | `main.py` — production에서는 이 명시 목록만 허용 |
 | `PREDICT_MAX_UPLOAD_MB` | 아니오 | `10` | `api/predict_api.py` — 업로드 상한(초과 시 413). 리버스 프록시 `client_max_body_size`와 함께 방어 |
 | `HEALTH_ENCRYPTION_KEY` | 아니오 | 개발 기본키 | `crypto.py` — 민감정보(혈액형·질병·알러지) AES-256-GCM 키(base64 32B). `APP_ENV=production`이면 기본키일 때 기동 실패 |
+| `VISION_BACKEND` | 아니오 | `yolo` | `main.py`·`api/predict_api.py` — 이미지 인식 백엔드. `gemini`면 predict가 Gemini 사용(실패 시 YOLO 폴백) |
+| `GEMINI_API_KEY` | 아니오 | 없음 | `services/gemini_vision_service.py` — `VISION_BACKEND=gemini`일 때 필요. `APP_ENV=production`+`gemini`면 없을 때 기동 실패. **로그·응답에 미노출** |
+| `GEMINI_MODEL` | 아니오 | `gemini-flash-latest` | 〃 — 재현성 필요 시 핀 버전(예: `gemini-3.5-flash`) |
+| `GEMINI_TIMEOUT_MS` | 아니오 | `15000` | 〃 — Gemini 호출 타임아웃(ms) |
 | `AIHUB_API_KEY` | — | — | `.env`에만 있고 **코드에서 미사용** |
 
 (`ACCESS_KEY` 등 S3 자격증명 5종은 S3 제거로 더 이상 읽지 않습니다 — `.env`에 남아 있어도 무해합니다.)

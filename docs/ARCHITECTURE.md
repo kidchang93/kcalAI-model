@@ -33,6 +33,7 @@ kcalAI-model/
 │   ├── meta_service.py         # 참조 테이블(condition/allergen) 조회·코드 검증, 사용자 연결 참조 행 조회, exclude_keywords 매칭 (추천·경고 공용, 16장)
 │   ├── recommendation_service.py # diet_recommendations 캐시 + mfds 후보 풀 + 시드 결정적 규칙 선정 (13장. LLM 없음)
 │   ├── predict_service.py      # YOLO 분류
+│   ├── gemini_vision_service.py # Gemini 비전 음식명 식별 (VISION_BACKEND=gemini일 때, structured JSON)
 │   └── upload_validation.py    # 업로드 이미지 크기·타입·디코드 검증 (torch 비의존, 라우트가 호출)
 ├── schemas/
 │   ├── auth_schema.py
@@ -141,7 +142,11 @@ api/auth_api.py  ── Depends(get_db) → Session
 
 `main.py`가 `APP_ENV`(기본 `development`)를 읽어 두 가지를 분기합니다.
 
-- **production 기동 fail-fast**: `services/auth_service.py:ensure_production_auth_config()`(`AUTH_CODE_PEPPER` 기본값·플레이스홀더 또는 `AUTH_INCLUDE_DEV_CODE=true`) + `crypto.py:ensure_production_crypto_config()`(`HEALTH_ENCRYPTION_KEY` 기본키)면 import 단계에서 `RuntimeError`로 죽습니다.
+- **production 기동 fail-fast**: `services/auth_service.py:ensure_production_auth_config()`(`AUTH_CODE_PEPPER` 기본값·플레이스홀더 또는 `AUTH_INCLUDE_DEV_CODE=true`) + `crypto.py:ensure_production_crypto_config()`(`HEALTH_ENCRYPTION_KEY` 기본키) + (`VISION_BACKEND=gemini`이면) `gemini_vision_service.py:ensure_production_vision_config()`(`GEMINI_API_KEY` 없음)이면 import 단계에서 `RuntimeError`로 죽습니다.
+
+### 이미지 인식 백엔드 (`VISION_BACKEND`, 2026-07-12)
+
+`predict` 라우트는 `VISION_BACKEND`로 인식기를 고른다: `yolo`(기본, 로컬 모델) | `gemini`. `gemini`면 `services/gemini_vision_service.py:identify_food()`가 이미지를 Gemini(structured JSON)로 보내 **한글 요리명 후보**를 받고, 실패(타임아웃·429·오류)하면 YOLO로 폴백한다. Gemini는 **이름 식별만** 하고 칼로리·영양은 기존 `/api/nutrition/estimate`(식약처 DB)가 계산한다 — 반환 라벨이 mfds/curated에 매핑되도록 프롬프트가 한식 요리명을 유도한다. `GEMINI_API_KEY`는 로그·응답에 노출하지 않는다.
 - **CORS**: localhost `allow_origin_regex`는 development에서만 적용. production은 `CORS_ALLOW_ORIGINS` 명시 목록만 신뢰합니다.
 
 ### 민감정보 암호화 (`crypto.py`, 2026-07-12, 리비전 0013)
