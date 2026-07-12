@@ -224,14 +224,22 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 
 ## 테스트 스타일
 
-<!-- TODO: 확인 필요 - 테스트 프레임워크가 도입되어 있지 않습니다. requirements.txt에 pytest가 없고 테스트 파일도 없습니다. -->
+pytest를 씁니다 (`requirements-dev.txt`, 실행은 `venv/bin/python -m pytest`). 규칙:
 
-`http/test_main.http`가 IDE용 요청 파일로 있습니다. 테스트를 도입할 때는 **import 시점 부작용 세 가지**를 먼저 해결해야 합니다.
+- **서비스 레이어 우선.** 로직은 서비스 함수에 있으므로 `db` 세션을 받는 함수를 직접 호출해 계약(성공·예외·경계)을 고정한다. 예: `tests/test_auth_service.py`.
+- **DB 픽스처는 `tests/conftest.py`의 `db`.** 외부 트랜잭션 + `join_transaction_mode="create_savepoint"`로, 서비스 내부 `db.commit()`을 SAVEPOINT로 흡수하고 종료 시 롤백한다 — 대상 DB를 오염시키지 않는다.
+- **테스트 데이터는 명시적으로.** 시간 의존 로직(쿨다운·만료)은 `created_at`을 직접 과거로 옮겨 검증한다 (실제 sleep 금지). 공유 DB의 기존 데이터와 겹치지 않는 번호 대역을 쓴다.
+- **모듈 상수는 monkeypatch로.** `AUTH_INCLUDE_DEV_CODE` 등 import 시점에 잡힌 값은 `monkeypatch.setattr`로 덮는다.
+
+### API 레이어 테스트가 아직 없는 이유 — import 시점 부작용
+
+`http/test_main.http`가 IDE용 요청 파일로 남아 있습니다. FastAPI `TestClient`로 API를 테스트하려면 **import 시점 부작용**을 먼저 풀어야 합니다. 특히 `api/__init__.py`가 predict 라우터를 즉시 import해, `api` 패키지의 어떤 것을 import해도 아래가 딸려옵니다.
 
 | 부작용 | 위치 | 해결 |
 |--------|------|------|
 | YOLO 가중치를 즉시 로드 (cwd 의존) | `services/predict_service.py:22` | 지연 로딩 |
 | `load_dotenv()` + `os.environ["HF_TOKEN"]` (cwd 의존) | `services/gpt_oss_service.py:15,26` | 지연 초기화 또는 `os.getenv` |
 | `init_db()`가 실제 PostgreSQL에 연결 | `main.py:34` | 테스트용 `DATABASE_URL` 오버라이드 |
+| `api/__init__.py`가 predict(→torch) 라우터를 즉시 import | `api/__init__.py:1` | 라우터 lazy import |
 
-즉 현재는 `import main`만 해도 모델 로드·`.env` 탐색·DB 연결이 일어납니다.
+즉 현재는 `import main`(또는 `api` 패키지 import)만 해도 모델 로드·`.env` 탐색·DB 연결이 일어납니다. 서비스 레이어 테스트는 이 부작용을 건드리지 않으므로 지금 바로 가능합니다.

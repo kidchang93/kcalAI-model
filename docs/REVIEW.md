@@ -90,7 +90,11 @@ curl -X POST http://127.0.0.1:8000/api/auth/signup/request-code \
 
 ### 테스트
 
-- [ ] <!-- TODO: 확인 필요 - 테스트 프레임워크 미도입. 도입 전까지는 수동 검증 결과를 PR 본문에 기록합니다. -->
+- [ ] 인증·인가 등 로직 변경은 `tests/`에 회귀 테스트를 추가했는가. (`venv/bin/python -m pytest`로 전부 통과)
+- [ ] 서비스 함수를 바꿨다면 계약(성공/예외/경계)을 테스트로 고정했는가.
+- [ ] 테스트가 없는 부분(API 레이어, 추론 파이프라인 등)은 수동 검증 결과를 PR 본문에 기록했는가.
+
+> 현재 pytest는 서비스 레이어 위주다. API 레이어 TestClient 테스트는 `api/__init__.py`가 predict(→torch/YOLO)를 즉시 import하는 문제 때문에 라우터 lazy import 도입 후 확장 예정.
 
 ## 리뷰 시 흔한 실수
 

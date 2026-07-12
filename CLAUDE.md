@@ -71,13 +71,13 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 
 ### 검증 명령어
 
-<!-- TODO: 확인 필요 - lint/format/test 명령어가 정의되어 있지 않습니다. -->
-
 | 목적 | 명령어 |
 |------|--------|
-| 테스트 | 없음 |
+| 테스트 | `venv/bin/python -m pytest` (의존성: `venv/bin/pip install -r requirements-dev.txt`) |
 | 린트 | 없음 |
 | 포맷 | 없음 |
+
+테스트는 Postgres에 붙습니다 (인증 로직의 tz-aware datetime 충실도). 각 테스트는 외부 트랜잭션 + SAVEPOINT 롤백으로 격리되어 대상 DB를 오염시키지 않습니다. 공유 DB의 기존 데이터와 번호가 겹칠 수 있으니, 깔끔한 격리가 필요하면 `TEST_DATABASE_URL`로 전용 DB를 지정하세요. 현재 커버리지는 `tests/test_auth_service.py` (v18 인증 견고화 회귀).
 | 수동 검증 | `uvicorn main:app` 기동 + `/docs` 200 + `http/*.http` 요청 |
 
 ---
