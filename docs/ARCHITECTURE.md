@@ -236,7 +236,7 @@ task-logs/error_log.txt   ← ERROR 만 (setup_level_logger(ERROR) 호출 시)
 | 시점 | 동작 | 위치 |
 |------|------|------|
 | import | CORS 오리진 파싱, YOLO 로드, HF 클라이언트 생성, 로거 생성 | `main.py`, `services/*` |
-| startup | `init_db()` → `create_all` | `main.py:34` (`@app.on_event`, **deprecated**) |
+| startup | `init_db()` → `create_all` | `main.py` (`lifespan` 컨텍스트 매니저) |
 | 요청마다 | `get_db()`가 세션 yield → finally close | `database.py:21` |
 
 ## 외부 시스템

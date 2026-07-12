@@ -211,7 +211,7 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 | `api/`에서 `os.getenv` 호출 | `services/`가 설정을 읽습니다 |
 | `services/`에서 `fastapi` import | `ValueError`/`RuntimeError`를 던지고 `api/`가 변환 |
 | 라우트를 `main.py`에 직접 정의 | `api/<domain>_api.py` + `include_router(prefix="/api")` |
-| `@app.on_event("startup")` | lifespan 컨텍스트 매니저 (기존 코드는 마이그레이션 대상) |
+| `@app.on_event("startup")` | `lifespan` 컨텍스트 매니저를 씁니다 (2026-07-12 이전 완료) |
 | 비밀값 하드코딩 | `os.getenv` + `.env.example` 등록 |
 | 절대경로 모델 로드 (`D:/lck_data/...`) | 저장소 상대경로. 단, cwd 의존성을 문서화할 것 |
 | 함수명에 모델 버전 포함 (`...GptOss20B`) | 모델은 바뀝니다. 역할로 명명하세요 |

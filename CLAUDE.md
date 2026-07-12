@@ -138,7 +138,7 @@ Auth의 가입·로그인 4종(`signup/request-code`, `signup/verify`, `login/re
 | 5 | ~~`/api/s3/*`가 `str(e)`로 boto3 내부 예외를 노출 (13곳).~~ **소멸** (2026-07-12). S3 라우트 제거로 `api/file_upload_api.py` 자체가 삭제됐습니다. | — |
 | 6 | ~~`api/file_upload_api.py`가 `os.getenv`로 자격증명을 직접 읽음.~~ **소멸** (2026-07-12, 파일 삭제). | — |
 | 7 | ~~`DELETE /api/s3/delete-prefix/{prefix}` prefix 미검증.~~ **소멸** (2026-07-12, 라우트 제거). | — |
-| 8 | `@app.on_event("startup")`은 FastAPI 0.118에서 deprecated입니다. lifespan으로 이전이 필요합니다. | `main.py:34` |
+| 8 | ~~`@app.on_event("startup")` deprecated~~ **해소** (2026-07-12): `lifespan` 컨텍스트 매니저로 이전. | `main.py` |
 | 9 | ~~DB 마이그레이션 도구가 없습니다.~~ **해결됨** (2026-07-09). Alembic 도입 — `alembic/versions/0001_initial_auth.py`, `0002_health_tables.py`. 스키마 변경은 이제 `alembic revision`으로 합니다. `create_all`은 남아 있으나 신규 테이블 생성용입니다. | `alembic.ini`, `database.py:32` |
 | 10 | `runs/`에 학습 산출물 74개(약 70MB)가 커밋되어 있습니다. 배포 시 `scp -r ./*`로 매번 전송됩니다. | `.github/workflows/deploy.yml:41` |
 | 11 | ~~`.env.example`에 `CORS_ALLOW_ORIGINS`가 누락되어 있습니다.~~ **해결됨** (2026-07-12). `APP_ENV`·`CORS_ALLOW_ORIGINS` 추가. (S3 자격증명 5종은 S3 제거로 더 이상 필요 없습니다) | `.env.example` |

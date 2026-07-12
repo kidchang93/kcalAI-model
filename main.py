@@ -2,6 +2,7 @@
 import logging
 import os
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,10 +33,18 @@ if APP_ENV == "production":
     ensure_production_auth_config()
     ensure_production_crypto_config()
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 기동 시 신규 테이블 생성(create_all). on_event("startup")은 0.118에서 deprecated라 lifespan 사용.
+    init_db()
+    yield
+
+
 app = FastAPI(
     title="Food Classification API",
     description="음식 이미지를 분류하는 API",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 cors_allow_origins = [
@@ -72,11 +81,6 @@ async def log_request_metrics(request: Request, call_next):
         f"status={response.status_code} duration_ms={duration_ms:.1f}"
     )
     return response
-
-
-@app.on_event("startup")
-def on_startup():
-    init_db()
 
 
 # 라우터 등록
