@@ -1,8 +1,10 @@
 import logging
 
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 
+from api.dependencies import get_current_user
 from log_utils import setup_level_logger
+from models.auth_model import User
 from schemas.gpt_schemas import GptError, GptResponse, GptAnswer
 from schemas.predict_schema import PredictionResponse, ErrorResponse
 from services.gpt_oss_service import answerByGptOss20B
@@ -18,9 +20,12 @@ router = APIRouter()
 @router.post(
     "/predict",
     response_model=PredictionResponse,
-    responses={500: {"model": ErrorResponse}}
+    responses={401: {"model": ErrorResponse}, 500: {"model": ErrorResponse}}
 )
-async def predict(file: UploadFile = File(...)):
+async def predict(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
     try:
         image_bytes = await file.read()
         results = predict_image(image_bytes)
@@ -37,9 +42,12 @@ async def predict(file: UploadFile = File(...)):
 @router.post(
     "/gpt-predict",
     response_model=GptResponse,
-    responses={500: {"model": GptError}}
+    responses={401: {"model": GptError}, 500: {"model": GptError}}
 )
-async def gptPredict(request: GptAnswer):
+async def gptPredict(
+    request: GptAnswer,
+    current_user: User = Depends(get_current_user),
+):
     try:
         response=answerByGptOss20B(request)
         return response
