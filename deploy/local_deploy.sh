@@ -15,8 +15,21 @@
 # secret은 스크립트에 없다. 서버의 .env는 rsync에서 제외되어 보존된다(운영 키 유실 방지).
 set -euo pipefail
 
-SSH_HOST="${SSH_HOST:?SSH_HOST 필요 (예: ubuntu@1.2.3.4)}"
+# ---- 배포 설정 로드: deploy/deploy.local.env 가 있으면 읽는다. ----
+# (export된 환경변수가 파일값보다 우선한다. DEPLOY_ENV_FILE 로 경로를 바꿀 수 있다.)
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG="${DEPLOY_ENV_FILE:-$_SCRIPT_DIR/deploy.local.env}"
+if [ -f "$CONFIG" ]; then
+  _pre_host="${SSH_HOST:-}"; _pre_key="${SSH_KEY:-}"; _pre_dir="${REMOTE_DIR:-}"
+  set -a; source "$CONFIG"; set +a
+  [ -n "$_pre_host" ] && SSH_HOST="$_pre_host"
+  [ -n "$_pre_key" ] && SSH_KEY="$_pre_key"
+  [ -n "$_pre_dir" ] && REMOTE_DIR="$_pre_dir"
+fi
+
+SSH_HOST="${SSH_HOST:?SSH_HOST 필요 — deploy/deploy.local.env 에 넣거나 환경변수로 export}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/lightsail.pem}"
+SSH_KEY="${SSH_KEY/#\~/$HOME}"   # 앞의 ~ 를 $HOME 으로 확장(ssh는 ~를 안 펴줌)
 REMOTE_DIR="${REMOTE_DIR:-/opt/kcalAI-model}"
 
 WANT_WEB=0; WANT_MIGRATE=0; WANT_PROVISION=0

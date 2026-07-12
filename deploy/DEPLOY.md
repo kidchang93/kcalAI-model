@@ -53,12 +53,13 @@ CLI로 대신할 수 없는 단계다.
 **모든 작업을 개발 머신에서** 한다: 로컬에서 (선택)웹 빌드 → `rsync`로 서버에 코드/웹 업로드 →
 원격 재시작. 서버는 git pull 하지 않는다. `deploy/local_deploy.sh`가 이걸 한 번에 처리한다.
 
-준비(로컬 환경변수):
+준비 — **설정 파일에 한 번만 적어두면 매번 export 안 해도 된다**(권장):
 ```bash
-export SSH_HOST=ubuntu@<STATIC_IP>
-export SSH_KEY=~/.ssh/<your-key>.pem      # Lightsail SSH 키
-export REMOTE_DIR=/opt/kcalAI-model        # (기본값)
+cp kcalAI-model/deploy/deploy.local.env.example kcalAI-model/deploy/deploy.local.env
+# deploy.local.env 를 열어 SSH_HOST/SSH_KEY/REMOTE_DIR 을 채운다. (gitignore 되므로 커밋 안 됨)
 ```
+`local_deploy.sh`가 이 파일을 자동으로 읽는다. (일회성으로 다르게 쓰려면 `SSH_HOST=... bash ...`
+처럼 환경변수를 주면 파일값보다 우선한다.)
 
 배포 전 로컬에서 배포할 상태를 `release`로 맞춘다(작업 트리를 그대로 올리므로):
 ```bash

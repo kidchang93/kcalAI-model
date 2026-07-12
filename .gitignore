@@ -9,6 +9,8 @@ __pycache__/
 .env.*
 !.env.example
 !deploy/.env.production.example
+# 로컬 배포 설정(개인 서버 IP·키 경로). example만 커밋.
+deploy/deploy.local.env
 .venv/
 venv/
 
