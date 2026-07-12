@@ -610,7 +610,7 @@ UNIQUE(`user_id`, `rec_date`, `meal_type`).
 ### 파이프라인 (확정)
 
 ```
-사진 → [AI] 음식명 추출 (YOLO 기본 / `VISION_BACKEND=gemini`면 Gemini 비전, 실패 시 YOLO 폴백 — 2026-07-12)
+사진 → [AI] 음식명 추출 (Gemini 비전 단일 백엔드 — YOLO/torch 제거, 2026-07-12)
      → [DB] 음식명 유사도 검색 (pg_trgm) → 영양값·kcal
      → [DB] 식단 추천 (규칙 기반 후보·선정)
 ```

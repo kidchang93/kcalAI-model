@@ -12,7 +12,7 @@ kcalAI-model/
 │   ├── __init__.py             # 라우터 재수출
 │   ├── dependencies.py         # get_current_user (Bearer 세션 토큰 검증)
 │   ├── auth_api.py             # /auth/**
-│   ├── predict_api.py          # /predict (업로드 검증 + YOLO)
+│   ├── predict_api.py          # /predict (업로드 검증 + Gemini 인식, 503 on 실패)
 │   ├── health_api.py           # /me/profile, /me/goal, /me/summary, /me/trends, /meals (PUT 전체 교체 포함), /weights
 │   ├── consent_api.py          # /me/consents, /me/health-profile, /me/conditions, /me/allergies
 │   ├── group_api.py            # /groups/** (생성·목록·상세·참여·펫 참여 + 탈퇴·삭제·멤버 제거·펫 해제)
@@ -32,9 +32,8 @@ kcalAI-model/
 │   ├── food_synonyms.py        # 음식명 동의어·표기 변형 후보 확장 (계란↔달걀 등, 13장)
 │   ├── meta_service.py         # 참조 테이블(condition/allergen) 조회·코드 검증, 사용자 연결 참조 행 조회, exclude_keywords 매칭 (추천·경고 공용, 16장)
 │   ├── recommendation_service.py # diet_recommendations 캐시 + mfds 후보 풀 + 시드 결정적 규칙 선정 (13장. LLM 없음)
-│   ├── predict_service.py      # YOLO 분류
-│   ├── gemini_vision_service.py # Gemini 비전 음식명 식별 (VISION_BACKEND=gemini일 때, structured JSON)
-│   └── upload_validation.py    # 업로드 이미지 크기·타입·디코드 검증 (torch 비의존, 라우트가 호출)
+│   ├── gemini_vision_service.py # 이미지 인식(단일 백엔드): Gemini structured JSON → 한글 요리명, 재시도
+│   └── upload_validation.py    # 업로드 이미지 크기·타입·디코드 검증 (라우트가 호출)
 ├── schemas/
 │   ├── auth_schema.py
 │   ├── health_schema.py
@@ -59,7 +58,6 @@ kcalAI-model/
 ├── scripts/
 │   └── import_mfds_food.py     # 식약처 음식 CSV → food_nutrition 임포트 (원본 CSV 는 레포 밖, 커밋 금지)
 ├── webapp/                     # Expo 웹 빌드 산출물 (gitignored, 존재할 때만 정적 서빙)
-├── runs/                       # YOLO 학습 산출물 74개 (약 70MB, 커밋됨)
 │   ├── yolo11n.pt, yolo11n-cls.pt
 │   └── classify/
 │       ├── korean_food/
@@ -84,7 +82,7 @@ api  →  services  →  models  →  database (Base, engine)
 | 레이어 | 책임 | 의존해도 되는 것 | 의존하면 안 되는 것 |
 |--------|------|------------------|---------------------|
 | `api` | HTTP 입출력, 의존성 주입, 예외 변환 | `schemas`, `services`, `database.get_db` | `models` 직접 조작, SQLAlchemy 쿼리, `os.getenv` |
-| `services` | 트랜잭션, 비즈니스 규칙, 외부 연동(YOLO/HF) | `models`, `database`, `schemas` | `fastapi` (HTTP 개념) |
+| `services` | 트랜잭션, 비즈니스 규칙, 외부 연동(Gemini) | `models`, `database`, `schemas` | `fastapi` (HTTP 개념) |
 | `schemas` | 요청/응답 계약의 단일 기준 | Pydantic | `models`, `services` |
 | `models` | 테이블 정의 | `database.Base` | `services`, `api` |
 | `database` | 엔진/세션/Base 생성 | 없음 | 상위 레이어 전부 |
@@ -97,25 +95,28 @@ api  →  services  →  models  →  database (Base, engine)
 
 ## 요청 흐름
 
-### 이미지 분류 (`POST /api/predict`) — Bearer 필수
+### 이미지 인식 (`POST /api/predict`) — Bearer 필수, Gemini 단일 백엔드
 
 ```
 클라이언트 (multipart/form-data, field=file, Authorization: Bearer <token>)
   └─ api/predict_api.py:predict()
        ├─ Depends(get_current_user)   # 무토큰/무효 토큰 → 401
        ├─ await file.read() → bytes
-       ├─ services/predict_service.py:predict_image()
-       │    ├─ Image.open(BytesIO).convert("RGB")
-       │    ├─ model(image)              # 모듈 로드 시 생성된 전역 YOLO
-       │    └─ probs.top5[:3] → [Prediction(label, score)]   # 한국어 라벨
-       ├─ info_logger.info("<filename> 정상 수집 완료")
+       ├─ validate_image_upload()      # 크기 413 / 타입 415 / 디코드 400
+       ├─ run_in_threadpool(gemini_vision_service.identify_food)   # 블로킹 HTTP → 스레드풀
+       │    ├─ Gemini(structured JSON): 한글 요리명 후보 최대 3
+       │    ├─ 일시 오류(429·5xx·타임아웃) 백오프 재시도(기본 2회)
+       │    └─ [Prediction(label=요리명, score=confidence)]
+       ├─ info_logger.info("predict ok backend=gemini model=... top_label=...")
        └─ {"predictions": [...]}  (response_model=PredictionResponse)
 
-  실패 시
-  └─ error_logger.error("predict 실패 <filename>: <repr(예외)>")   # 서버에만
-     raise HTTPException(500, detail="이미지 분석에 실패했습니다. ...")
+  최종 실패(재시도 소진) → VisionError
+  └─ error_logger.error("predict fail backend=gemini ...")   # 서버에만, 키 미노출
+     raise HTTPException(503, detail="음식 인식이 일시적으로 지연되고 있습니다. ...")
      → {"detail": "..."}  (ErrorResponse)
 ```
+
+칼로리·영양은 앱이 선택한 라벨로 `/api/nutrition/estimate`(식약처 DB)가 계산한다. Gemini는 이름 식별만.
 
 ### 레거시 `/api/gpt-predict` — **제거됨 (2026-07-12)**
 
@@ -142,11 +143,11 @@ api/auth_api.py  ── Depends(get_db) → Session
 
 `main.py`가 `APP_ENV`(기본 `development`)를 읽어 두 가지를 분기합니다.
 
-- **production 기동 fail-fast**: `services/auth_service.py:ensure_production_auth_config()`(`AUTH_CODE_PEPPER` 기본값·플레이스홀더 또는 `AUTH_INCLUDE_DEV_CODE=true`) + `crypto.py:ensure_production_crypto_config()`(`HEALTH_ENCRYPTION_KEY` 기본키) + (`VISION_BACKEND=gemini`이면) `gemini_vision_service.py:ensure_production_vision_config()`(`GEMINI_API_KEY` 없음)이면 import 단계에서 `RuntimeError`로 죽습니다.
+- **production 기동 fail-fast**: `services/auth_service.py:ensure_production_auth_config()`(`AUTH_CODE_PEPPER` 기본값·플레이스홀더 또는 `AUTH_INCLUDE_DEV_CODE=true`) + `crypto.py:ensure_production_crypto_config()`(`HEALTH_ENCRYPTION_KEY` 기본키) + `gemini_vision_service.py:ensure_production_vision_config()`(`GEMINI_API_KEY` 없음)이면 import 단계에서 `RuntimeError`로 죽습니다.
 
-### 이미지 인식 백엔드 (`VISION_BACKEND`, 2026-07-12)
+### 이미지 인식 — Gemini 단일 백엔드 (2026-07-12)
 
-`predict` 라우트는 `VISION_BACKEND`로 인식기를 고른다: `yolo`(기본, 로컬 모델) | `gemini`. `gemini`면 `services/gemini_vision_service.py:identify_food()`가 이미지를 Gemini(structured JSON)로 보내 **한글 요리명 후보**를 받고, 실패(타임아웃·429·오류)하면 YOLO로 폴백한다. Gemini는 **이름 식별만** 하고 칼로리·영양은 기존 `/api/nutrition/estimate`(식약처 DB)가 계산한다 — 반환 라벨이 mfds/curated에 매핑되도록 프롬프트가 한식 요리명을 유도한다. `GEMINI_API_KEY`는 로그·응답에 노출하지 않는다.
+이미지 인식은 `services/gemini_vision_service.py:identify_food()` **단일 경로**다(YOLO/torch 제거). 이미지를 Gemini(structured JSON)로 보내 **한글 요리명 후보**를 받고, 일시 오류(타임아웃·429·5xx)는 백오프 재시도(기본 2회, `GEMINI_MAX_RETRIES`) 후 최종 실패 시 `VisionError`로 라우트가 **503**을 반환한다(폴백 없음). Gemini는 **이름 식별만** 하고 칼로리·영양은 `/api/nutrition/estimate`(식약처 DB)가 계산한다 — 반환 라벨이 mfds/curated에 매핑되도록 프롬프트가 한식 요리명을 유도한다. 블로킹 HTTP라 라우트는 `run_in_threadpool`로 호출한다. `GEMINI_API_KEY`는 로그·응답에 노출하지 않는다.
 - **CORS**: localhost `allow_origin_regex`는 development에서만 적용. production은 `CORS_ALLOW_ORIGINS` 명시 목록만 신뢰합니다.
 
 ### 민감정보 암호화 (`crypto.py`, 2026-07-12, 리비전 0013)
@@ -202,7 +203,6 @@ kcal/build-web.sh → npx expo export --platform web → kcalAI-model/webapp/
 
 | 모듈 | 부작용 | 실패 조건 |
 |------|--------|-----------|
-| `services/predict_service.py:22` | `YOLO("runs/classify/.../last.pt")` 로드 | cwd가 저장소 루트가 아니면 실패 |
 | `database.py` · `crypto.py` | `load_dotenv()` — **cwd 기준으로 `.env` 탐색** (설정 최하위 모듈, 멱등) | — |
 | `api/predict_api.py` | `setup_level_logger(INFO)` → `task-logs/` 디렉토리 생성 | — |
 
@@ -240,7 +240,7 @@ task-logs/error_log.txt   ← ERROR 만 (setup_level_logger(ERROR) 호출 시)
 
 | 시점 | 동작 | 위치 |
 |------|------|------|
-| import | CORS 오리진 파싱, YOLO 로드, HF 클라이언트 생성, 로거 생성 | `main.py`, `services/*` |
+| import | CORS 오리진 파싱, `load_dotenv()`, 로거 생성 (Gemini 클라이언트는 첫 호출 시 lazy 생성) | `main.py`, `services/*` |
 | startup | `init_db()` → `create_all` | `main.py` (`lifespan` 컨텍스트 매니저) |
 | 요청마다 | `get_db()`가 세션 yield → finally close | `database.py:21` |
 
@@ -263,7 +263,7 @@ push → dev 브랜치
        ├─ actions/checkout@v3
        ├─ NCP_SSH_KEY 를 ~/private-key.pem 으로 저장 (chmod 600)
        ├─ ssh-keyscan NCP_SERVER_IP >> known_hosts
-       ├─ scp -r ./*  →  $PROJECT_PATH        # 저장소 전체 복사 (runs/ 70MB 포함)
+       ├─ scp -r ./*  →  $PROJECT_PATH        # 저장소 전체 복사 (runs/ 제거로 경량화됨)
        └─ ssh 'bash -s' <<'ENDSSH'
             cd $PROJECT_PATH
             pkill -f "uvicorn main:app" || true
@@ -279,8 +279,8 @@ push → dev 브랜치
 
 | 문제 | 설명 |
 |------|------|
-| 무중단 배포 아님 | `pkill` → `pip install` → 기동. YOLO 로드 시간만큼 다운타임 |
-| 매 배포마다 70MB 전송 | `scp -r ./*`가 `runs/`를 통째로 복사 |
+| 무중단 배포 아님 | `pkill` → `pip install` → 기동. 짧은 다운타임 (YOLO 로드 제거로 단축) |
+| ~~매 배포마다 70MB 전송~~ | **해소**: YOLO/`runs/` 제거로 저장소·의존성 경량화(venv 1.3GB→~200MB) |
 | 원격 `.env` 관리 부재 | 워크플로가 환경변수를 전달하지 않습니다. `.env`가 없으면 기본값 폴백으로 뜨지만(HF_TOKEN 하드의존은 제거됨), 운영 pepper·암호화 키는 반드시 설정해야 합니다(`APP_ENV=production` fail-fast) |
 | 원격 Python 버전 미고정 | `python3 -m venv` — 서버의 기본 python3에 의존 |
 | 불필요한 step | `- name: Deploy to NCP Server`가 실제로는 `actions/checkout@v3`를 한 번 더 실행합니다 |

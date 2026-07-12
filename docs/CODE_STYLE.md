@@ -183,7 +183,7 @@ error_logger.error(f"predict 실패 {file.filename}: {e!r}")
 - 코드로 드러나지 않는 **이유**만 한국어로 짧게 적습니다.
 - 함수가 무엇을 하는지 반복 설명하지 않습니다.
 - docstring은 강제하지 않습니다.
-- **주석 처리된 옛 구현을 남기지 않습니다.** `services/gpt_oss_service.py`와 `predict_service.py`가 나쁜 예입니다.
+- **주석 처리된 옛 구현을 남기지 않습니다.** git이 기억합니다.
 
 ```python
 # 요청마다 로드하면 지연이 크므로 모듈 전역에 둔다. cwd 가 저장소 루트여야 한다.
@@ -236,6 +236,5 @@ pytest를 씁니다 (`requirements-dev.txt`, 실행은 `venv/bin/python -m pytes
 
 | 부작용 | 위치 | 회피 |
 |--------|------|------|
-| YOLO 가중치를 즉시 로드 (cwd 의존) | `services/predict_service.py` | predict 테스트는 `predict_image`를 목으로 대체 |
 | `load_dotenv()` (cwd 기준 `.env` 탐색) | `database.py`·`crypto.py` | 저장소 루트에서 실행 |
 | `init_db()`가 실제 PostgreSQL에 연결 | `main.py` | 테스트용 `DATABASE_URL`(또는 `TEST_DATABASE_URL`) |

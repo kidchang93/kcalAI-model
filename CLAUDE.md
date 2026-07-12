@@ -17,14 +17,12 @@
 | ASGI 서버 | uvicorn 0.37.0 |
 | ORM | SQLAlchemy 2.0.36 (`DeclarativeBase`, `Mapped`) |
 | 데이터베이스 | PostgreSQL 16 (docker-compose) |
-| 이미지 분류 | ultralytics 8.3.204 (YOLO11 classify) |
-| 분류 가중치 | `runs/classify/s3_korean_food_all_classes/weights/last.pt` (한국 음식, 한국어 라벨) |
-| 텍스트 생성 | `huggingface_hub.InferenceClient` (provider `groq`, model `openai/gpt-oss-120b`) |
+| 이미지 인식 | Google Gemini 비전 (`google-genai`, 단일 백엔드) — `services/gemini_vision_service.py` |
 | 설정 로딩 | `python-dotenv`의 `load_dotenv()` |
 | 배포 | GitHub Actions(`dev` 브랜치) → scp → NCP 서버 |
-| 테스트 | **없음** (프레임워크 미도입) |
+| 테스트 | pytest (`venv/bin/python -m pytest`) |
 
-> `torch`는 ultralytics가 내부적으로 사용합니다. 반면 **`transformers`는 어디에서도 호출되지 않습니다** — `predict_service.py`가 `pipeline`을 import하지만 사용부가 전부 주석 처리된 로컬 모델 잔재입니다 (별도 정리 후보). `huggingface_hub`도 `gpt_oss_service` 제거로 직접 사용처가 없습니다.
+> **2026-07-12: YOLO/torch 완전 제거.** Lightsail 경량 배포를 위해 `services/predict_service.py`(ultralytics/torch/transformers)와 `runs/` 가중치(70MB)를 삭제하고, 이미지 인식을 **Gemini 단일 백엔드**로 전환했습니다. venv 1.3GB→~200MB. estimate/추천은 식약처 DB·정적 데이터라 이 제거에 무영향입니다.
 
 ---
 
@@ -64,11 +62,7 @@ open http://127.0.0.1:8000/docs
 
 ### 반드시 저장소 루트에서 실행할 것
 
-`services/predict_service.py:22`가 가중치를 **상대경로**로 로드합니다.
-
-```python
-model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
-```
+`load_dotenv()`가 **cwd 기준**으로 `.env`를 찾습니다(`database.py`·`crypto.py`). 저장소 루트가 아닌 곳에서 실행하면 `.env`를 못 찾아 설정이 기본값으로 떨어집니다.
 
 다른 cwd에서 uvicorn을 띄우면 import 단계에서 실패합니다.
 
@@ -100,8 +94,7 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 | `CORS_ALLOW_ORIGINS` | 아니오 | localhost:3000,5173 | `main.py` — production에서는 이 명시 목록만 허용 |
 | `PREDICT_MAX_UPLOAD_MB` | 아니오 | `10` | `api/predict_api.py` — 업로드 상한(초과 시 413). 리버스 프록시 `client_max_body_size`와 함께 방어 |
 | `HEALTH_ENCRYPTION_KEY` | 아니오 | 개발 기본키 | `crypto.py` — 민감정보(혈액형·질병·알러지) AES-256-GCM 키(base64 32B). `APP_ENV=production`이면 기본키일 때 기동 실패 |
-| `VISION_BACKEND` | 아니오 | `yolo` | `main.py`·`api/predict_api.py` — 이미지 인식 백엔드. `gemini`면 predict가 Gemini 사용(실패 시 YOLO 폴백) |
-| `GEMINI_API_KEY` | 아니오 | 없음 | `services/gemini_vision_service.py` — `VISION_BACKEND=gemini`일 때 필요. `APP_ENV=production`+`gemini`면 없을 때 기동 실패. **로그·응답에 미노출** |
+| `GEMINI_API_KEY` | 사실상 예 | 없음 | `services/gemini_vision_service.py` — 이미지 인식(단일 백엔드)에 필요. `APP_ENV=production`이면 없을 때 기동 실패. **로그·응답에 미노출** |
 | `GEMINI_MODEL` | 아니오 | `gemini-flash-latest` | 〃 — 재현성 필요 시 핀 버전(예: `gemini-3.5-flash`) |
 | `GEMINI_TIMEOUT_MS` | 아니오 | `15000` | 〃 — Gemini 호출 타임아웃(ms) |
 | `AIHUB_API_KEY` | — | — | `.env`에만 있고 **코드에서 미사용** |
@@ -144,14 +137,14 @@ Auth의 가입·로그인 4종(`signup/request-code`, `signup/verify`, `login/re
 | 7 | ~~`DELETE /api/s3/delete-prefix/{prefix}` prefix 미검증.~~ **소멸** (2026-07-12, 라우트 제거). | — |
 | 8 | ~~`@app.on_event("startup")` deprecated~~ **해소** (2026-07-12): `lifespan` 컨텍스트 매니저로 이전. | `main.py` |
 | 9 | ~~DB 마이그레이션 도구가 없습니다.~~ **해결됨** (2026-07-09). Alembic 도입 — `alembic/versions/0001_initial_auth.py`, `0002_health_tables.py`. 스키마 변경은 이제 `alembic revision`으로 합니다. `create_all`은 남아 있으나 신규 테이블 생성용입니다. | `alembic.ini`, `database.py:32` |
-| 10 | `runs/`에 학습 산출물 74개(약 70MB)가 커밋되어 있습니다. 배포 시 `scp -r ./*`로 매번 전송됩니다. | `.github/workflows/deploy.yml:41` |
+| 10 | ~~`runs/`에 학습 산출물 74개(약 70MB)가 커밋되어 있습니다.~~ **해소** (2026-07-12): YOLO 제거와 함께 `runs/`를 삭제했습니다. | — |
 | 11 | ~~`.env.example`에 `CORS_ALLOW_ORIGINS`가 누락되어 있습니다.~~ **해결됨** (2026-07-12). `APP_ENV`·`CORS_ALLOW_ORIGINS` 추가. (S3 자격증명 5종은 S3 제거로 더 이상 필요 없습니다) | `.env.example` |
 
 ---
 
 ## 절대 하지 말아야 할 것
 
-- **저장소 루트가 아닌 곳에서 서버를 실행하지 않는다.** YOLO 가중치를 상대경로로 로드합니다.
+- **저장소 루트가 아닌 곳에서 서버를 실행하지 않는다.** `load_dotenv()`가 cwd 기준으로 `.env`를 찾습니다.
 - **`AUTH_INCLUDE_DEV_CODE`를 운영에서 `true`로 두지 않는다.** 기본값이 `true`입니다.
 - **`AUTH_CODE_PEPPER` 기본값을 그대로 배포하지 않는다.**
 - **`.env`를 커밋하지 않는다.** `HF_TOKEN`과 NCP 자격증명이 들어 있습니다.
@@ -162,7 +155,7 @@ Auth의 가입·로그인 4종(`signup/request-code`, `signup/verify`, `login/re
 - **DB 스키마를 변경할 때 마이그레이션 없이 진행하지 않는다.**
 - **모델 성능 실험과 제품 API 안정화를 같은 커밋에 섞지 않는다.**
 - **API 계약을 바꾸면서 `k-calAI-RN`을 함께 확인하지 않고 끝내지 않는다.**
-- **`runs/`에 새 가중치를 추가로 커밋하지 않는다.** 이미 70MB입니다. 별도 스토리지 이전을 먼저 논의합니다.
+- **무거운 ML 의존성(torch·ultralytics·transformers)을 다시 들이지 않는다.** 이미지 인식은 Gemini API로 처리합니다(Lightsail 경량 배포).
 
 ---
 
