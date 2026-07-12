@@ -12,20 +12,22 @@ kcalAI-model/
 │   ├── dependencies.py         # get_current_user (Bearer 세션 토큰 검증)
 │   ├── auth_api.py             # /auth/**
 │   ├── predict_api.py          # /predict, /gpt-predict
-│   ├── health_api.py           # /me/profile, /me/goal, /me/summary, /me/trends, /meals, /weights
+│   ├── health_api.py           # /me/profile, /me/goal, /me/summary, /me/trends, /meals (PUT 전체 교체 포함), /weights
 │   ├── consent_api.py          # /me/consents, /me/health-profile, /me/conditions, /me/allergies
-│   ├── group_api.py            # /groups/** (생성·목록·상세·참여·펫 참여)
+│   ├── group_api.py            # /groups/** (생성·목록·상세·참여·펫 참여 + 탈퇴·삭제·멤버 제거·펫 해제)
 │   ├── pet_api.py              # /pets/** (등록·목록·수정·삭제·급여 기록)
 │   ├── nutrition_api.py        # /nutrition/estimate, /nutrition/warnings (기록 경고 판정, sensitive_health 동의 필수)
 │   ├── meta_api.py             # /meta/options (온보딩 선택지 목록)
+│   ├── account_api.py          # DELETE /me (회원 탈퇴 — 계정 파기, DATA_MODEL 18장)
 │   ├── recommendation_api.py   # /recommendations (식단 추천, sensitive_health 동의 필수)
 │   └── file_upload_api.py      # S3 업로드·삭제·조회 (8 라우트)
 ├── services/
 │   ├── auth_service.py         # 인증 코드 발급/검증, 세션 생성·검증·폐기
 │   ├── health_service.py       # 프로필·목표·끼니·체중·추이 집계, Mifflin-St Jeor
 │   ├── consent_service.py      # 동의 이력·유효성 검사, 민감정보 파기(물리 삭제)
-│   ├── group_service.py        # 그룹 생성·참여, invite_code 생성, 멤버십·펫 참여
-│   ├── pet_service.py          # 반려동물 CRUD(soft delete), 급여 기록, 접근 권한
+│   ├── group_service.py        # 그룹 생성·참여, invite_code 생성, 멤버십·펫 참여, 라이프사이클(탈퇴·삭제·제거·해제, 17장)
+│   ├── pet_service.py          # 반려동물 CRUD(soft delete), 급여 기록, 접근 권한, 권장 칼로리(RER/MER, 18장)
+│   ├── account_service.py      # 회원 탈퇴 — 개인 데이터 물리 삭제 연쇄 (단일 트랜잭션, 18장)
 │   ├── nutrition_service.py    # food_nutrition 3단계 조회 (정확→공백 정규화→pg_trgm 유사도, 13장. LLM 없음) + 기록 경고 판정 (16장)
 │   ├── food_synonyms.py        # 음식명 동의어·표기 변형 후보 확장 (계란↔달걀 등, 13장)
 │   ├── meta_service.py         # 참조 테이블(condition/allergen) 조회·코드 검증, 사용자 연결 참조 행 조회, exclude_keywords 매칭 (추천·경고 공용, 16장)
@@ -38,7 +40,8 @@ kcalAI-model/
 │   ├── health_schema.py
 │   ├── consent_schema.py
 │   ├── group_schema.py
-│   ├── pet_schema.py
+│   ├── pet_schema.py           # PetResponse 에 recommended_kcal (계산 필드, 18장)
+│   ├── account_schema.py       # AccountDeleteResponse
 │   ├── nutrition_schema.py
 │   ├── meta_schema.py          # OptionItem, MetaOptionsResponse
 │   ├── recommendation_schema.py # RecommendationItem, ExcludedCriterion/Filtered, RecommendationResponse
@@ -172,7 +175,7 @@ kcal/build-web.sh → npx expo export --platform web → kcalAI-model/webapp/
 
 | 테이블 | 주요 컬럼 | 비고 |
 |--------|-----------|------|
-| `users` | `id`, `phone_number`(unique), `is_phone_verified`, `created_at`, `updated_at` | |
+| `users` | `id`, `phone_number`(unique), `is_phone_verified`, `created_at`, `updated_at` | 회원 탈퇴(`DELETE /api/me`) 시 개인 데이터 전체와 함께 **물리 삭제** (파기 연쇄는 DATA_MODEL 18장) |
 | `phone_verification_codes` | `id`, `phone_number`, `purpose`(`signup`/`login`), `code_hash`, `expires_at`, `consumed_at`, `created_at` | 평문 코드 미저장 |
 | `auth_sessions` | `id`, `user_id`(FK), `token`(unique), `expires_at`, `revoked_at`, `created_at` | |
 | `user_profiles` `user_goals` `meal_logs` `meal_items` `weight_logs` `food_nutrition` | `docs/DATA_MODEL.md` 3장 | 리비전 0002. `food_nutrition`은 0007에서 `sugar_g`·`sodium_mg`·`potassium_mg`·`phosphorus_mg`·`food_group` 추가 (식약처 실측, 12장). 적재는 `scripts/import_mfds_food.py` |
@@ -180,11 +183,11 @@ kcal/build-web.sh → npx expo export --platform web → kcalAI-model/webapp/
 | `user_health_profiles` | `id`, `user_id`(FK, unique), `blood_type`, `rh`, `deleted_at` | 민감정보. 동의 철회 시 **물리 삭제** |
 | `user_conditions` | `id`, `user_id`(FK), `condition` — `(user_id, condition)` unique | 〃 |
 | `user_allergies` | `id`, `user_id`(FK), `allergen`, `severity` — `(user_id, allergen)` unique | 〃 |
-| `groups` | `id`, `owner_id`(FK), `name`, `kind`, `invite_code`(unique, 서버 생성) | 리비전 0004. API 계약은 `docs/DATA_MODEL.md` 9장 |
+| `groups` | `id`, `owner_id`(FK), `name`, `kind`, `invite_code`(unique, 서버 생성) | 리비전 0004. API 계약은 `docs/DATA_MODEL.md` 9장, 라이프사이클(탈퇴·삭제·제거·해제)은 17장. 그룹 삭제는 **물리 삭제** (연결 테이블만 함께 삭제, 펫·급여 기록 보존) |
 | `group_members` | `id`, `group_id`(FK), `user_id`(FK), `role` — `(group_id, user_id)` unique | 〃 |
-| `pets` | `id`, `owner_id`(FK), `name`, `species`, `breed`, `birth_year`, `weight_kg`, `is_neutered`, `deleted_at` | 보호자 1:N, soft delete |
+| `pets` | `id`, `owner_id`(FK), `name`, `species`, `breed`, `birth_year`, `weight_kg`, `is_neutered`, `deleted_at` | 보호자 1:N, soft delete. 응답의 `recommended_kcal`(RER/MER)은 컬럼이 아니라 계산 필드 (18장) |
 | `group_pets` | `id`, `group_id`(FK), `pet_id`(FK) — `(group_id, pet_id)` unique | 사람 멤버와 테이블 분리 (다형성 FK 회피) |
-| `pet_feeding_logs` | `id`, `pet_id`(FK), `fed_at`, `food_label`, `amount_g`, `kcal`(nullable) | 칼로리 산출(RER/MER)은 다음 단계 |
+| `pet_feeding_logs` | `id`, `pet_id`(FK), `fed_at`, `food_label`, `amount_g`, `kcal`(nullable) | `kcal`은 수동 입력 유지. 권장 칼로리(RER/MER)는 펫 응답의 계산 필드로 구현 (18장) |
 | `diet_recommendations` | `id`, `user_id`(FK), `rec_date`, `meal_type`, `items`(JSONB), `excluded`(JSONB), `source` — `(user_id, rec_date, meal_type)` unique | 리비전 0006. 추천 캐시. 계약은 `docs/DATA_MODEL.md` 11장, 후보 생성·선정은 12·13장 (순수 규칙, `source` 항상 `rule`) |
 
 - 스키마 변경은 **Alembic 리비전으로만** 합니다 (`alembic/versions/`). `create_all`은 신규 테이블 생성용으로만 남아 있습니다.

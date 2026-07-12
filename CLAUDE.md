@@ -103,20 +103,21 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 
 ---
 
-## API 목록 (코드 실측, 2026-07-11 기준 50개)
+## API 목록 (코드 실측, 2026-07-11 기준 56개)
 
-계약 상세는 `docs/DATA_MODEL.md`가 정본입니다 (4장 CRUD, 7장 사용자 층, 9장 그룹·반려동물, 10장 메타, 11장 식단 추천, 15장 추이 집계, 16장 기록 경고 판정).
+계약 상세는 `docs/DATA_MODEL.md`가 정본입니다 (4장 CRUD, 7장 사용자 층, 9장 그룹·반려동물, 10장 메타, 11장 식단 추천, 15장 추이 집계, 16장 기록 경고 판정, 17장 그룹 라이프사이클, 18장 회원 탈퇴·펫 권장 칼로리).
 
 | 도메인 | 라우트 | 정의 파일 |
 |--------|--------|-----------|
 | Auth | `POST /api/auth/signup/request-code` · `signup/verify` · `login/request-code` · `login/verify` · `logout` | `api/auth_api.py` |
 | Predict | `POST /api/predict` · `POST /api/gpt-predict` | `api/predict_api.py` |
 | Nutrition | `POST /api/nutrition/estimate` · `POST /api/nutrition/warnings` (Bearer + `sensitive_health` 동의 필수) | `api/nutrition_api.py` |
-| Health | `GET·PUT /api/me/profile` · `GET·PUT /api/me/goal` · `GET /api/me/summary` · `GET /api/me/trends` · `POST·GET /api/meals` · `DELETE /api/meals/{meal_id}` · `POST·GET /api/weights` | `api/health_api.py` |
+| Health | `GET·PUT /api/me/profile` · `GET·PUT /api/me/goal` · `GET /api/me/summary` · `GET /api/me/trends` · `POST·GET /api/meals` · `PUT·DELETE /api/meals/{meal_id}` · `POST·GET /api/weights` | `api/health_api.py` |
 | Consent | `GET·POST /api/me/consents` · `POST /api/me/consents/revoke` · `GET·PUT /api/me/health-profile` · `GET·PUT /api/me/conditions` · `GET·PUT /api/me/allergies` | `api/consent_api.py` |
-| Groups | `POST·GET /api/groups` · `POST /api/groups/join` · `GET /api/groups/{group_id}` · `POST /api/groups/{group_id}/pets` | `api/group_api.py` |
+| Groups | `POST·GET /api/groups` · `POST /api/groups/join` · `GET·DELETE /api/groups/{group_id}` · `DELETE /api/groups/{group_id}/members/me` · `DELETE /api/groups/{group_id}/members/{user_id}` · `POST /api/groups/{group_id}/pets` · `DELETE /api/groups/{group_id}/pets/{pet_id}` | `api/group_api.py` |
 | Pets | `POST·GET /api/pets` · `PUT·DELETE /api/pets/{pet_id}` · `POST·GET /api/pets/{pet_id}/feedings` | `api/pet_api.py` |
 | Meta | `GET /api/meta/options` | `api/meta_api.py` |
+| Account | `DELETE /api/me` (회원 탈퇴 — 개인 데이터 전부 물리 삭제, 소유 그룹은 그룹째 삭제. `docs/DATA_MODEL.md` 18장) | `api/account_api.py` |
 | Recommendations | `GET /api/recommendations` (Bearer + `sensitive_health` 동의 필수, 캐시 우선) | `api/recommendation_api.py` |
 | S3 | `POST /api/s3/upload/file` · `upload/local-file` · `upload/directory` · `DELETE /api/s3/delete/{s3_key}` · `delete-prefix/{prefix}` · `GET /api/s3/presigned-url/{s3_key}` · `buckets` · `objects` | `api/file_upload_api.py` |
 
