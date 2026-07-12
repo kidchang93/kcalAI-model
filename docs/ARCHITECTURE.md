@@ -6,6 +6,7 @@
 kcalAI-model/
 ├── main.py                     # 앱 생성, CORS, 라우터 등록, startup 훅
 ├── database.py                 # engine, SessionLocal, Base, get_db, init_db
+├── crypto.py                   # 민감정보 AES-256-GCM 암복호화 + EncryptedString 타입 (models·services가 사용)
 ├── log_utils.py                # 레벨별 RotatingFileHandler 로거 팩토리
 ├── api/
 │   ├── __init__.py             # 라우터 재수출
@@ -54,7 +55,7 @@ kcalAI-model/
 │   ├── pet_model.py            # Pet, PetFeedingLog
 │   ├── meta_model.py           # ConditionType, AllergenType (참조 테이블)
 │   └── recommendation_model.py # DietRecommendation (추천 캐시)
-├── alembic/                    # DB 마이그레이션 (0001 auth → 0002 health → 0003 consent → 0004 group/pet → 0005 option ref → 0006 diet rec → 0007 food nutrition mfds → 0008 food_label pg_trgm → 0009 meal_items confidence → 0010 condition exclude_keywords → 0011 otp attempt_count → 0012 session token 해시)
+├── alembic/                    # DB 마이그레이션 (0001 auth → 0002 health → 0003 consent → 0004 group/pet → 0005 option ref → 0006 diet rec → 0007 food nutrition mfds → 0008 food_label pg_trgm → 0009 meal_items confidence → 0010 condition exclude_keywords → 0011 otp attempt_count → 0012 session token 해시 → 0013 혈액형·Rh 암호화)
 ├── scripts/
 │   └── import_mfds_food.py     # 식약처 음식 CSV → food_nutrition 임포트 (원본 CSV 는 레포 밖, 커밋 금지)
 ├── webapp/                     # Expo 웹 빌드 산출물 (gitignored, 존재할 때만 정적 서빙)
@@ -153,8 +154,14 @@ api/auth_api.py  ── Depends(get_db) → Session
 
 `main.py`가 `APP_ENV`(기본 `development`)를 읽어 두 가지를 분기합니다.
 
-- **production 기동 fail-fast**: `services/auth_service.py:ensure_production_auth_config()` — `AUTH_CODE_PEPPER`가 미설정·기본값·`.env.example` 플레이스홀더이거나 `AUTH_INCLUDE_DEV_CODE=true`면 import 단계에서 `RuntimeError`로 죽습니다.
+- **production 기동 fail-fast**: `services/auth_service.py:ensure_production_auth_config()`(`AUTH_CODE_PEPPER` 기본값·플레이스홀더 또는 `AUTH_INCLUDE_DEV_CODE=true`) + `crypto.py:ensure_production_crypto_config()`(`HEALTH_ENCRYPTION_KEY` 기본키)면 import 단계에서 `RuntimeError`로 죽습니다.
 - **CORS**: localhost `allow_origin_regex`는 development에서만 적용. production은 `CORS_ALLOW_ORIGINS` 명시 목록만 신뢰합니다.
+
+### 민감정보 암호화 (`crypto.py`, 2026-07-12, 리비전 0013)
+
+`user_health_profiles.blood_type`·`rh`만 앱 레이어 AES-256-GCM으로 암호화 저장합니다. `crypto.py`의 `EncryptedString`(SQLAlchemy `TypeDecorator`)이 ORM write 시 암호화·read 시 복호화를 투명하게 처리하므로 서비스·직렬화 코드는 평문을 그대로 다룹니다. 키는 `HEALTH_ENCRYPTION_KEY`.
+
+**범위를 혈액형·Rh로 한정한 이유**: 암호문은 DB 레벨 JOIN·WHERE·UNIQUE 대상이 될 수 없습니다(암호문끼리 비교됨). `condition`·`allergen`은 참조 테이블 FK, `meta_service`의 DB JOIN, `(user_id, code)` UNIQUE, 추천/경고 필터에 쓰이는 **기능 키**라 암호화하면 이 전부가 깨집니다. 따라서 이 둘은 평문 코드로 유지합니다 (표준 범주 코드라 자유 PII보다 민감도도 낮음). `blood_type`·`rh`는 어떤 쿼리에도 쓰이지 않는 순수 데이터라 앱 레이어 암호화의 '조회 불가' 단점이 없습니다.
 
 ### S3 (`/api/s3/*`) — **제거됨 (2026-07-12)**
 
@@ -183,9 +190,11 @@ kcal/build-web.sh → npx expo export --platform web → kcalAI-model/webapp/
 | `auth_sessions` | `id`, `user_id`(FK), `token`(unique), `expires_at`, `revoked_at`, `created_at` | `token`은 sha256 해시 저장 (리비전 0012). 원문은 발급 응답에만 나가고 조회는 해시 비교 |
 | `user_profiles` `user_goals` `meal_logs` `meal_items` `weight_logs` `food_nutrition` | `docs/DATA_MODEL.md` 3장 | 리비전 0002. `food_nutrition`은 0007에서 `sugar_g`·`sodium_mg`·`potassium_mg`·`phosphorus_mg`·`food_group` 추가 (식약처 실측, 12장). 적재는 `scripts/import_mfds_food.py` |
 | `user_consents` | `id`, `user_id`(FK), `kind`, `version`, `agreed_at`, `revoked_at` | 재동의는 새 행 (이력 보존). 리비전 0003 |
-| `user_health_profiles` | `id`, `user_id`(FK, unique), `blood_type`, `rh`, `deleted_at` | 민감정보. 동의 철회 시 **물리 삭제** |
-| `user_conditions` | `id`, `user_id`(FK), `condition` — `(user_id, condition)` unique | 〃 |
-| `user_allergies` | `id`, `user_id`(FK), `allergen`, `severity` — `(user_id, allergen)` unique | 〃 |
+| `user_health_profiles` | `id`, `user_id`(FK, unique), `blood_type`🔒, `rh`🔒, `deleted_at` | 민감정보. 동의 철회 시 **물리 삭제** |
+| `user_conditions` | `id`, `user_id`(FK), `condition` — `(user_id, condition)` unique, FK→`condition_types.code` | 〃. 기능 키라 평문 유지 |
+| `user_allergies` | `id`, `user_id`(FK), `allergen`, `severity` — `(user_id, allergen)` unique, FK→`allergen_types.code` | 〃. 기능 키라 평문 유지 |
+
+🔒 = `crypto.EncryptedString`로 앱 레이어 AES-256-GCM 암호화 저장 (0013). 범위는 혈액형·Rh뿐.
 | `groups` | `id`, `owner_id`(FK), `name`, `kind`, `invite_code`(unique, 서버 생성) | 리비전 0004. API 계약은 `docs/DATA_MODEL.md` 9장, 라이프사이클(탈퇴·삭제·제거·해제)은 17장. 그룹 삭제는 **물리 삭제** (연결 테이블만 함께 삭제, 펫·급여 기록 보존) |
 | `group_members` | `id`, `group_id`(FK), `user_id`(FK), `role` — `(group_id, user_id)` unique | 〃 |
 | `pets` | `id`, `owner_id`(FK), `name`, `species`, `breed`, `birth_year`, `weight_kg`, `is_neutered`, `deleted_at` | 보호자 1:N, soft delete. 응답의 `recommended_kcal`(RER/MER)은 컬럼이 아니라 계산 필드 (18장) |

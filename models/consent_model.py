@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
+from crypto import EncryptedString
 from database import Base
 
 
@@ -27,10 +28,10 @@ class UserHealthProfile(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, nullable=False)
-    # A / B / O / AB / unknown. 모름 허용이라 nullable.
-    blood_type: Mapped[str | None] = mapped_column(String(10), nullable=True)
-    # + / -
-    rh: Mapped[str | None] = mapped_column(String(1), nullable=True)
+    # A / B / O / AB / unknown. 모름 허용이라 nullable. 민감정보라 암호화 저장.
+    blood_type: Mapped[str | None] = mapped_column(EncryptedString(255), nullable=True)
+    # + / -. 민감정보라 암호화 저장.
+    rh: Mapped[str | None] = mapped_column(EncryptedString(255), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -49,7 +50,8 @@ class UserCondition(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
-    # diabetes / pregnancy / ckd / cancer / hypertension
+    # diabetes / pregnancy / ckd / cancer / hypertension. 참조 테이블(condition_types) FK·JOIN·
+    # 추천/경고 필터에 쓰이는 기능 키라 암호화하지 않는다 (평문 코드 유지).
     condition: Mapped[str] = mapped_column(String(20), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -62,6 +64,7 @@ class UserAllergy(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    # 참조 테이블(allergen_types) FK·JOIN·추천/경고 필터에 쓰이는 기능 키라 암호화하지 않는다.
     allergen: Mapped[str] = mapped_column(String(100), nullable=False)
     # mild / severe
     severity: Mapped[str | None] = mapped_column(String(10), nullable=True)
