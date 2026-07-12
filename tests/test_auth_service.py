@@ -10,10 +10,10 @@ v18 인증 견고화(OTP 브루트포스 방어·발급 레이트리밋·세션 
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 import services.auth_service as auth_service
-from models.auth_model import PhoneVerificationCode
+from models.auth_model import AuthSession, PhoneVerificationCode, User
 
 
 def _issue_signup_code(db, phone: str) -> str:
@@ -234,3 +234,54 @@ def test_production_config_passes_when_secure(monkeypatch):
     monkeypatch.setattr(auth_service, "AUTH_CODE_PEPPER", "a-real-unique-secret")
     monkeypatch.setattr(auth_service, "AUTH_INCLUDE_DEV_CODE", False)
     auth_service.ensure_production_auth_config()  # 예외가 없어야 한다
+
+
+# --- 정리 배치 ------------------------------------------------------------
+
+def test_purge_deletes_old_codes_keeps_recent(db):
+    phone = "01099996000"
+    now = datetime.now(UTC)
+    # 오래된 코드(2일 전) + 최근 코드(방금)
+    db.add(PhoneVerificationCode(
+        phone_number=phone, purpose="signup", code_hash="x" * 64,
+        expires_at=now, created_at=now - timedelta(days=2),
+    ))
+    db.add(PhoneVerificationCode(
+        phone_number=phone, purpose="signup", code_hash="y" * 64,
+        expires_at=now + timedelta(minutes=5), created_at=now,
+    ))
+    db.flush()
+
+    result = auth_service.purge_expired_auth(db)
+    assert result["codes"] >= 1
+
+    remaining = db.scalars(
+        select(PhoneVerificationCode.created_at).where(
+            PhoneVerificationCode.phone_number == phone
+        )
+    ).all()
+    # 최근 코드만 남는다.
+    assert all(created > now - timedelta(days=1) for created in remaining)
+
+
+def test_purge_deletes_old_sessions_keeps_active(db):
+    now = datetime.now(UTC)
+    user = User(phone_number="01099996001", is_phone_verified=True)
+    db.add(user)
+    db.flush()
+
+    # 8일 전 만료된 세션 + 활성 세션
+    db.add(AuthSession(user_id=user.id, token="old" + "a" * 61,
+                       expires_at=now - timedelta(days=8)))
+    active_token = "new" + "b" * 61
+    db.add(AuthSession(user_id=user.id, token=active_token,
+                       expires_at=now + timedelta(days=30)))
+    db.flush()
+
+    auth_service.purge_expired_auth(db)
+
+    tokens = db.scalars(
+        select(AuthSession.token).where(AuthSession.user_id == user.id)
+    ).all()
+    assert active_token in tokens  # 활성 세션 보존
+    assert "old" + "a" * 61 not in tokens  # 오래 만료된 세션 삭제

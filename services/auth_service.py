@@ -4,7 +4,7 @@ import re
 import secrets
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from models.auth_model import AuthSession, PhoneVerificationCode, User
@@ -258,3 +258,36 @@ def _hash_code(phone_number: str, purpose: str, code: str) -> str:
 def _hash_session_token(token: str) -> str:
     # 토큰 자체가 384비트 난수라 pepper 없이 단순 sha256으로 충분하다.
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# 정기 정리 배치 보존창.
+# 코드: 발급 1일 뒤 삭제 — TTL 5분·레이트리밋 1시간창을 넉넉히 지난 뒤라 카운트에 영향 없음.
+# 세션: 만료·폐기 7일 뒤 삭제 (짧은 감사 유예).
+CODE_RETENTION_DAYS = 1
+SESSION_RETENTION_DAYS = 7
+
+
+def purge_expired_auth(db: Session) -> dict[str, int]:
+    """만료된 인증코드와 만료·폐기된 세션을 물리 삭제한다. 정기 배치용(멱등).
+
+    반환: 삭제 건수 `{"codes": n, "sessions": m}`.
+    """
+    now = datetime.now(UTC)
+
+    codes_deleted = db.execute(
+        delete(PhoneVerificationCode).where(
+            PhoneVerificationCode.created_at < now - timedelta(days=CODE_RETENTION_DAYS)
+        )
+    ).rowcount
+
+    sessions_deleted = db.execute(
+        delete(AuthSession).where(
+            or_(
+                AuthSession.expires_at < now - timedelta(days=SESSION_RETENTION_DAYS),
+                AuthSession.revoked_at < now - timedelta(days=SESSION_RETENTION_DAYS),
+            )
+        )
+    ).rowcount
+
+    db.commit()
+    return {"codes": codes_deleted, "sessions": sessions_deleted}
