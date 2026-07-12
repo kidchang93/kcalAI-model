@@ -293,6 +293,21 @@ MVP 구현 기준:
 
 로그인 후 `GET /api/me/profile`이 404면 온보딩 미완료로 보고 `/onboarding`으로 보낸다. 온보딩 순서는 `HEALTHCARE_EXPANSION.md` 9장: 동의(0) → 신체(1, 기존 `PUT /api/me/profile`) → 혈액형(2) → 질병(3) → 알러지(4) → 목표(5, 기존 `PUT /api/me/goal`). 0단계에서 동의하지 않으면 2~4를 건너뛴다.
 
+### 인증 견고화 (2026-07-12 — 리비전 0011·0012, 앱 계약 무변)
+
+구현은 전부 `services/auth_service.py`. 상수도 그 모듈 상단에 있다.
+
+| 항목 | 내용 | 상수 |
+|---|---|---|
+| OTP 브루트포스 방어 | `phone_verification_codes.attempt_count`(0011). 검증 실패마다 증가, **5회 초과 시 코드 무효화**(consumed_at). 실패 응답은 기존 400·같은 메시지 유지 | `MAX_CODE_ATTEMPTS = 5` |
+| 단일 유효 코드 | 새 코드 발급 시 같은 phone+purpose의 미소비 코드를 전부 무효화한다 | — |
+| request-code rate limit | 번호당 재요청 쿨다운 60초 + 시간당 5회 (DB 발급 이력 카운트, 별도 인프라 없음). 초과 시 **429** `{"detail": "<한국어>"}` — 앱은 `readErrorMessage`로 detail을 그대로 표시하므로 안전 | `REQUEST_CODE_COOLDOWN_SECONDS = 60`, `REQUEST_CODE_HOURLY_LIMIT = 5` |
+| 세션 토큰 해시 저장 | `auth_sessions.token`에 sha256 해시 저장, 조회는 해시 비교. 원문은 발급 응답에서만 나간다(앱이 받는 토큰 형식 불변). 0012가 기존 평문 토큰을 해시로 변환해 **기존 세션을 보존**했다. downgrade는 불가(해시 비가역) | — |
+| 휴대폰 패턴 검증 | 정규화(82→0) 후 `01[016789]` + 7~8자리만 허용. 유선번호(02...)는 400 | `_MOBILE_PHONE_PATTERN` |
+| 환경 게이트 | `APP_ENV=production`이면 기동 시 `ensure_production_auth_config()` fail-fast (pepper 기본값·dev_code 노출 차단). CORS localhost 정규식은 development 전용 | `main.py` |
+
+SMS 발송 연동·refresh 토큰은 이 범위에 없다 (사용자 결정 대기).
+
 ---
 
 ## 8. 배포 구조 (2026-07-09 확정)

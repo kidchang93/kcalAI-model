@@ -53,7 +53,7 @@ kcalAI-model/
 │   ├── pet_model.py            # Pet, PetFeedingLog
 │   ├── meta_model.py           # ConditionType, AllergenType (참조 테이블)
 │   └── recommendation_model.py # DietRecommendation (추천 캐시)
-├── alembic/                    # DB 마이그레이션 (0001 auth → 0002 health → 0003 consent → 0004 group/pet → 0005 option ref → 0006 diet rec → 0007 food nutrition mfds → 0008 food_label pg_trgm → 0009 meal_items confidence → 0010 condition exclude_keywords)
+├── alembic/                    # DB 마이그레이션 (0001 auth → 0002 health → 0003 consent → 0004 group/pet → 0005 option ref → 0006 diet rec → 0007 food nutrition mfds → 0008 food_label pg_trgm → 0009 meal_items confidence → 0010 condition exclude_keywords → 0011 otp attempt_count → 0012 session token 해시)
 ├── scripts/
 │   └── import_mfds_food.py     # 식약처 음식 CSV → food_nutrition 임포트 (원본 CSV 는 레포 밖, 커밋 금지)
 ├── webapp/                     # Expo 웹 빌드 산출물 (gitignored, 존재할 때만 정적 서빙)
@@ -136,12 +136,24 @@ api  →  services  →  models  →  database (Base, engine)
 ```
 api/auth_api.py  ── Depends(get_db) → Session
   └─ services/auth_service.py
-       ├─ normalize_phone_number()   숫자만 추출, 82→0 치환, 10~15자리 검증
-       ├─ _create_phone_code()       6자리 난수 → sha256(pepper:phone:purpose:code) 저장
-       ├─ _consume_valid_code()      해시 대조 + 미소비 + 미만료 → consumed_at 기록
-       └─ _create_session()          token_urlsafe(48), TTL 30일
-  ← ValueError → HTTPException(400, detail=str(e))
+       ├─ normalize_phone_number()      숫자만 추출, 82→0 치환, 휴대폰 패턴(01[016789]+7~8자리)만 허용
+       ├─ _enforce_request_rate_limit() 번호당 재요청 쿨다운 60초 + 시간당 5회 (DB 발급 이력 카운트)
+       ├─ _create_phone_code()          같은 phone+purpose 미소비 코드 전부 무효화(단일 유효 코드) 후
+       │                                6자리 난수 → sha256(pepper:phone:purpose:code) 저장
+       ├─ _consume_valid_code()         최신 유효 코드와 해시 대조. 불일치 시 attempt_count 증가,
+       │                                5회 초과 시 코드 무효화(consumed_at). 일치 시 consumed_at 기록
+       └─ _create_session()             token_urlsafe(48) 원문은 발급 응답에만, DB에는 sha256 해시 저장
+  ← ValueError → HTTPException(400), RateLimitError → HTTPException(429)
 ```
+
+상수는 전부 `services/auth_service.py` 모듈 상단: `MAX_CODE_ATTEMPTS = 5`, `REQUEST_CODE_COOLDOWN_SECONDS = 60`, `REQUEST_CODE_HOURLY_LIMIT = 5` (2026-07-12, 리비전 0011·0012).
+
+### 환경 게이트 (`APP_ENV`, 2026-07-12)
+
+`main.py`가 `APP_ENV`(기본 `development`)를 읽어 두 가지를 분기합니다.
+
+- **production 기동 fail-fast**: `services/auth_service.py:ensure_production_auth_config()` — `AUTH_CODE_PEPPER`가 미설정·기본값·`.env.example` 플레이스홀더이거나 `AUTH_INCLUDE_DEV_CODE=true`면 import 단계에서 `RuntimeError`로 죽습니다.
+- **CORS**: localhost `allow_origin_regex`는 development에서만 적용. production은 `CORS_ALLOW_ORIGINS` 명시 목록만 신뢰합니다.
 
 ### S3 (`/api/s3/*`) — **제거됨 (2026-07-12)**
 
@@ -166,8 +178,8 @@ kcal/build-web.sh → npx expo export --platform web → kcalAI-model/webapp/
 | 테이블 | 주요 컬럼 | 비고 |
 |--------|-----------|------|
 | `users` | `id`, `phone_number`(unique), `is_phone_verified`, `created_at`, `updated_at` | 회원 탈퇴(`DELETE /api/me`) 시 개인 데이터 전체와 함께 **물리 삭제** (파기 연쇄는 DATA_MODEL 18장) |
-| `phone_verification_codes` | `id`, `phone_number`, `purpose`(`signup`/`login`), `code_hash`, `expires_at`, `consumed_at`, `created_at` | 평문 코드 미저장 |
-| `auth_sessions` | `id`, `user_id`(FK), `token`(unique), `expires_at`, `revoked_at`, `created_at` | |
+| `phone_verification_codes` | `id`, `phone_number`, `purpose`(`signup`/`login`), `code_hash`, `attempt_count`, `expires_at`, `consumed_at`, `created_at` | 평문 코드 미저장. `attempt_count`(리비전 0011)는 검증 실패 누적, 5회 초과 시 무효화 |
+| `auth_sessions` | `id`, `user_id`(FK), `token`(unique), `expires_at`, `revoked_at`, `created_at` | `token`은 sha256 해시 저장 (리비전 0012). 원문은 발급 응답에만 나가고 조회는 해시 비교 |
 | `user_profiles` `user_goals` `meal_logs` `meal_items` `weight_logs` `food_nutrition` | `docs/DATA_MODEL.md` 3장 | 리비전 0002. `food_nutrition`은 0007에서 `sugar_g`·`sodium_mg`·`potassium_mg`·`phosphorus_mg`·`food_group` 추가 (식약처 실측, 12장). 적재는 `scripts/import_mfds_food.py` |
 | `user_consents` | `id`, `user_id`(FK), `kind`, `version`, `agreed_at`, `revoked_at` | 재동의는 새 행 (이력 보존). 리비전 0003 |
 | `user_health_profiles` | `id`, `user_id`(FK, unique), `blood_type`, `rh`, `deleted_at` | 민감정보. 동의 철회 시 **물리 삭제** |

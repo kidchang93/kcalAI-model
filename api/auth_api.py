@@ -13,6 +13,7 @@ from schemas.auth_schema import (
     VerifyPhoneCodeRequest,
 )
 from services.auth_service import (
+    RateLimitError,
     create_login_code,
     create_signup_code,
     revoke_session_token,
@@ -26,7 +27,7 @@ router = APIRouter()
 @router.post(
     "/auth/signup/request-code",
     response_model=PhoneCodeResponse,
-    responses={400: {"model": AuthError}},
+    responses={400: {"model": AuthError}, 429: {"model": AuthError}},
 )
 def request_signup_code(request: PhoneNumberRequest, db: Session = Depends(get_db)):
     try:
@@ -36,6 +37,8 @@ def request_signup_code(request: PhoneNumberRequest, db: Session = Depends(get_d
             "expires_at": expires_at,
             "dev_code": dev_code,
         }
+    except RateLimitError as error:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
@@ -47,9 +50,10 @@ def request_signup_code(request: PhoneNumberRequest, db: Session = Depends(get_d
 )
 def verify_signup(request: VerifyPhoneCodeRequest, db: Session = Depends(get_db)):
     try:
-        user, auth_session = verify_signup_code(db, request.phone_number, request.code)
+        # DB에는 토큰 해시만 저장되므로 원문(raw_token)은 이 응답에서만 나간다.
+        user, auth_session, raw_token = verify_signup_code(db, request.phone_number, request.code)
         return {
-            "access_token": auth_session.token,
+            "access_token": raw_token,
             "expires_at": auth_session.expires_at,
             "user": user,
         }
@@ -78,7 +82,7 @@ def logout(
 @router.post(
     "/auth/login/request-code",
     response_model=PhoneCodeResponse,
-    responses={400: {"model": AuthError}},
+    responses={400: {"model": AuthError}, 429: {"model": AuthError}},
 )
 def request_login_code(request: PhoneNumberRequest, db: Session = Depends(get_db)):
     try:
@@ -88,6 +92,8 @@ def request_login_code(request: PhoneNumberRequest, db: Session = Depends(get_db
             "expires_at": expires_at,
             "dev_code": dev_code,
         }
+    except RateLimitError as error:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
@@ -99,9 +105,10 @@ def request_login_code(request: PhoneNumberRequest, db: Session = Depends(get_db
 )
 def verify_login(request: VerifyPhoneCodeRequest, db: Session = Depends(get_db)):
     try:
-        user, auth_session = verify_login_code(db, request.phone_number, request.code)
+        # DB에는 토큰 해시만 저장되므로 원문(raw_token)은 이 응답에서만 나간다.
+        user, auth_session, raw_token = verify_login_code(db, request.phone_number, request.code)
         return {
-            "access_token": auth_session.token,
+            "access_token": raw_token,
             "expires_at": auth_session.expires_at,
             "user": user,
         }

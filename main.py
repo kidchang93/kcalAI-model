@@ -17,6 +17,14 @@ from api import (
     account_router,
 )
 from database import init_db
+from services.auth_service import ensure_production_auth_config
+
+# api import 시점에 services가 load_dotenv()를 이미 수행했으므로 .env 값이 반영돼 있다.
+APP_ENV = os.getenv("APP_ENV", "development")
+
+# 운영 기동 fail-fast: 개발 기본값(pepper·dev_code 노출)을 그대로 배포하면 서버가 뜨지 않는다.
+if APP_ENV == "production":
+    ensure_production_auth_config()
 
 app = FastAPI(
     title="Food Classification API",
@@ -34,14 +42,18 @@ cors_allow_origins = [
     if origin.strip()
 ]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_allow_origins,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+cors_kwargs: dict = {
+    "allow_origins": cors_allow_origins,
+    "allow_credentials": True,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+}
+
+# localhost 정규식 허용은 개발 편의용이다. 운영은 CORS_ALLOW_ORIGINS 명시 목록만 신뢰한다.
+if APP_ENV != "production":
+    cors_kwargs["allow_origin_regex"] = r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
+
+app.add_middleware(CORSMiddleware, **cors_kwargs)
 
 @app.on_event("startup")
 def on_startup():

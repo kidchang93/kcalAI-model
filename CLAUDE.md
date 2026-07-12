@@ -92,12 +92,13 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 | `DATABASE_URL` | 아니오 | `postgresql+psycopg2://kcal:kcal@localhost:5432/kcal` | `database.py:8` |
 | `AUTH_CODE_TTL_MINUTES` | 아니오 | `5` | `services/auth_service.py:13` |
 | `AUTH_SESSION_TTL_DAYS` | 아니오 | `30` | `services/auth_service.py:14` |
-| `AUTH_CODE_PEPPER` | 아니오 | `development-only-pepper` | 운영에서 **반드시 교체** |
-| `AUTH_INCLUDE_DEV_CODE` | 아니오 | `true` | 운영에서 **반드시 `false`** |
-| `CORS_ALLOW_ORIGINS` | 아니오 | localhost:3000,5173 | `main.py:17` |
+| `AUTH_CODE_PEPPER` | 아니오 | `development-only-pepper` | 운영에서 **반드시 교체** — `APP_ENV=production`이면 기본값·플레이스홀더 시 기동 실패 (fail-fast) |
+| `AUTH_INCLUDE_DEV_CODE` | 아니오 | `true` | 운영에서 **반드시 `false`** — `APP_ENV=production`이면 `true`일 때 기동 실패 |
+| `APP_ENV` | 아니오 | `development` | `main.py` — `production`이면 인증 설정 fail-fast + CORS localhost 정규식 비활성 (2026-07-12) |
+| `CORS_ALLOW_ORIGINS` | 아니오 | localhost:3000,5173 | `main.py` — production에서는 이 명시 목록만 허용 |
 | `AIHUB_API_KEY` | — | — | `.env`에만 있고 **코드에서 미사용** |
 
-**`.env.example`이 불완전합니다.** `CORS_ALLOW_ORIGINS`가 빠져 있습니다. (`ACCESS_KEY` 등 S3 자격증명 5종은 S3 제거로 더 이상 읽지 않습니다 — `.env`에 남아 있어도 무해합니다.)
+(`ACCESS_KEY` 등 S3 자격증명 5종은 S3 제거로 더 이상 읽지 않습니다 — `.env`에 남아 있어도 무해합니다.)
 
 ---
 
@@ -109,7 +110,7 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 |--------|--------|-----------|
 | Auth | `POST /api/auth/signup/request-code` · `signup/verify` · `login/request-code` · `login/verify` · `logout` | `api/auth_api.py` |
 | Predict | `POST /api/predict` · `POST /api/gpt-predict` (둘 다 Bearer 필수, `sensitive_health` 동의는 불필요) | `api/predict_api.py` |
-| Nutrition | `POST /api/nutrition/estimate` · `POST /api/nutrition/warnings` (Bearer + `sensitive_health` 동의 필수) | `api/nutrition_api.py` |
+| Nutrition | `POST /api/nutrition/estimate` (Bearer만 — 질병·알러지 미사용이라 동의 불필요) · `POST /api/nutrition/warnings` (Bearer + `sensitive_health` 동의 필수) | `api/nutrition_api.py` |
 | Health | `GET·PUT /api/me/profile` · `GET·PUT /api/me/goal` · `GET /api/me/summary` · `GET /api/me/trends` · `POST·GET /api/meals` · `PUT·DELETE /api/meals/{meal_id}` · `POST·GET /api/weights` | `api/health_api.py` |
 | Consent | `GET·POST /api/me/consents` · `POST /api/me/consents/revoke` · `GET·PUT /api/me/health-profile` · `GET·PUT /api/me/conditions` · `GET·PUT /api/me/allergies` | `api/consent_api.py` |
 | Groups | `POST·GET /api/groups` · `POST /api/groups/join` · `GET·DELETE /api/groups/{group_id}` · `DELETE /api/groups/{group_id}/members/me` · `DELETE /api/groups/{group_id}/members/{user_id}` · `POST /api/groups/{group_id}/pets` · `DELETE /api/groups/{group_id}/pets/{pet_id}` | `api/group_api.py` |
@@ -127,8 +128,8 @@ Auth의 가입·로그인 4종(`signup/request-code`, `signup/verify`, `login/re
 | # | 내용 | 근거 |
 |---|------|------|
 | 1 | `HF_TOKEN`이 `.env`에도 셸 환경변수에도 없으면 **서버가 아예 뜨지 않습니다** (import 시점 `KeyError`). `load_dotenv()`가 **cwd 기준**으로 `.env`를 찾으므로, 저장소 루트가 아닌 곳에서 실행하면 토큰을 못 찾습니다. | `services/gpt_oss_service.py:15,26` (실측 확인) |
-| 2 | `AUTH_INCLUDE_DEV_CODE` 기본값이 `true`라 미설정 시 인증번호가 API 응답에 노출됩니다. | `services/auth_service.py:16,104` |
-| 3 | `AUTH_CODE_PEPPER` 기본값이 `development-only-pepper`입니다. | `services/auth_service.py:15` |
+| 2 | `AUTH_INCLUDE_DEV_CODE` 기본값이 `true`라 미설정 시 인증번호가 API 응답에 노출됩니다. **완화됨** (2026-07-12): `APP_ENV=production`이면 `true`일 때 기동 자체가 실패합니다 (`ensure_production_auth_config`). | `services/auth_service.py` |
+| 3 | `AUTH_CODE_PEPPER` 기본값이 `development-only-pepper`입니다. **완화됨** (2026-07-12): `APP_ENV=production`이면 기본값·플레이스홀더일 때 기동 실패. | `services/auth_service.py` |
 | 4 | ~~세션 토큰을 발급만 하고 검증·폐기하는 코드가 없습니다.~~ **해결됨** (2026-07-09). `get_current_user`(`api/dependencies.py`) + `get_user_by_session_token`/`revoke_session_token`(`services/auth_service.py`) + `POST /api/auth/logout`. ~~단 `/api/predict`, `/api/gpt-predict`는 무인증 공개~~ → **해결됨** (2026-07-12, 둘 다 Bearer 필수). | `api/dependencies.py`, `api/predict_api.py` |
 | 5 | ~~`/api/s3/*`가 `str(e)`로 boto3 내부 예외를 노출 (13곳).~~ **소멸** (2026-07-12). S3 라우트 제거로 `api/file_upload_api.py` 자체가 삭제됐습니다. | — |
 | 6 | ~~`api/file_upload_api.py`가 `os.getenv`로 자격증명을 직접 읽음.~~ **소멸** (2026-07-12, 파일 삭제). | — |
@@ -136,7 +137,7 @@ Auth의 가입·로그인 4종(`signup/request-code`, `signup/verify`, `login/re
 | 8 | `@app.on_event("startup")`은 FastAPI 0.118에서 deprecated입니다. lifespan으로 이전이 필요합니다. | `main.py:34` |
 | 9 | ~~DB 마이그레이션 도구가 없습니다.~~ **해결됨** (2026-07-09). Alembic 도입 — `alembic/versions/0001_initial_auth.py`, `0002_health_tables.py`. 스키마 변경은 이제 `alembic revision`으로 합니다. `create_all`은 남아 있으나 신규 테이블 생성용입니다. | `alembic.ini`, `database.py:32` |
 | 10 | `runs/`에 학습 산출물 74개(약 70MB)가 커밋되어 있습니다. 배포 시 `scp -r ./*`로 매번 전송됩니다. | `.github/workflows/deploy.yml:41` |
-| 11 | `.env.example`에 `CORS_ALLOW_ORIGINS`가 누락되어 있습니다. (S3 자격증명 5종은 S3 제거로 더 이상 필요 없습니다) | `.env.example` |
+| 11 | ~~`.env.example`에 `CORS_ALLOW_ORIGINS`가 누락되어 있습니다.~~ **해결됨** (2026-07-12). `APP_ENV`·`CORS_ALLOW_ORIGINS` 추가. (S3 자격증명 5종은 S3 제거로 더 이상 필요 없습니다) | `.env.example` |
 
 ---
 
