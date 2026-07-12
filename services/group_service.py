@@ -1,6 +1,6 @@
 import secrets
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from models.auth_model import User
@@ -164,4 +164,94 @@ def attach_pet(db: Session, user_id: int, group_id: int, pet_id: int) -> None:
         raise ValueError("이미 그룹에 참여한 반려동물입니다.")
 
     db.add(GroupPet(group_id=group_id, pet_id=pet_id))
+    db.commit()
+
+
+# ---- 라이프사이클 (탈퇴 · 삭제 · 제거 · 펫 해제) ----
+# 파괴적 라우트는 비멤버에게 그룹 존재 자체를 숨긴다 (404) — 남의 펫 404 은닉과 같은 규칙.
+
+def _get_group_membership_or_hide(
+    db: Session, user_id: int, group_id: int
+) -> tuple[Group, GroupMember]:
+    group = db.scalar(select(Group).where(Group.id == group_id))
+    membership = get_membership(db, group_id, user_id) if group is not None else None
+
+    if group is None or membership is None:
+        raise LookupError("그룹을 찾을 수 없습니다.")
+
+    return group, membership
+
+
+def _detach_pets_owned_by(db: Session, group_id: int, owner_id: int) -> None:
+    # 소유자가 그룹을 떠나면 펫 공유의 전제(소유자의 멤버십)가 사라지므로 참여도 함께 해제한다.
+    # 급여 기록은 pet_id 에 귀속되므로 보존된다.
+    pet_ids = select(Pet.id).where(Pet.owner_id == owner_id)
+    db.execute(
+        delete(GroupPet).where(GroupPet.group_id == group_id, GroupPet.pet_id.in_(pet_ids))
+    )
+
+
+def leave_group(db: Session, user_id: int, group_id: int) -> None:
+    group, membership = _get_group_membership_or_hide(db, user_id, group_id)
+
+    if group.owner_id == user_id:
+        raise ValueError("소유자는 탈퇴할 수 없습니다. 그룹 삭제로 진행해주세요.")
+
+    _detach_pets_owned_by(db, group_id, user_id)
+    db.delete(membership)
+    db.commit()
+
+
+def delete_group(db: Session, user_id: int, group_id: int) -> None:
+    group, _ = _get_group_membership_or_hide(db, user_id, group_id)
+
+    if group.owner_id != user_id:
+        raise PermissionError("그룹 소유자만 삭제할 수 있습니다.")
+
+    # 멤버십·펫 참여 연결만 지운다. 펫과 급여 기록은 그룹이 아니라 소유자·펫에 귀속되므로 남긴다.
+    db.execute(delete(GroupPet).where(GroupPet.group_id == group_id))
+    db.execute(delete(GroupMember).where(GroupMember.group_id == group_id))
+    db.delete(group)
+    db.commit()
+
+
+def remove_member(db: Session, user_id: int, group_id: int, target_user_id: int) -> None:
+    group, _ = _get_group_membership_or_hide(db, user_id, group_id)
+
+    if group.owner_id != user_id:
+        raise PermissionError("그룹 소유자만 멤버를 제거할 수 있습니다.")
+
+    if target_user_id == user_id:
+        raise ValueError("소유자 자신은 제거할 수 없습니다. 그룹 삭제로 진행해주세요.")
+
+    target = get_membership(db, group_id, target_user_id)
+    if target is None:
+        raise LookupError("그룹에서 해당 멤버를 찾을 수 없습니다.")
+
+    _detach_pets_owned_by(db, group_id, target_user_id)
+    db.delete(target)
+    db.commit()
+
+
+def detach_pet(db: Session, user_id: int, group_id: int, pet_id: int) -> None:
+    group, _ = _get_group_membership_or_hide(db, user_id, group_id)
+
+    row = db.execute(
+        select(GroupPet, Pet)
+        .join(Pet, Pet.id == GroupPet.pet_id)
+        .where(
+            GroupPet.group_id == group_id,
+            GroupPet.pet_id == pet_id,
+            Pet.deleted_at.is_(None),
+        )
+    ).first()
+    if row is None:
+        raise LookupError("그룹에 참여한 반려동물을 찾을 수 없습니다.")
+
+    group_pet, pet = row
+    if pet.owner_id != user_id and group.owner_id != user_id:
+        raise PermissionError("반려동물 소유자 또는 그룹 소유자만 참여를 해제할 수 있습니다.")
+
+    # 급여 기록은 pet_id 에 귀속되므로 보존된다 (펫 soft delete 때와 같은 규칙).
+    db.delete(group_pet)
     db.commit()
