@@ -13,16 +13,14 @@
 | 학습 산출물 | `runs/` | 커밋하지 않음 (기존 74개는 예외) |
 | IDE HTTP 요청 | `http/` | `test_<domain>.http` |
 
-> `schemas/`의 파일명이 단수(`auth_schema.py`, `predict_schema.py`)와 복수(`gpt_schemas.py`)로 갈립니다. **새 파일은 단수 `_schema.py`를 씁니다.**
+> `schemas/`의 파일명은 단수 `_schema.py`를 씁니다 (`auth_schema.py`, `predict_schema.py`).
 
-각 디렉토리는 단일 도메인당 단일 파일입니다. `api/__init__.py`에서 라우터를 재수출합니다.
+각 디렉토리는 단일 도메인당 단일 파일입니다. **`api/__init__.py`는 비워 둡니다** — 라우터는 `main.py`가 각 서브모듈에서 직접 import합니다. (예전엔 여기서 재수출하다가 predict→torch가 딸려와 테스트를 무겁게 만들었습니다. 2026-07-12 정리.)
 
 ```python
-# api/__init__.py
-from .predict_api import router as predict_router
-from .auth_api import router as auth_router
-
-__all__ = ["predict_router", "auth_router"]
+# main.py
+from api.auth_api import router as auth_router
+from api.predict_api import router as predict_router
 ```
 
 ## 네이밍
@@ -65,7 +63,7 @@ from sqlalchemy.orm import Session
 from models.auth_model import AuthSession, PhoneVerificationCode, User
 ```
 
-로컬 import는 절대 경로를 씁니다 (`from database import get_db`). 상대 import는 `api/__init__.py`의 재수출에서만 사용합니다.
+로컬 import는 절대 경로를 씁니다 (`from database import get_db`).
 
 ## 타입 힌트
 
@@ -230,15 +228,14 @@ pytest를 씁니다 (`requirements-dev.txt`, 실행은 `venv/bin/python -m pytes
 - **테스트 데이터는 명시적으로.** 시간 의존 로직(쿨다운·만료)은 `created_at`을 직접 과거로 옮겨 검증한다 (실제 sleep 금지). 공유 DB의 기존 데이터와 겹치지 않는 번호 대역을 쓴다.
 - **모듈 상수는 monkeypatch로.** `AUTH_INCLUDE_DEV_CODE` 등 import 시점에 잡힌 값은 `monkeypatch.setattr`로 덮는다.
 
-### API 레이어 테스트가 아직 없는 이유 — import 시점 부작용
+### API 레이어 테스트 — TestClient (import 시점 부작용 정리 완료)
 
-`http/test_main.http`가 IDE용 요청 파일로 남아 있습니다. FastAPI `TestClient`로 API를 테스트하려면 **import 시점 부작용**을 먼저 풀어야 합니다. 특히 `api/__init__.py`가 predict 라우터를 즉시 import해, `api` 패키지의 어떤 것을 import해도 아래가 딸려옵니다.
+`api/__init__.py`를 비운 덕에(2026-07-12) `from api.auth_api import router`만 하면 predict→torch가 딸려오지 않습니다. 그래서 특정 라우터만 최소 앱에 올려 `TestClient`로 테스트합니다 — `tests/test_auth_api.py`(request-code 429·400·200, verify) 참조. `get_db`는 conftest의 savepoint 세션으로 오버라이드합니다.
 
-| 부작용 | 위치 | 해결 |
+남은 import 시점 부작용(모델을 실제로 올리는 predict 계열 테스트에만 해당):
+
+| 부작용 | 위치 | 회피 |
 |--------|------|------|
-| YOLO 가중치를 즉시 로드 (cwd 의존) | `services/predict_service.py:22` | 지연 로딩 |
+| YOLO 가중치를 즉시 로드 (cwd 의존) | `services/predict_service.py` | predict 테스트는 `predict_image`를 목으로 대체 |
 | `load_dotenv()` (cwd 기준 `.env` 탐색) | `database.py`·`crypto.py` | 저장소 루트에서 실행 |
-| `init_db()`가 실제 PostgreSQL에 연결 | `main.py` | 테스트용 `DATABASE_URL` 오버라이드 |
-| `api/__init__.py`가 predict(→torch) 라우터를 즉시 import | `api/__init__.py:1` | 라우터 lazy import |
-
-즉 현재는 `import main`(또는 `api` 패키지 import)만 해도 모델 로드·`.env` 탐색·DB 연결이 일어납니다. 서비스 레이어 테스트는 이 부작용을 건드리지 않으므로 지금 바로 가능합니다.
+| `init_db()`가 실제 PostgreSQL에 연결 | `main.py` | 테스트용 `DATABASE_URL`(또는 `TEST_DATABASE_URL`) |

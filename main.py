@@ -6,18 +6,16 @@ import time
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from api import (
-    auth_router,
-    predict_router,
-    health_router,
-    nutrition_router,
-    consent_router,
-    group_router,
-    pet_router,
-    meta_router,
-    recommendation_router,
-    account_router,
-)
+from api.account_api import router as account_router
+from api.auth_api import router as auth_router
+from api.consent_api import router as consent_router
+from api.group_api import router as group_router
+from api.health_api import router as health_router
+from api.meta_api import router as meta_router
+from api.nutrition_api import router as nutrition_router
+from api.pet_api import router as pet_router
+from api.predict_api import router as predict_router
+from api.recommendation_api import router as recommendation_router
 from crypto import ensure_production_crypto_config
 from database import init_db
 from log_utils import setup_level_logger

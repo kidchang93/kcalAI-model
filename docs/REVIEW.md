@@ -94,7 +94,7 @@ curl -X POST http://127.0.0.1:8000/api/auth/signup/request-code \
 - [ ] 서비스 함수를 바꿨다면 계약(성공/예외/경계)을 테스트로 고정했는가.
 - [ ] 테스트가 없는 부분(API 레이어, 추론 파이프라인 등)은 수동 검증 결과를 PR 본문에 기록했는가.
 
-> 현재 pytest는 서비스 레이어 위주다. API 레이어 TestClient 테스트는 `api/__init__.py`가 predict(→torch/YOLO)를 즉시 import하는 문제 때문에 라우터 lazy import 도입 후 확장 예정.
+> pytest는 서비스 레이어 + API 레이어(TestClient)를 커버한다. `api/__init__.py`를 비워(2026-07-12) auth 등 라우터를 torch 없이 올릴 수 있다 — `tests/test_auth_api.py`. predict 계열은 `predict_image`를 목으로 대체하면 API 테스트 가능.
 
 ## 리뷰 시 흔한 실수
 
