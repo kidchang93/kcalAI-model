@@ -17,8 +17,8 @@
   - 리뷰                 → docs/REVIEW.md
 
 제약:
-  - 라우트는 /api/predict, /api/gpt-predict, /api/auth/**, /api/s3/** 14개다.
-    전부 /api prefix 아래에 있다.
+  - 라우트는 48개다 (정확한 목록은 CLAUDE.md "API 목록"). 전부 /api prefix 아래에 있다.
+    /api/s3/** 는 2026-07-12에 제거됐다. 무인증 공개는 Auth 가입·로그인 4종뿐이다.
   - api → services → models 방향으로만 의존한다.
   - 서버는 반드시 저장소 루트에서 실행한다 (YOLO 가중치가 상대경로).
   - HF_TOKEN 이 없으면 import 단계에서 죽는다.

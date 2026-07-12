@@ -13,17 +13,16 @@
 | 학습 산출물 | `runs/` | 커밋하지 않음 (기존 74개는 예외) |
 | IDE HTTP 요청 | `http/` | `test_<domain>.http` |
 
-> `schemas/`의 파일명이 단수(`auth_schema.py`, `predict_schema.py`)와 복수(`gpt_schemas.py`, `s3_schemas.py`)로 갈립니다. **새 파일은 단수 `_schema.py`를 씁니다.**
+> `schemas/`의 파일명이 단수(`auth_schema.py`, `predict_schema.py`)와 복수(`gpt_schemas.py`)로 갈립니다. **새 파일은 단수 `_schema.py`를 씁니다.**
 
 각 디렉토리는 단일 도메인당 단일 파일입니다. `api/__init__.py`에서 라우터를 재수출합니다.
 
 ```python
 # api/__init__.py
 from .predict_api import router as predict_router
-from .file_upload_api import router as file_upload_router
 from .auth_api import router as auth_router
 
-__all__ = ["predict_router", "file_upload_router", "auth_router"]
+__all__ = ["predict_router", "auth_router"]
 ```
 
 ## 네이밍
@@ -32,9 +31,9 @@ __all__ = ["predict_router", "file_upload_router", "auth_router"]
 |------|------|------|
 | 함수·변수 | `snake_case` | `create_signup_code`, `predict_image`, `setup_level_logger` |
 | 모듈 내부 전용 함수 | `_` 접두사 | `_get_user_by_phone`, `_hash_code`, `_consume_valid_code` |
-| 클래스 | `PascalCase` | `PhoneVerificationCode`, `AuthTokenResponse`, `S3Service` |
+| 클래스 | `PascalCase` | `PhoneVerificationCode`, `AuthTokenResponse` |
 | 모듈 상수 | `UPPER_SNAKE_CASE` | `CODE_TTL_MINUTES`, `AUTH_CODE_PEPPER` |
-| 라우터 객체 | `router` (모듈 내), `<domain>_router` (재수출 시) | `auth_router`, `file_upload_router` |
+| 라우터 객체 | `router` (모듈 내), `<domain>_router` (재수출 시) | `auth_router`, `predict_router` |
 | 테이블명 | 복수 `snake_case` | `users`, `phone_verification_codes`, `auth_sessions` |
 
 공개 API 함수는 동사로 시작합니다: `create_*`, `verify_*`, `normalize_*`, `upload_*`.
@@ -158,9 +157,9 @@ CODE_TTL_MINUTES = int(os.getenv("AUTH_CODE_TTL_MINUTES", "5"))
 AUTH_INCLUDE_DEV_CODE = os.getenv("AUTH_INCLUDE_DEV_CODE", "true").lower() == "true"
 ```
 
-새 환경변수를 추가하면 **`.env.example`에 반드시 함께 추가합니다.** 현재 `CORS_ALLOW_ORIGINS`, `ACCESS_KEY`, `SECRET_KEY`, `REGION`, `BUCKET_NAME`, `DOMAIN`이 누락된 상태입니다.
+새 환경변수를 추가하면 **`.env.example`에 반드시 함께 추가합니다.** 현재 `CORS_ALLOW_ORIGINS`가 누락된 상태입니다.
 
-`load_dotenv()`는 `services/gpt_oss_service.py`와 `services/s3_service.py`에서만 호출합니다. 새 서비스에서 중복 호출하지 마세요.
+`load_dotenv()`는 `services/gpt_oss_service.py`에서만 호출합니다. 새 서비스에서 중복 호출하지 마세요.
 
 ## 로깅
 
@@ -186,7 +185,7 @@ error_logger.error(f"predict 실패 {file.filename}: {e!r}")
 
 - 코드로 드러나지 않는 **이유**만 한국어로 짧게 적습니다.
 - 함수가 무엇을 하는지 반복 설명하지 않습니다.
-- docstring은 `services/s3_service.py`에만 있습니다. 새 코드에서 강제하지 않습니다.
+- docstring은 강제하지 않습니다.
 - **주석 처리된 옛 구현을 남기지 않습니다.** `services/gpt_oss_service.py`와 `predict_service.py`가 나쁜 예입니다.
 
 ```python
@@ -212,7 +211,7 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 | `except Exception: return {"error": str(e)}` | `raise HTTPException(...)`. `response_model`이 걸린 라우트에서 `return`으로 다른 형태를 내보내면 **500 평문**이 됩니다 |
 | `raise HTTPException(500, detail=str(e))` | 사용자용 한국어 메시지. 내부 예외는 로거로만 |
 | `api/`에서 SQLAlchemy 쿼리 작성 | `services/`로 이동 |
-| `api/`에서 `os.getenv` 호출 | `services/`가 설정을 읽습니다 (`api/file_upload_api.py`가 위반 중) |
+| `api/`에서 `os.getenv` 호출 | `services/`가 설정을 읽습니다 |
 | `services/`에서 `fastapi` import | `ValueError`/`RuntimeError`를 던지고 `api/`가 변환 |
 | 라우트를 `main.py`에 직접 정의 | `api/<domain>_api.py` + `include_router(prefix="/api")` |
 | `@app.on_event("startup")` | lifespan 컨텍스트 매니저 (기존 코드는 마이그레이션 대상) |
@@ -227,7 +226,7 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 
 <!-- TODO: 확인 필요 - 테스트 프레임워크가 도입되어 있지 않습니다. requirements.txt에 pytest가 없고 테스트 파일도 없습니다. -->
 
-`http/test_main.http`, `http/test_s3.http`가 IDE용 요청 파일로 있습니다. 테스트를 도입할 때는 **import 시점 부작용 세 가지**를 먼저 해결해야 합니다.
+`http/test_main.http`가 IDE용 요청 파일로 있습니다. 테스트를 도입할 때는 **import 시점 부작용 세 가지**를 먼저 해결해야 합니다.
 
 | 부작용 | 위치 | 해결 |
 |--------|------|------|

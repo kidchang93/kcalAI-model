@@ -6,7 +6,7 @@
 2. **API 계약은 모델 교체보다 오래 산다.** YOLO 가중치를 바꿔도 응답 스키마는 유지합니다.
 3. **레이어는 한 방향으로만 의존한다.** `api → services → models`.
 4. **실패도 계약이다.** 성공 응답만큼 실패 응답 형태를 고정합니다.
-5. **비밀은 코드에 없다.** pepper, HF 토큰, S3 자격증명, DB 자격증명은 환경변수로만 주입합니다.
+5. **비밀은 코드에 없다.** pepper, HF 토큰, DB 자격증명은 환경변수로만 주입합니다.
 
 ## 코드에서 확인된 설계 결정
 
@@ -21,7 +21,8 @@
 | 추론을 로컬 LLM이 아닌 HF Inference API로 | `services/gpt_oss_service.py:24` | 로컬 CPU로는 20B 모델 최소사양 미달 (커밋 `4184460` 참조) |
 | 이미지 분류를 `transformers` 파이프라인에서 YOLO로 교체 | `services/predict_service.py:22` | 한국 음식 150클래스 자체 학습 모델 적용 (커밋 `494eed1`) |
 | YOLO 모델을 모듈 전역에 로드 | `services/predict_service.py:22` | 요청마다 로드하면 지연이 큼. 대신 서버 시작 시간과 cwd에 묶임 |
-| S3 접근을 `S3Service` 클래스로 캡슐화 | `services/s3_service.py:16` | boto3 클라이언트 생성과 예외 변환을 한 곳에 |
+| S3 연동(`/api/s3/*` 8라우트, `S3Service`, boto3) 전면 제거 | 2026-07-12 | NCP Object Storage 자원 중단 확정. `meals.photo_s3_key` 컬럼만 선반영 유지 (`docs/DATA_MODEL.md` 4장) |
+| `/api/predict`·`/api/gpt-predict`에 Bearer 인증 적용 | `api/predict_api.py` (2026-07-12) | 무인증 공개 추론 라우트 제거. `sensitive_health` 동의는 요구하지 않음 (단순 이미지 인식) |
 
 ## 의도적으로 하지 않은 것
 
@@ -33,15 +34,15 @@
 
 | 항목 | 현재 상태 | 필요한 결정 |
 |------|-----------|-------------|
-| `/api/s3/*` 실패 응답 | `detail=f"...: {str(e)}"`로 boto3 내부 예외 노출 | `predict_api.py`처럼 로그/응답 분리 |
-| 엔드포인트 인증 | `/api/predict`, `/api/s3/*` 전부 공개 | 세션 토큰 검증 의존성을 어디에 걸지 |
+| ~~`/api/s3/*` 실패 응답~~ | **소멸** — S3 라우트 전체 제거 (2026-07-12) | — |
+| ~~엔드포인트 인증~~ | **해결됨** — `/api/predict`·`/api/gpt-predict`에 `Depends(get_current_user)` 적용 (2026-07-12) | — |
 | 세션 토큰 검증 | 발급만 하고 **검증하는 코드가 없음** | `Depends(get_current_user)` 도입 |
 | 로그아웃 | `revoked_at` 컬럼만 존재 | `POST /api/auth/logout` 추가 여부 |
 | 코드 발급 rate limit | 무제한 | 번호당 발급 횟수/간격 제한 |
 | SMS 발송 | 없음. `dev_code`로 응답에 노출 | 실제 발송 연동 시점 |
 | DB 마이그레이션 | `create_all`만 사용 | Alembic 도입 여부 |
 | 칼로리 프롬프트 | **앱에 하드코딩** (`k-calAI-RN/services/calorie-api.ts:71`) | 서버 템플릿화 시점 |
-| `runs/` 70MB | 저장소에 커밋됨 | 외부 스토리지 이전 (S3 계층이 이미 있음) |
+| `runs/` 70MB | 저장소에 커밋됨 | 외부 스토리지 이전 (S3 연동은 제거됨 — 대안 스토리지 결정 필요) |
 | 라벨 표시명 | YOLO가 한국어 클래스명을 그대로 반환 | 사용자 친화 표시명 매핑이 필요한지 |
 
 ## 새 엔드포인트 추가 절차
@@ -96,7 +97,7 @@ except Exception as e:
 except Exception as e:
     return {"error": str(e)}
 
-# 내부 예외 메시지를 그대로 노출 (api/file_upload_api.py 가 아직 이 패턴입니다)
+# 내부 예외 메시지를 그대로 노출 (삭제된 api/file_upload_api.py 에 있던 안티패턴)
 raise HTTPException(status_code=500, detail=f"파일 업로드 실패: {str(e)}")
 ```
 
@@ -110,7 +111,7 @@ raise HTTPException(status_code=500, detail=f"파일 업로드 실패: {str(e)}"
 raise ValueError("이미 가입된 휴대폰 번호입니다. 로그인으로 진행해주세요.")
 ```
 
-내부 예외(`str(e)`, 스택트레이스, 라이브러리 이름, boto3 오류코드)를 그대로 담지 않습니다.
+내부 예외(`str(e)`, 스택트레이스, 라이브러리 이름, 외부 SDK 오류코드)를 그대로 담지 않습니다.
 
 ## 도메인 모델 규칙
 

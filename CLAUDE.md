@@ -4,7 +4,7 @@
 
 ## 프로젝트 개요
 
-**kcalAI-model**은 헬스케어 앱의 식단 분석 기능을 지원하는 **FastAPI 기반 AI 추론 서버**입니다. 음식 이미지 분류(YOLO), 칼로리 설명 생성(LLM), 휴대폰 인증, S3 오브젝트 스토리지 연동을 담당하며 `k-calAI-RN` 앱이 주 소비자입니다.
+**kcalAI-model**은 헬스케어 앱의 식단 분석 기능을 지원하는 **FastAPI 기반 AI 추론 서버**입니다. 음식 이미지 분류(YOLO), 칼로리 설명 생성(LLM), 휴대폰 인증을 담당하며 `k-calAI-RN` 앱이 주 소비자입니다. (NCP Object Storage 연동 `/api/s3/*`는 자원 중단 확정으로 2026-07-12에 제거했습니다. `meals.photo_s3_key` 컬럼만 선반영 상태로 남아 있습니다.)
 
 메인 제품이 아니라 상위 앱의 기능 서버라는 위치를 유지합니다. 제품 맥락은 `docs/SERVICE_POSITIONING.md`를 참조하세요.
 
@@ -20,7 +20,6 @@
 | 이미지 분류 | ultralytics 8.3.204 (YOLO11 classify) |
 | 분류 가중치 | `runs/classify/s3_korean_food_all_classes/weights/last.pt` (한국 음식, 한국어 라벨) |
 | 텍스트 생성 | `huggingface_hub.InferenceClient` (provider `groq`, model `openai/gpt-oss-120b`) |
-| 오브젝트 스토리지 | boto3 1.35.83 → NCP Object Storage (S3 호환) |
 | 설정 로딩 | `python-dotenv`의 `load_dotenv()` |
 | 배포 | GitHub Actions(`dev` 브랜치) → scp → NCP 서버 |
 | 테스트 | **없음** (프레임워크 미도입) |
@@ -43,7 +42,7 @@ pip install -r requirements.txt
 
 # 3. 환경변수 (HF_TOKEN 없으면 import 단계에서 죽습니다)
 cp .env.example .env
-#   .env 에 HF_TOKEN, ACCESS_KEY, SECRET_KEY, REGION, BUCKET_NAME, DOMAIN 채우기
+#   .env 에 HF_TOKEN 채우기
 
 # 4. 서버 실행 (반드시 저장소 루트에서)
 uvicorn main:app --reload --port 8000
@@ -85,7 +84,7 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 
 ## 환경변수
 
-`load_dotenv()`는 `services/gpt_oss_service.py`와 `services/s3_service.py`에서만 호출됩니다. 이 모듈들이 import되므로 결과적으로 `.env`가 로드됩니다.
+`load_dotenv()`는 `services/gpt_oss_service.py`에서만 호출됩니다. 이 모듈이 import되므로 결과적으로 `.env`가 로드됩니다.
 
 | 변수 | 필수 | 기본값 | 읽는 곳 |
 |------|:----:|--------|---------|
@@ -95,22 +94,21 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 | `AUTH_SESSION_TTL_DAYS` | 아니오 | `30` | `services/auth_service.py:14` |
 | `AUTH_CODE_PEPPER` | 아니오 | `development-only-pepper` | 운영에서 **반드시 교체** |
 | `AUTH_INCLUDE_DEV_CODE` | 아니오 | `true` | 운영에서 **반드시 `false`** |
-| `ACCESS_KEY` `SECRET_KEY` `REGION` `BUCKET_NAME` `DOMAIN` | S3 사용 시 | 없음 | `services/s3_service.py`, `api/file_upload_api.py` |
 | `CORS_ALLOW_ORIGINS` | 아니오 | localhost:3000,5173 | `main.py:17` |
 | `AIHUB_API_KEY` | — | — | `.env`에만 있고 **코드에서 미사용** |
 
-**`.env.example`이 불완전합니다.** `ACCESS_KEY`, `SECRET_KEY`, `REGION`, `BUCKET_NAME`, `DOMAIN`, `CORS_ALLOW_ORIGINS`가 빠져 있습니다.
+**`.env.example`이 불완전합니다.** `CORS_ALLOW_ORIGINS`가 빠져 있습니다. (`ACCESS_KEY` 등 S3 자격증명 5종은 S3 제거로 더 이상 읽지 않습니다 — `.env`에 남아 있어도 무해합니다.)
 
 ---
 
-## API 목록 (코드 실측, 2026-07-11 기준 56개)
+## API 목록 (코드 실측, 2026-07-12 기준 48개)
 
 계약 상세는 `docs/DATA_MODEL.md`가 정본입니다 (4장 CRUD, 7장 사용자 층, 9장 그룹·반려동물, 10장 메타, 11장 식단 추천, 15장 추이 집계, 16장 기록 경고 판정, 17장 그룹 라이프사이클, 18장 회원 탈퇴·펫 권장 칼로리).
 
 | 도메인 | 라우트 | 정의 파일 |
 |--------|--------|-----------|
 | Auth | `POST /api/auth/signup/request-code` · `signup/verify` · `login/request-code` · `login/verify` · `logout` | `api/auth_api.py` |
-| Predict | `POST /api/predict` · `POST /api/gpt-predict` | `api/predict_api.py` |
+| Predict | `POST /api/predict` · `POST /api/gpt-predict` (둘 다 Bearer 필수, `sensitive_health` 동의는 불필요) | `api/predict_api.py` |
 | Nutrition | `POST /api/nutrition/estimate` · `POST /api/nutrition/warnings` (Bearer + `sensitive_health` 동의 필수) | `api/nutrition_api.py` |
 | Health | `GET·PUT /api/me/profile` · `GET·PUT /api/me/goal` · `GET /api/me/summary` · `GET /api/me/trends` · `POST·GET /api/meals` · `PUT·DELETE /api/meals/{meal_id}` · `POST·GET /api/weights` | `api/health_api.py` |
 | Consent | `GET·POST /api/me/consents` · `POST /api/me/consents/revoke` · `GET·PUT /api/me/health-profile` · `GET·PUT /api/me/conditions` · `GET·PUT /api/me/allergies` | `api/consent_api.py` |
@@ -119,9 +117,8 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 | Meta | `GET /api/meta/options` | `api/meta_api.py` |
 | Account | `DELETE /api/me` (회원 탈퇴 — 개인 데이터 전부 물리 삭제, 소유 그룹은 그룹째 삭제. `docs/DATA_MODEL.md` 18장) | `api/account_api.py` |
 | Recommendations | `GET /api/recommendations` (Bearer + `sensitive_health` 동의 필수, 캐시 우선) | `api/recommendation_api.py` |
-| S3 | `POST /api/s3/upload/file` · `upload/local-file` · `upload/directory` · `DELETE /api/s3/delete/{s3_key}` · `delete-prefix/{prefix}` · `GET /api/s3/presigned-url/{s3_key}` · `buckets` · `objects` | `api/file_upload_api.py` |
 
-S3·Predict와 Auth의 가입·로그인 4종을 제외한 전 라우트가 Bearer 인증(`api/dependencies.py`의 `get_current_user`)을 요구합니다 (`/api/auth/logout`도 Bearer 필요). `/api/predict`와 `/api/s3/*`가 무인증 공개인 것은 알려진 문제입니다(아래 표 참고).
+Auth의 가입·로그인 4종(`signup/request-code`, `signup/verify`, `login/request-code`, `login/verify`)을 제외한 **전 라우트**가 Bearer 인증(`api/dependencies.py`의 `get_current_user`)을 요구합니다 (`/api/auth/logout`도 Bearer 필요). `/api/predict`·`/api/gpt-predict`는 2026-07-12에 Bearer 필수로 전환했습니다. `/api/s3/*` 8개 라우트는 같은 날 제거됐습니다 (NCP Object Storage 자원 중단 확정).
 
 ---
 
@@ -132,14 +129,14 @@ S3·Predict와 Auth의 가입·로그인 4종을 제외한 전 라우트가 Bear
 | 1 | `HF_TOKEN`이 `.env`에도 셸 환경변수에도 없으면 **서버가 아예 뜨지 않습니다** (import 시점 `KeyError`). `load_dotenv()`가 **cwd 기준**으로 `.env`를 찾으므로, 저장소 루트가 아닌 곳에서 실행하면 토큰을 못 찾습니다. | `services/gpt_oss_service.py:15,26` (실측 확인) |
 | 2 | `AUTH_INCLUDE_DEV_CODE` 기본값이 `true`라 미설정 시 인증번호가 API 응답에 노출됩니다. | `services/auth_service.py:16,104` |
 | 3 | `AUTH_CODE_PEPPER` 기본값이 `development-only-pepper`입니다. | `services/auth_service.py:15` |
-| 4 | ~~세션 토큰을 발급만 하고 검증·폐기하는 코드가 없습니다.~~ **해결됨** (2026-07-09). `get_current_user`(`api/dependencies.py`) + `get_user_by_session_token`/`revoke_session_token`(`services/auth_service.py`) + `POST /api/auth/logout`. **단 `/api/predict`, `/api/gpt-predict`, `/api/s3/*`는 여전히 무인증 공개입니다.** | `api/dependencies.py` |
-| 5 | `/api/s3/*`가 `detail=f"...: {str(e)}"`로 **boto3 내부 예외를 그대로 노출**합니다. `HTTPException detail` **10곳**(92,95,158,161,204,242,437,505,564,567) + 응답 dict `str(e)` **3곳**(352,386,387) = 총 13곳. (이전 문서의 "14곳"은 실측과 달랐습니다) | `api/file_upload_api.py` |
-| 6 | `api/file_upload_api.py`가 `os.getenv`로 자격증명을 직접 읽습니다. 레이어 규칙 위반입니다. | `api/file_upload_api.py` |
-| 7 | `DELETE /api/s3/delete-prefix/{prefix}`가 사용자 입력을 검증 없이 prefix로 씁니다. | `api/file_upload_api.py:207` |
+| 4 | ~~세션 토큰을 발급만 하고 검증·폐기하는 코드가 없습니다.~~ **해결됨** (2026-07-09). `get_current_user`(`api/dependencies.py`) + `get_user_by_session_token`/`revoke_session_token`(`services/auth_service.py`) + `POST /api/auth/logout`. ~~단 `/api/predict`, `/api/gpt-predict`는 무인증 공개~~ → **해결됨** (2026-07-12, 둘 다 Bearer 필수). | `api/dependencies.py`, `api/predict_api.py` |
+| 5 | ~~`/api/s3/*`가 `str(e)`로 boto3 내부 예외를 노출 (13곳).~~ **소멸** (2026-07-12). S3 라우트 제거로 `api/file_upload_api.py` 자체가 삭제됐습니다. | — |
+| 6 | ~~`api/file_upload_api.py`가 `os.getenv`로 자격증명을 직접 읽음.~~ **소멸** (2026-07-12, 파일 삭제). | — |
+| 7 | ~~`DELETE /api/s3/delete-prefix/{prefix}` prefix 미검증.~~ **소멸** (2026-07-12, 라우트 제거). | — |
 | 8 | `@app.on_event("startup")`은 FastAPI 0.118에서 deprecated입니다. lifespan으로 이전이 필요합니다. | `main.py:34` |
 | 9 | ~~DB 마이그레이션 도구가 없습니다.~~ **해결됨** (2026-07-09). Alembic 도입 — `alembic/versions/0001_initial_auth.py`, `0002_health_tables.py`. 스키마 변경은 이제 `alembic revision`으로 합니다. `create_all`은 남아 있으나 신규 테이블 생성용입니다. | `alembic.ini`, `database.py:32` |
 | 10 | `runs/`에 학습 산출물 74개(약 70MB)가 커밋되어 있습니다. 배포 시 `scp -r ./*`로 매번 전송됩니다. | `.github/workflows/deploy.yml:41` |
-| 11 | `.env.example`에 `ACCESS_KEY`, `SECRET_KEY`, `REGION`, `BUCKET_NAME`, `DOMAIN`, `CORS_ALLOW_ORIGINS`가 누락되어 있습니다. | `.env.example` |
+| 11 | `.env.example`에 `CORS_ALLOW_ORIGINS`가 누락되어 있습니다. (S3 자격증명 5종은 S3 제거로 더 이상 필요 없습니다) | `.env.example` |
 
 ---
 
@@ -149,7 +146,7 @@ S3·Predict와 Auth의 가입·로그인 4종을 제외한 전 라우트가 Bear
 - **`AUTH_INCLUDE_DEV_CODE`를 운영에서 `true`로 두지 않는다.** 기본값이 `true`입니다.
 - **`AUTH_CODE_PEPPER` 기본값을 그대로 배포하지 않는다.**
 - **`.env`를 커밋하지 않는다.** `HF_TOKEN`과 NCP 자격증명이 들어 있습니다.
-- **예외 메시지를 그대로 클라이언트에 반환하지 않는다.** 내부 예외는 `error_logger`에만 남기고, 클라이언트에는 사용자용 한국어 메시지를 줍니다. `api/file_upload_api.py`의 `detail=f"...: {str(e)}"`(문제 5)를 복제하지 마세요.
+- **예외 메시지를 그대로 클라이언트에 반환하지 않는다.** 내부 예외는 `error_logger`에만 남기고, 클라이언트에는 사용자용 한국어 메시지를 줍니다. `detail=f"...: {str(e)}"` 패턴(삭제된 `api/file_upload_api.py`에 있던 안티패턴)을 복제하지 마세요.
 - **`response_model`이 걸린 라우트에서 실패를 `return`하지 않는다.** 검증에 걸려 500 평문이 나갑니다. `raise HTTPException(...)`을 씁니다.
 - **INFO 로거로 `.error()`를 호출하지 않는다.** `setup_level_logger`의 `LevelFilter`가 레코드를 버립니다. `error_logger = setup_level_logger(logging.ERROR)`를 따로 만듭니다.
 - **`api` 레이어에 비즈니스 로직이나 `os.getenv`를 넣지 않는다.** HTTP 입출력과 예외 변환만 담당합니다.

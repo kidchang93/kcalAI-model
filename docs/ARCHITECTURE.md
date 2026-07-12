@@ -19,8 +19,7 @@ kcalAI-model/
 │   ├── nutrition_api.py        # /nutrition/estimate, /nutrition/warnings (기록 경고 판정, sensitive_health 동의 필수)
 │   ├── meta_api.py             # /meta/options (온보딩 선택지 목록)
 │   ├── account_api.py          # DELETE /me (회원 탈퇴 — 계정 파기, DATA_MODEL 18장)
-│   ├── recommendation_api.py   # /recommendations (식단 추천, sensitive_health 동의 필수)
-│   └── file_upload_api.py      # S3 업로드·삭제·조회 (8 라우트)
+│   └── recommendation_api.py   # /recommendations (식단 추천, sensitive_health 동의 필수)
 ├── services/
 │   ├── auth_service.py         # 인증 코드 발급/검증, 세션 생성·검증·폐기
 │   ├── health_service.py       # 프로필·목표·끼니·체중·추이 집계, Mifflin-St Jeor
@@ -33,8 +32,7 @@ kcalAI-model/
 │   ├── meta_service.py         # 참조 테이블(condition/allergen) 조회·코드 검증, 사용자 연결 참조 행 조회, exclude_keywords 매칭 (추천·경고 공용, 16장)
 │   ├── recommendation_service.py # diet_recommendations 캐시 + mfds 후보 풀 + 시드 결정적 규칙 선정 (13장. LLM 없음)
 │   ├── predict_service.py      # YOLO 분류
-│   ├── gpt_oss_service.py      # HF InferenceClient (groq) 텍스트 생성
-│   └── s3_service.py           # S3Service 클래스 (boto3)
+│   └── gpt_oss_service.py      # HF InferenceClient (groq) 텍스트 생성
 ├── schemas/
 │   ├── auth_schema.py
 │   ├── health_schema.py
@@ -46,8 +44,7 @@ kcalAI-model/
 │   ├── meta_schema.py          # OptionItem, MetaOptionsResponse
 │   ├── recommendation_schema.py # RecommendationItem, ExcludedCriterion/Filtered, RecommendationResponse
 │   ├── predict_schema.py       # Prediction, PredictionResponse, ErrorResponse
-│   ├── gpt_schemas.py          # GptAnswer, GptResponse, GptError
-│   └── s3_schemas.py
+│   └── gpt_schemas.py          # GptAnswer, GptResponse, GptError
 ├── models/
 │   ├── auth_model.py           # User, PhoneVerificationCode, AuthSession
 │   ├── health_model.py         # UserProfile, UserGoal, MealLog, MealItem, WeightLog, FoodNutrition
@@ -68,8 +65,7 @@ kcalAI-model/
 │       ├── s3_korean_food_sequential/                   ← best_v3 ~ v8.2.1
 │       └── val/, val2/
 ├── http/                       # IDE용 HTTP 요청 파일
-│   ├── test_main.http
-│   └── test_s3.http
+│   └── test_main.http
 ├── docker-compose.yml          # postgres:16-alpine
 ├── .github/workflows/deploy.yml
 └── task-logs/                  # 런타임 로그 (gitignored)
@@ -86,27 +82,25 @@ api  →  services  →  models  →  database (Base, engine)
 | 레이어 | 책임 | 의존해도 되는 것 | 의존하면 안 되는 것 |
 |--------|------|------------------|---------------------|
 | `api` | HTTP 입출력, 의존성 주입, 예외 변환 | `schemas`, `services`, `database.get_db` | `models` 직접 조작, SQLAlchemy 쿼리, `os.getenv` |
-| `services` | 트랜잭션, 비즈니스 규칙, 외부 연동(YOLO/HF/S3) | `models`, `database`, `schemas` | `fastapi` (HTTP 개념) |
+| `services` | 트랜잭션, 비즈니스 규칙, 외부 연동(YOLO/HF) | `models`, `database`, `schemas` | `fastapi` (HTTP 개념) |
 | `schemas` | 요청/응답 계약의 단일 기준 | Pydantic | `models`, `services` |
 | `models` | 테이블 정의 | `database.Base` | `services`, `api` |
 | `database` | 엔진/세션/Base 생성 | 없음 | 상위 레이어 전부 |
 
 **알려진 위반**
 
-| 위반 | 위치 |
-|------|------|
-| `api`가 `os.getenv`로 S3 자격증명을 직접 읽음 | `api/file_upload_api.py` |
-| `services`가 `HTTPException` 대신 `RuntimeError`를 던짐(허용) 하지만 `predict_api`가 `str(e)`를 노출 | `api/predict_api.py:27,39` |
+현재 없음. (과거 위반이던 `api/file_upload_api.py`의 `os.getenv` 직접 호출과 `str(e)` 노출은 2026-07-12 S3 라우트 제거로 소멸했고, `predict_api`의 `str(e)` 노출은 이전에 로그/응답 분리로 수정됐습니다.)
 
 `database.init_db()`가 `models.auth_model`을 함수 내부에서 지연 import 하는 것은 순환 import 회피용이며 인정된 예외입니다 (`database.py:30`).
 
 ## 요청 흐름
 
-### 이미지 분류 (`POST /api/predict`)
+### 이미지 분류 (`POST /api/predict`) — Bearer 필수
 
 ```
-클라이언트 (multipart/form-data, field=file)
+클라이언트 (multipart/form-data, field=file, Authorization: Bearer <token>)
   └─ api/predict_api.py:predict()
+       ├─ Depends(get_current_user)   # 무토큰/무효 토큰 → 401
        ├─ await file.read() → bytes
        ├─ services/predict_service.py:predict_image()
        │    ├─ Image.open(BytesIO).convert("RGB")
@@ -121,11 +115,12 @@ api  →  services  →  models  →  database (Base, engine)
      → {"detail": "..."}  (ErrorResponse)
 ```
 
-### 칼로리 설명 (`POST /api/gpt-predict`)
+### 칼로리 설명 (`POST /api/gpt-predict`) — Bearer 필수
 
 ```
-클라이언트 { text, max_tokens }
+클라이언트 { text, max_tokens } + Authorization: Bearer <token>
   └─ api/predict_api.py:gptPredict()
+       ├─ Depends(get_current_user)   # 무토큰/무효 토큰 → 401
        └─ services/gpt_oss_service.py:answerByGptOss20B()
             └─ InferenceClient(provider="groq").chat.completions.create(
                    model="openai/gpt-oss-120b", messages=[{role:user, content:text}])
@@ -148,14 +143,9 @@ api/auth_api.py  ── Depends(get_db) → Session
   ← ValueError → HTTPException(400, detail=str(e))
 ```
 
-### S3 (`/api/s3/*`)
+### S3 (`/api/s3/*`) — **제거됨 (2026-07-12)**
 
-```
-api/file_upload_api.py  →  services/s3_service.py:S3Service
-                              └─ boto3.client(endpoint_url=DOMAIN, region_name=REGION, ...)
-```
-
-`S3Service`는 `upload_file`, `upload_fileobj`, `delete_file`, `delete_prefix`, `file_exists`, `upload_directory`, `get_presigned_url`, `list_buckets`, `list_objects` 메서드를 제공합니다. NCP Object Storage(S3 호환)를 대상으로 합니다.
+NCP Object Storage 자원 중단 확정으로 `api/file_upload_api.py`, `services/s3_service.py`, `schemas/s3_schemas.py`, `http/test_s3.http`와 8개 라우트를 전부 삭제했습니다. `boto3`도 `requirements.txt`에서 제거했습니다. `meals.photo_s3_key` 컬럼(항상 NULL)만 스토리지 재도입 대비로 남아 있습니다 (`docs/DATA_MODEL.md` 4장).
 
 ## 웹 정적 서빙 (배포 구조 — `docs/DATA_MODEL.md` 8장)
 
@@ -191,7 +181,7 @@ kcal/build-web.sh → npx expo export --platform web → kcalAI-model/webapp/
 | `diet_recommendations` | `id`, `user_id`(FK), `rec_date`, `meal_type`, `items`(JSONB), `excluded`(JSONB), `source` — `(user_id, rec_date, meal_type)` unique | 리비전 0006. 추천 캐시. 계약은 `docs/DATA_MODEL.md` 11장, 후보 생성·선정은 12·13장 (순수 규칙, `source` 항상 `rule`) |
 
 - 스키마 변경은 **Alembic 리비전으로만** 합니다 (`alembic/versions/`). `create_all`은 신규 테이블 생성용으로만 남아 있습니다.
-- 세션 토큰 검증은 `api/dependencies.py:get_current_user`가 담당합니다. 단 `/api/predict`, `/api/gpt-predict`, `/api/s3/*`는 여전히 무인증 공개입니다.
+- 세션 토큰 검증은 `api/dependencies.py:get_current_user`가 담당합니다. `/api/predict`·`/api/gpt-predict`도 2026-07-12부터 Bearer 필수입니다 (무인증 공개 라우트는 Auth 가입·로그인 4종뿐).
 - `/api/me/health-profile`·`/api/me/conditions`·`/api/me/allergies`는 유효한 `sensitive_health` 동의(최신 행의 `revoked_at IS NULL`)가 없으면 **403**을 반환합니다. 401(미로그인)과 구분됩니다.
 
 ## 전역 초기화 (import 시점)
@@ -201,8 +191,7 @@ kcal/build-web.sh → npx expo export --platform web → kcalAI-model/webapp/
 | `services/predict_service.py:22` | `YOLO("runs/classify/.../last.pt")` 로드 | cwd가 저장소 루트가 아니면 실패 |
 | `services/gpt_oss_service.py:15` | `load_dotenv()` — **cwd 기준으로 `.env` 탐색** | — |
 | `services/gpt_oss_service.py:24` | `InferenceClient(api_key=os.environ["HF_TOKEN"])` | `.env`와 셸 환경변수 **양쪽 모두에** `HF_TOKEN`이 없으면 `KeyError` |
-| `services/s3_service.py:11` | `load_dotenv()` | — |
-| `api/predict_api.py:11` | `setup_level_logger(INFO)` → `task-logs/` 디렉토리 생성 | — |
+| `api/predict_api.py` | `setup_level_logger(INFO)` → `task-logs/` 디렉토리 생성 | — |
 
 이 때문에 `import main`만 해도 모델 로드·`.env` 탐색·토큰 조회가 일어납니다. 테스트를 도입하려면 지연 로딩이 선행되어야 합니다.
 
@@ -217,7 +206,7 @@ info_logger  = setup_level_logger(logging.INFO)    # → task-logs/info_log.txt
 error_logger = setup_level_logger(logging.ERROR)   # → task-logs/error_log.txt
 ```
 
-**INFO 로거로 `.error()`를 호출하면 레코드가 소멸합니다.** `api/predict_api.py`와 `api/file_upload_api.py`가 이 버그를 갖고 있었고, 두 파일 모두 `error_logger`를 추가해 고쳤습니다.
+**INFO 로거로 `.error()`를 호출하면 레코드가 소멸합니다.** `api/predict_api.py`가 이 버그를 갖고 있었고 `error_logger`를 추가해 고쳤습니다. (같은 버그가 있던 `api/file_upload_api.py`는 S3 제거로 삭제됐습니다.)
 
 실측: 비이미지 업로드 → `error_log.txt`에 `UnidentifiedImageError` 기록, `info_log.txt`에는 ERROR 라인 0개, 응답 본문에는 내부 예외 미노출.
 
@@ -248,8 +237,9 @@ task-logs/error_log.txt   ← ERROR 만 (setup_level_logger(ERROR) 호출 시)
 |--------|------|------|
 | PostgreSQL 16 | 사용자·인증코드·세션 | `database.py`, `docker-compose.yml` |
 | Hugging Face Inference (provider `groq`) | `openai/gpt-oss-120b` 텍스트 생성 | `services/gpt_oss_service.py` |
-| NCP Object Storage | 데이터셋·이미지 저장 | `services/s3_service.py` |
 | NCP 서버 | 운영 배포 대상 | `.github/workflows/deploy.yml` |
+
+> NCP Object Storage 연동은 2026-07-12에 제거됐습니다 (자원 중단 확정).
 
 ## 배포 파이프라인
 

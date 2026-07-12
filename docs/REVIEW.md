@@ -15,9 +15,11 @@ uvicorn main:app --port 8000
 # 스키마 확인
 curl -sf http://127.0.0.1:8000/openapi.json | python3 -m json.tool | head
 
-# 앱이 쓰는 계약 3종
-curl -X POST http://127.0.0.1:8000/api/predict -F "file=@<음식사진>.jpg"
+# 앱이 쓰는 계약 3종 (predict·gpt-predict 는 Bearer 필수 — 무토큰이면 401)
+curl -X POST http://127.0.0.1:8000/api/predict \
+  -H "Authorization: Bearer <세션토큰>" -F "file=@<음식사진>.jpg"
 curl -X POST http://127.0.0.1:8000/api/gpt-predict \
+  -H "Authorization: Bearer <세션토큰>" \
   -H 'Content-Type: application/json' -d '{"text":"김치찌개 1인분 칼로리","max_tokens":256}'
 curl -X POST http://127.0.0.1:8000/api/auth/signup/request-code \
   -H 'Content-Type: application/json' -d '{"phone_number":"010-1234-5678"}'
@@ -67,12 +69,11 @@ curl -X POST http://127.0.0.1:8000/api/auth/signup/request-code \
 
 - [ ] **`AUTH_INCLUDE_DEV_CODE`가 운영에서 `false`인가.** 기본값이 `true`입니다.
 - [ ] **`AUTH_CODE_PEPPER`가 기본값(`development-only-pepper`)이 아닌가.**
-- [ ] 인증번호·세션 토큰·S3 자격증명·`HF_TOKEN`이 로그에 남지 않는가.
-- [ ] 예외 메시지에 스택트레이스·라이브러리명·SQL·boto3 오류코드가 포함되지 않는가.
+- [ ] 인증번호·세션 토큰·`HF_TOKEN`이 로그에 남지 않는가.
+- [ ] 예외 메시지에 스택트레이스·라이브러리명·SQL이 포함되지 않는가.
 - [ ] `CORS_ALLOW_ORIGINS`가 운영 환경에서 와일드카드가 아닌가. `allow_origin_regex`가 localhost를 허용하고 `allow_credentials=True`입니다.
 - [ ] 새 비밀값이 `.env.example`에 **빈 값**으로만 들어갔는가.
-- [ ] 새 엔드포인트가 인증 없이 공개되어도 되는가. (현재 `/api/predict`, `/api/s3/*`가 공개입니다.)
-- [ ] S3 경로(`s3_key`, `prefix`)에 사용자 입력이 검증 없이 들어가지 않는가. 특히 `DELETE /api/s3/delete-prefix/{prefix}`.
+- [ ] 새 엔드포인트가 인증 없이 공개되어도 되는가. (무인증 공개는 Auth 가입·로그인 4종뿐입니다. 2026-07-12부터 `/api/predict`·`/api/gpt-predict`도 Bearer 필수, `/api/s3/*`는 제거됨.)
 
 ### 추론·모델
 
@@ -97,12 +98,11 @@ curl -X POST http://127.0.0.1:8000/api/auth/signup/request-code \
 |------|-------------|
 | `response_model`이 걸린 라우트에서 실패를 `return` | 검증에 걸려 **500 평문 `Internal Server Error`**가 나갑니다. `raise HTTPException(...)`을 쓰세요 |
 | `info_logger.error()` 호출 | INFO 로거의 `LevelFilter`가 ERROR 레코드를 버려 **어디에도 남지 않습니다.** `error_logger`를 따로 만드세요 |
-| `/api/s3/*`의 `detail`이 안전하다고 가정 | 14곳에서 `str(e)`로 boto3 내부 예외를 노출합니다 |
 | `HF_TOKEN`을 셸에 export했으니 `.env`는 필요 없다고 가정 | 반대도 성립합니다. **둘 중 하나만 있으면 됩니다.** 다만 `load_dotenv()`가 cwd에서 `.env`를 찾으므로 실행 위치에 따라 결과가 달라집니다 |
 | 아무 디렉토리에서 `uvicorn main:app` 실행 | YOLO 가중치와 `.env` 탐색이 모두 **cwd 상대**입니다 |
 | `create_all`이 컬럼 변경을 반영한다고 가정 | 신규 테이블만 만듭니다 |
 | 세션 토큰이 검증되고 있다고 가정 | 발급만 하고 검증·폐기 코드가 없습니다 |
-| `/api/predict`, `/api/s3/*`에 인증이 걸려 있다고 가정 | 공개 엔드포인트입니다 |
+| `/api/predict`, `/api/gpt-predict`가 무인증 공개라고 가정 | 2026-07-12부터 Bearer 필수입니다. `/api/s3/*`는 같은 날 제거됐습니다 |
 | `transformers`가 추론에 쓰인다고 가정 | 전부 주석 처리된 잔재입니다. 실제 분류는 ultralytics YOLO |
 | 함수명 `answerByGptOss20B`를 보고 20B 모델이라 가정 | 실제 호출 모델은 `openai/gpt-oss-120b` (provider `groq`) |
 | `master`에 push하면 배포된다고 가정 | 배포 트리거는 **`dev` 브랜치 push**입니다 |

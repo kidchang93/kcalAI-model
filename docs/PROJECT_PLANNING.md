@@ -16,9 +16,8 @@
 ## 현재 기능 범위
 
 - FastAPI 기반 서버
-- `/api/predict` 이미지 분류 엔드포인트
-- `/api/gpt-predict` 칼로리 설명 생성 엔드포인트
-- `/api/s3/*` 파일 업로드, 삭제, 목록 조회 계열 엔드포인트
+- `/api/predict` 이미지 분류 엔드포인트 (Bearer 인증 필수)
+- `/api/gpt-predict` 칼로리 설명 생성 엔드포인트 (Bearer 인증 필수)
 - YOLO 기반 음식 이미지 분류
 - Hugging Face Inference API를 통한 텍스트 응답 생성
 - 로컬 개발용 CORS 허용 설정
@@ -29,9 +28,8 @@
 | --- | --- | --- | --- | --- |
 | 음식 이미지 분류 | `POST` | `/api/predict` | `multipart/form-data`, `file` | `{ predictions: [{ label, score }] }` |
 | 칼로리 설명 생성 | `POST` | `/api/gpt-predict` | `{ text, max_tokens }` | `{ response_text }` |
-| 파일 업로드 | `POST` | `/api/s3/upload/file` | `multipart/form-data`, `file`, `parent_folder` | 업로드 결과와 객체 URL |
 
-앱이 직접 사용하는 우선 계약은 `/api/predict`, `/api/gpt-predict`다. S3 API는 운영 및 확장 기능으로 분리해서 관리한다.
+앱이 직접 사용하는 우선 계약은 `/api/predict`, `/api/gpt-predict`다. 두 라우트 모두 `Authorization: Bearer <세션토큰>`이 필요하다. (`/api/s3/*` 파일 업로드 계열은 NCP Object Storage 자원 중단 확정으로 2026-07-12에 제거됐다.)
 
 ## 추론 파이프라인
 
