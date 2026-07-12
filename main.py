@@ -28,15 +28,13 @@ request_logger = setup_level_logger(logging.INFO)
 
 # database·crypto가 import 시점에 load_dotenv()를 수행하므로 .env 값이 반영돼 있다.
 APP_ENV = os.getenv("APP_ENV", "development")
-VISION_BACKEND = os.getenv("VISION_BACKEND", "yolo").lower()
 
-# 운영 기동 fail-fast: 개발 기본값(pepper·dev_code 노출·암호화 키)을 그대로 배포하면 서버가 뜨지 않는다.
+# 운영 기동 fail-fast: 개발 기본값(pepper·dev_code 노출·암호화 키·Gemini 키 부재)을 그대로
+# 배포하면 서버가 뜨지 않는다. 비전은 Gemini 단일 백엔드라 키가 없으면 predict가 불가능하다.
 if APP_ENV == "production":
     ensure_production_auth_config()
     ensure_production_crypto_config()
-    # VISION_BACKEND=gemini인데 키가 없으면 기동 실패 (YOLO 기본이면 검사하지 않는다).
-    if VISION_BACKEND == "gemini":
-        ensure_production_vision_config()
+    ensure_production_vision_config()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

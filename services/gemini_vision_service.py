@@ -1,11 +1,12 @@
-"""Gemini 비전 기반 음식 이름 식별.
+"""Gemini 비전 기반 음식 이름 식별 — 서버의 **단일** 이미지 인식 백엔드.
 
 이미지 바이트 → Gemini(structured JSON) → 한글 요리명 후보 목록(Prediction). Gemini는
 **이름 식별만** 담당하고, 칼로리·영양은 기존 estimate 로직(식약처 DB 조회)이 계산한다.
 프롬프트는 반환 라벨이 mfds/curated 라벨에 매핑되도록 한식 요리명을 유도한다.
 
-`VISION_BACKEND=gemini`일 때만 predict 라우트가 이걸 호출한다(기본은 YOLO). 실패 시
-라우트가 YOLO로 폴백한다. 키는 로그·응답에 절대 노출하지 않는다.
+YOLO/torch는 제거됐고 폴백이 없다. 일시 오류(429·5xx·타임아웃)는 짧은 백오프로 재시도하고,
+최종 실패는 VisionError로 던져 predict 라우트가 503으로 응답한다. 키는 로그·응답에 절대
+노출하지 않는다.
 """
 
 import json
@@ -14,6 +15,7 @@ import os
 import time
 
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 
 from log_utils import setup_level_logger
@@ -25,6 +27,9 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 # Gemini 호출 타임아웃(ms). google-genai HttpOptions.timeout 단위는 밀리초.
 GEMINI_TIMEOUT_MS = int(os.getenv("GEMINI_TIMEOUT_MS", "15000"))
 _MAX_CANDIDATES = 3
+# 일시 오류 재시도: 최대 횟수와 백오프 기준 지연(초). 지연 = base * 2**attempt.
+_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "2"))
+_RETRY_BASE_DELAY = 0.5
 
 info_logger = setup_level_logger(logging.INFO)
 error_logger = setup_level_logger(logging.ERROR)
@@ -61,7 +66,17 @@ _RESPONSE_SCHEMA = {
 
 
 class VisionError(Exception):
-    """Gemini 비전 호출/파싱 실패. predict 라우트가 YOLO 폴백 또는 500으로 처리한다."""
+    """Gemini 비전 호출/파싱 실패(재시도 소진 포함). predict 라우트가 503으로 처리한다."""
+
+
+def _is_transient(error: Exception) -> bool:
+    """재시도할 가치가 있는 일시 오류인가 — 429·5xx·타임아웃·네트워크."""
+    if isinstance(error, genai_errors.ServerError):
+        return True
+    if isinstance(error, genai_errors.ClientError) and getattr(error, "code", None) == 429:
+        return True
+    name = type(error).__name__.lower()
+    return "timeout" in name or "connect" in name
 
 
 def ensure_production_vision_config() -> None:
@@ -92,21 +107,34 @@ def identify_food(image_bytes: bytes, mime_type: str | None = None) -> list[Pred
     """
     client = _get_client()
     started = time.perf_counter()
-    try:
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type=mime_type or "image/jpeg"),
-                _PROMPT,
-            ],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=_RESPONSE_SCHEMA,
-                http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
-            ),
-        )
-    except Exception as error:  # API 오류·타임아웃·429 등. 키 노출 방지 위해 원문 대신 타입만.
-        raise VisionError(f"Gemini 호출 실패: {type(error).__name__}") from error
+
+    response = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[
+                    types.Part.from_bytes(data=image_bytes, mime_type=mime_type or "image/jpeg"),
+                    _PROMPT,
+                ],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=_RESPONSE_SCHEMA,
+                    http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
+                ),
+            )
+        except Exception as error:  # 키 노출 방지: 원문 대신 타입명만 로그/예외에 쓴다.
+            if attempt < _MAX_RETRIES and _is_transient(error):
+                delay = _RETRY_BASE_DELAY * (2 ** attempt)
+                error_logger.error(
+                    f"gemini 일시 오류 재시도 {attempt + 1}/{_MAX_RETRIES} "
+                    f"({type(error).__name__}) delay={delay}s"
+                )
+                time.sleep(delay)
+                continue
+            raise VisionError(f"Gemini 호출 실패: {type(error).__name__}") from error
+        else:
+            break  # 성공
 
     duration_ms = (time.perf_counter() - started) * 1000
 
