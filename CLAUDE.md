@@ -18,6 +18,8 @@
 | ORM | SQLAlchemy 2.0.36 (`DeclarativeBase`, `Mapped`) |
 | 데이터베이스 | PostgreSQL 16 (docker-compose) |
 | 이미지 인식 | Google Gemini 비전 (`google-genai`, 단일 백엔드) — `services/gemini_vision_service.py` |
+| 영양 추정 | 식약처 DB 조회가 원칙. **미등록 라벨만** Gemini로 1회 추정 후 DB 동결 — `services/gemini_nutrition_service.py` (19장) |
+| Gemini 공용 어댑터 | 클라이언트·재시도·structured JSON 파싱 — `services/gemini_client.py` (비전·영양 추정이 공유) |
 | 설정 로딩 | `python-dotenv`의 `load_dotenv()` |
 | 배포 | GitHub Actions(`dev` 브랜치) → scp → NCP 서버 |
 | 테스트 | pytest (`venv/bin/python -m pytest`) |
@@ -110,8 +112,8 @@ open http://127.0.0.1:8000/docs
 | 도메인 | 라우트 | 정의 파일 |
 |--------|--------|-----------|
 | Auth | `POST /api/auth/signup/request-code` · `signup/verify` · `login/request-code` · `login/verify` · `logout` | `api/auth_api.py` |
-| Predict | `POST /api/predict` (Bearer 필수, `sensitive_health` 동의 불필요, 업로드 검증 413/415/400) | `api/predict_api.py` |
-| Nutrition | `POST /api/nutrition/estimate` (Bearer만 — 질병·알러지 미사용이라 동의 불필요) · `POST /api/nutrition/warnings` (Bearer + `sensitive_health` 동의 필수) | `api/nutrition_api.py` |
+| Predict | `POST /api/predict` (Bearer 필수, `sensitive_health` 동의 불필요, 업로드 검증 413/415/400. 응답 후 **백그라운드로 전 후보를 영양 DB에 적재** — `prewarm_labels`, 19장) | `api/predict_api.py` |
+| Nutrition | `POST /api/nutrition/estimate` (Bearer만 — 질병·알러지 미사용이라 동의 불필요. 미등록 라벨은 LLM 1회 추정 후 `source='llm'`로 동결 적재, 실패 404 / 추정 백엔드 장애 503 — `docs/DATA_MODEL.md` 19장) · `POST /api/nutrition/warnings` (Bearer + `sensitive_health` 동의 필수) | `api/nutrition_api.py` |
 | Health | `GET·PUT /api/me/profile` · `GET·PUT /api/me/goal` · `GET /api/me/summary` · `GET /api/me/trends` · `POST·GET /api/meals` · `PUT·DELETE /api/meals/{meal_id}` · `POST·GET /api/weights` | `api/health_api.py` |
 | Consent | `GET·POST /api/me/consents` · `POST /api/me/consents/revoke` · `GET·PUT /api/me/health-profile` · `GET·PUT /api/me/conditions` · `GET·PUT /api/me/allergies` | `api/consent_api.py` |
 | Groups | `POST·GET /api/groups` · `POST /api/groups/join` · `GET·DELETE /api/groups/{group_id}` · `DELETE /api/groups/{group_id}/members/me` · `DELETE /api/groups/{group_id}/members/{user_id}` · `POST /api/groups/{group_id}/pets` · `DELETE /api/groups/{group_id}/pets/{pet_id}` | `api/group_api.py` |
@@ -156,6 +158,9 @@ Auth의 가입·로그인 4종(`signup/request-code`, `signup/verify`, `login/re
 - **모델 성능 실험과 제품 API 안정화를 같은 커밋에 섞지 않는다.**
 - **API 계약을 바꾸면서 `k-calAI-RN`을 함께 확인하지 않고 끝내지 않는다.**
 - **무거운 ML 의존성(torch·ultralytics·transformers)을 다시 들이지 않는다.** 이미지 인식은 Gemini API로 처리합니다(Lightsail 경량 배포).
+- **`estimate` 조회 경로에 LLM을 넣지 않는다.** LLM은 **미등록 라벨을 1회 적재할 때만** 씁니다. 조회는 항상 DB를 읽습니다 — 같은 음식이 요청마다 다른 kcal을 내면 안 됩니다 (`docs/DATA_MODEL.md` 13·19장).
+- **`source='llm'` 행에 유사도(trgm) 매칭을 허용하지 않는다.** 추정값에 유사도를 얹으면 한 번의 오추정이 이름이 비슷한 다른 음식들로 번집니다. llm 행은 **정확·공백무시 일치만** 반환합니다.
+- **LLM 추정값을 게이트 없이 적재하지 않는다.** 적재된 값은 동결되어 자정되지 않습니다. 범위·매크로 정합성 검증을 통과 못 하면 **버리고 404**입니다.
 
 ---
 
