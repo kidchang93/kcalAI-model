@@ -2,7 +2,7 @@ import logging
 import os
 import time
 
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, HTTPException, status
 from starlette.concurrency import run_in_threadpool
 
 from api.dependencies import get_current_user
@@ -10,6 +10,7 @@ from log_utils import setup_level_logger
 from models.auth_model import User
 from schemas.predict_schema import PredictionResponse, ErrorResponse
 from services.gemini_vision_service import GEMINI_MODEL, VisionError, identify_food
+from services.nutrition_service import prewarm_labels
 from services.upload_validation import validate_image_upload
 
 # setup_level_logger 는 LevelFilter 로 해당 레벨만 기록한다.
@@ -36,6 +37,7 @@ router = APIRouter()
     },
 )
 async def predict(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
 ):
@@ -75,4 +77,9 @@ async def predict(
         f"predict ok backend=gemini model={GEMINI_MODEL} duration_ms={duration_ms:.1f} "
         f"top_label={top_label} top_score={top_score:.4f}"
     )
+
+    # 사용자는 후보 하나만 고르지만, 나머지 인식 결과도 버리지 않는다 — 응답을 보낸 뒤
+    # 백그라운드로 전 후보를 조회·적재한다. 이미 있는 라벨은 LLM을 타지 않는다 (19장).
+    background_tasks.add_task(prewarm_labels, [p.label for p in results])
+
     return {"predictions": results}

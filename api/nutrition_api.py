@@ -12,7 +12,12 @@ from schemas.nutrition_schema import (
     NutritionWarningsRequest,
     NutritionWarningsResponse,
 )
-from services.nutrition_service import FoodNotFoundError, estimate_nutrition, get_record_warnings
+from services.nutrition_service import (
+    FoodNotFoundError,
+    NutritionUnavailableError,
+    estimate_nutrition,
+    get_record_warnings,
+)
 
 router = APIRouter()
 
@@ -20,7 +25,11 @@ router = APIRouter()
 @router.post(
     "/nutrition/estimate",
     response_model=NutritionEstimateResponse,
-    responses={401: {"model": NutritionError}, 404: {"model": NutritionError}},
+    responses={
+        401: {"model": NutritionError},
+        404: {"model": NutritionError},
+        503: {"model": NutritionError},
+    },
 )
 def estimate(
     request: NutritionEstimateRequest,
@@ -30,9 +39,15 @@ def estimate(
     try:
         nutrition, cached = estimate_nutrition(db, request.food_label)
     except FoodNotFoundError as error:
-        # 미매칭은 오류가 아니라 앱의 kcal 수동 입력 경로로 유도한다 (DATA_MODEL.md 13장).
+        # 미매칭(추정도 실패)은 오류가 아니라 앱의 kcal 수동 입력 경로로 유도한다 (19장).
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(error),
+        ) from error
+    except NutritionUnavailableError as error:
+        # 추정 백엔드 장애 — 미매칭이 아니다. 앱은 재시도 또는 수동 입력으로 안내한다 (19장).
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(error),
         ) from error
 

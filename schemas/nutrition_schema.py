@@ -16,9 +16,11 @@ class NutritionEstimateResponse(BaseModel):
     carbs_g: float | None
     protein_g: float | None
     fat_g: float | None
+    # mfds/curated/mfds_processed/mfds_raw = 실측·감수, llm = LLM 1회 추정 후 동결 (19장).
+    # 앱은 llm 이면 '추정값' 배지를 노출하고 수정을 쉽게 열어 준다.
     source: str
     created_at: datetime
-    # 응답 계약 유지용 — 항상 DB 조회이므로 항상 true 다 (13장, LLM 없음).
+    # 기존 행을 읽었으면 true, 이번 요청에서 새로 추정·적재했으면 false (19장).
     cached: bool
 
     model_config = {"from_attributes": True}
