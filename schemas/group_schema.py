@@ -34,8 +34,8 @@ class GroupSummary(BaseModel):
 
 class GroupMemberItem(BaseModel):
     user_id: int
-    # 다른 멤버의 휴대폰 번호 원본은 노출하지 않는다 (개인정보 최소노출).
-    phone_number_masked: str
+    # 그룹에 보이는 이름 = 카카오 닉네임 (2026-07-14 이전엔 마스킹한 휴대폰 번호였다).
+    nickname: str
     role: str
     joined_at: datetime
 

@@ -4,7 +4,7 @@
 
 ## 프로젝트 개요
 
-**kcalAI-model**은 헬스케어 앱의 식단 분석 기능을 지원하는 **FastAPI 기반 AI 추론 서버**입니다. 음식 이미지 분류(YOLO), 칼로리·영양 추정(식약처 DB 조회), 휴대폰 인증을 담당하며 `k-calAI-RN` 앱이 주 소비자입니다. (2026-07-12에 `/api/s3/*`(NCP Object Storage 중단)와 레거시 `/api/gpt-predict`(HF LLM 서술 생성 — 앱 미사용)를 제거했습니다. `meals.photo_s3_key` 컬럼만 선반영 상태로 남아 있습니다.)
+**kcalAI-model**은 헬스케어 앱의 식단 분석 기능을 지원하는 **FastAPI 기반 AI 추론 서버**입니다. 음식 이미지 인식(Gemini 비전), 칼로리·영양 추정(식약처 DB 조회), 카카오 로그인 인증, 요금제·쿼터를 담당하며 `k-calAI-RN` 앱이 주 소비자입니다. (2026-07-12에 `/api/s3/*`(NCP Object Storage 중단)와 레거시 `/api/gpt-predict`(HF LLM 서술 생성 — 앱 미사용)를 제거했습니다. `meals.photo_s3_key` 컬럼만 선반영 상태로 남아 있습니다.)
 
 메인 제품이 아니라 상위 앱의 기능 서버라는 위치를 유지합니다. 제품 맥락은 `docs/SERVICE_POSITIONING.md`를 참조하세요.
 
@@ -17,11 +17,12 @@
 | ASGI 서버 | uvicorn 0.37.0 |
 | ORM | SQLAlchemy 2.0.36 (`DeclarativeBase`, `Mapped`) |
 | 데이터베이스 | PostgreSQL 16 (docker-compose) |
+| 인증 | 카카오 로그인 (REST, 서버 주도 OAuth) — `services/kakao_client.py` |
 | 이미지 인식 | Google Gemini 비전 (`google-genai`, 단일 백엔드) — `services/gemini_vision_service.py` |
 | 영양 추정 | 식약처 DB 조회가 원칙. **미등록 라벨만** Gemini로 1회 추정 후 DB 동결 — `services/gemini_nutrition_service.py` (19장) |
 | Gemini 공용 어댑터 | 클라이언트·재시도·structured JSON 파싱 — `services/gemini_client.py` (비전·영양 추정이 공유) |
 | 설정 로딩 | `python-dotenv`의 `load_dotenv()` |
-| 배포 | GitHub Actions(`dev` 브랜치) → scp → NCP 서버 |
+| 배포 | AWS Lightsail (Ubuntu, systemd + Caddy) — `deploy/DEPLOY.md` |
 | 테스트 | pytest (`venv/bin/python -m pytest`) |
 
 > **2026-07-12: YOLO/torch 완전 제거.** Lightsail 경량 배포를 위해 `services/predict_service.py`(ultralytics/torch/transformers)와 `runs/` 가중치(70MB)를 삭제하고, 이미지 인식을 **Gemini 단일 백엔드**로 전환했습니다. venv 1.3GB→~200MB. estimate/추천은 식약처 DB·정적 데이터라 이 제거에 무영향입니다.
@@ -60,7 +61,7 @@ open http://127.0.0.1:8000/docs
 
 **curated 시드 적재** (식약처 범위 밖 라벨 — 외국 요리·생선/일반명 한식·간식·음료 보강, estimate 전용, `docs/DATA_MODEL.md` 14장): `venv/bin/python scripts/seed_curated_foods.py` — 데이터는 스크립트에 인라인으로 커밋(외부 파일 불필요), `source='curated'` 멱등 upsert, `WHERE source='curated'`라 mfds 행은 안 건드립니다. 항목은 스크립트의 `CURATED_FOODS`에 추가하면 됩니다.
 
-**만료 인증 데이터 정리 배치** (`phone_verification_codes`·`auth_sessions` 무한 누적 방지): `venv/bin/python scripts/purge_expired_auth.py` — 만료 코드(발급 1일 뒤)·만료·폐기 세션(7일 뒤)을 물리 삭제, 멱등. 정기 실행(cron/systemd)을 권장. 보존창은 `services/auth_service.py`의 `CODE_RETENTION_DAYS`·`SESSION_RETENTION_DAYS`.
+**만료 인증 데이터 정리 배치** (`kakao_link_codes`·`auth_sessions` 무한 누적 방지): `venv/bin/python scripts/purge_expired_auth.py` — 만료 코드(발급 1일 뒤)·만료·폐기 세션(7일 뒤)을 물리 삭제, 멱등. 정기 실행(cron/systemd)을 권장. 보존창은 `services/auth_service.py`의 `CODE_RETENTION_DAYS`·`SESSION_RETENTION_DAYS`.
 
 ### 반드시 저장소 루트에서 실행할 것
 
@@ -76,7 +77,7 @@ open http://127.0.0.1:8000/docs
 | 린트 | 없음 |
 | 포맷 | 없음 |
 
-테스트는 Postgres에 붙습니다 (인증 로직의 tz-aware datetime 충실도). 각 테스트는 외부 트랜잭션 + SAVEPOINT 롤백으로 격리되어 대상 DB를 오염시키지 않습니다. 공유 DB의 기존 데이터와 번호가 겹칠 수 있으니, 깔끔한 격리가 필요하면 `TEST_DATABASE_URL`로 전용 DB를 지정하세요. 현재 커버리지는 `tests/test_auth_service.py` (v18 인증 견고화 회귀).
+테스트는 Postgres에 붙습니다 (인증 로직의 tz-aware datetime 충실도). 각 테스트는 외부 트랜잭션 + SAVEPOINT 롤백으로 격리되어 대상 DB를 오염시키지 않습니다. 공유 DB의 기존 데이터와 번호가 겹칠 수 있으니, 깔끔한 격리가 필요하면 `TEST_DATABASE_URL`로 전용 DB를 지정하세요. 현재 커버리지는 `tests/test_auth_service.py`·`tests/test_auth_api.py`(카카오 로그인, 21장)와 `tests/test_subscription_service.py`(요금제·쿼터, 20장)입니다.
 | 수동 검증 | `uvicorn main:app` 기동 + `/docs` 200 + `http/*.http` 요청 |
 
 ---
@@ -88,10 +89,8 @@ open http://127.0.0.1:8000/docs
 | 변수 | 필수 | 기본값 | 읽는 곳 |
 |------|:----:|--------|---------|
 | `DATABASE_URL` | 아니오 | `postgresql+psycopg2://kcal:kcal@localhost:5432/kcal` | `database.py:8` |
-| `AUTH_CODE_TTL_MINUTES` | 아니오 | `5` | `services/auth_service.py:13` |
 | `AUTH_SESSION_TTL_DAYS` | 아니오 | `30` | `services/auth_service.py:14` |
-| `AUTH_CODE_PEPPER` | 아니오 | `development-only-pepper` | 운영에서 **반드시 교체** — `APP_ENV=production`이면 기본값·플레이스홀더 시 기동 실패 (fail-fast) |
-| `AUTH_INCLUDE_DEV_CODE` | 아니오 | `true` | 운영에서 **반드시 `false`** — `APP_ENV=production`이면 `true`일 때 기동 실패 |
+| `AUTH_CODE_PEPPER` | 아니오 | `development-only-pepper` | 세션·연동코드 해시와 **OAuth state 서명**에 쓰인다. 운영에서 **반드시 교체** — 기본값이면 기동 실패 |
 | `APP_ENV` | 아니오 | `development` | `main.py` — `production`이면 인증 설정 fail-fast + CORS localhost 정규식 비활성 (2026-07-12) |
 | `CORS_ALLOW_ORIGINS` | 아니오 | localhost:3000,5173 | `main.py` — production에서는 이 명시 목록만 허용 |
 | `PREDICT_MAX_UPLOAD_MB` | 아니오 | `10` | `api/predict_api.py` — 업로드 상한(초과 시 413). 리버스 프록시 `client_max_body_size`와 함께 방어 |
@@ -99,6 +98,11 @@ open http://127.0.0.1:8000/docs
 | `GEMINI_API_KEY` | 사실상 예 | 없음 | `services/gemini_vision_service.py` — 이미지 인식(단일 백엔드)에 필요. `APP_ENV=production`이면 없을 때 기동 실패. **로그·응답에 미노출** |
 | `GEMINI_MODEL` | 아니오 | `gemini-flash-latest` | 〃 — 재현성 필요 시 핀 버전(예: `gemini-3.5-flash`) |
 | `GEMINI_TIMEOUT_MS` | 아니오 | `15000` | 〃 — Gemini 호출 타임아웃(ms) |
+| `KAKAO_REST_API_KEY` | 예 | 없음 | `services/kakao_client.py` — 인가 URL에 실려 나가는 **공개값** |
+| `KAKAO_CLIENT_SECRET` | 예 | 없음 | 〃 — **비밀값.** 신규 REST 키는 기본 활성이라 없으면 토큰 교환 실패 |
+| `KAKAO_ADMIN_KEY` | 예 | 없음 | 〃 — **비밀값.** 회원 탈퇴 시 카카오 연결 끊기(unlink) |
+| `KAKAO_REDIRECT_URI` | 예 | localhost | 〃 — 카카오 콘솔 등록값과 **문자 단위로 동일**해야 한다(다르면 KOE006). 운영은 https 강제 |
+| `APP_DEEPLINK_SCHEME` | 아니오 | `kcalairn` | `api/auth_api.py` — 콜백이 앱으로 되돌아가는 딥링크 스킴 |
 | `AIHUB_API_KEY` | — | — | `.env`에만 있고 **코드에서 미사용** |
 
 (`ACCESS_KEY` 등 S3 자격증명 5종은 S3 제거로 더 이상 읽지 않습니다 — `.env`에 남아 있어도 무해합니다.)
@@ -111,8 +115,9 @@ open http://127.0.0.1:8000/docs
 
 | 도메인 | 라우트 | 정의 파일 |
 |--------|--------|-----------|
-| Auth | `POST /api/auth/signup/request-code` · `signup/verify` · `login/request-code` · `login/verify` · `logout` | `api/auth_api.py` |
-| Predict | `POST /api/predict` (Bearer 필수, `sensitive_health` 동의 불필요, 업로드 검증 413/415/400. 응답 후 **백그라운드로 전 후보를 영양 DB에 적재** — `prewarm_labels`, 19장) | `api/predict_api.py` |
+| Auth | `GET /api/auth/kakao/start` · `GET /api/auth/kakao/callback` · `POST /api/auth/kakao/login` · `POST /api/auth/kakao/signup` · `POST /api/auth/logout` | `api/auth_api.py` |
+| Subscription | `GET /api/plans` (**무인증** — 가입 화면이 로그인 전에 그린다) · `GET·PUT /api/me/subscription` | `api/subscription_api.py` |
+| Predict | `POST /api/predict` (Bearer 필수, `sensitive_health` 동의 불필요, 업로드 검증 413/415/400. **요금제 일일 쿼터 선차감 → 초과 시 402**, 인식 실패 시 환불. 응답 후 **백그라운드로 전 후보를 영양 DB에 적재** — `prewarm_labels`, 19장) | `api/predict_api.py` |
 | Nutrition | `POST /api/nutrition/estimate` (Bearer만 — 질병·알러지 미사용이라 동의 불필요. 미등록 라벨은 LLM 1회 추정 후 `source='llm'`로 동결 적재, 실패 404 / 추정 백엔드 장애 503 — `docs/DATA_MODEL.md` 19장) · `POST /api/nutrition/warnings` (Bearer + `sensitive_health` 동의 필수) | `api/nutrition_api.py` |
 | Health | `GET·PUT /api/me/profile` · `GET·PUT /api/me/goal` · `GET /api/me/summary` · `GET /api/me/trends` · `POST·GET /api/meals` · `PUT·DELETE /api/meals/{meal_id}` · `POST·GET /api/weights` | `api/health_api.py` |
 | Consent | `GET·POST /api/me/consents` · `POST /api/me/consents/revoke` · `GET·PUT /api/me/health-profile` · `GET·PUT /api/me/conditions` · `GET·PUT /api/me/allergies` | `api/consent_api.py` |
@@ -122,7 +127,29 @@ open http://127.0.0.1:8000/docs
 | Account | `DELETE /api/me` (회원 탈퇴 — 개인 데이터 전부 물리 삭제, 소유 그룹은 그룹째 삭제. `docs/DATA_MODEL.md` 18장) | `api/account_api.py` |
 | Recommendations | `GET /api/recommendations` (Bearer + `sensitive_health` 동의 필수, 캐시 우선) | `api/recommendation_api.py` |
 
-Auth의 가입·로그인 4종(`signup/request-code`, `signup/verify`, `login/request-code`, `login/verify`)을 제외한 **전 라우트**가 Bearer 인증(`api/dependencies.py`의 `get_current_user`)을 요구합니다 (`/api/auth/logout`도 Bearer 필요). `/api/predict`는 2026-07-12에 Bearer 필수로 전환했습니다. 같은 날 `/api/s3/*` 8개 라우트(NCP Object Storage 중단)와 레거시 `/api/gpt-predict`(HF LLM 서술 생성 — 앱 미사용, HF_TOKEN 하드의존)를 제거했습니다.
+Auth의 카카오 4종(`kakao/start`, `kakao/callback`, `kakao/login`, `kakao/signup`)과 `GET /api/plans`를 제외한 **전 라우트**가 Bearer 인증(`api/dependencies.py`의 `get_current_user`)을 요구합니다 (`/api/auth/logout`도 Bearer 필요). `/api/predict`는 2026-07-12에 Bearer 필수로 전환했습니다. 같은 날 `/api/s3/*` 8개 라우트(NCP Object Storage 중단)와 레거시 `/api/gpt-predict`(HF LLM 서술 생성 — 앱 미사용, HF_TOKEN 하드의존)를 제거했습니다.
+
+### 인증 = 카카오 로그인 단일 수단 (2026-07-14, 21장)
+
+휴대폰 OTP(SMS)를 **제거**했습니다 — `phone_verification_codes` 테이블, `services/sms_service.py`(Solapi), 가입·로그인 4라우트가 전부 사라졌습니다. 로그인 식별자는 **카카오 회원번호**(`users.kakao_id`)입니다.
+
+- **카카오는 Redirect URI에 커스텀 스킴을 등록할 수 없고** `client_secret`이 사실상 필수라, **토큰 교환은 서버가** 합니다. 앱은 `expo-web-browser`로 `/api/auth/kakao/start`만 열고, 서버가 딥링크(`kcalairn://auth?code=...&is_new=...`)로 되돌려줍니다.
+- 카카오 인가 코드는 1회용이라, 신규 회원의 약관 동의·요금제 선택을 위해 **1회용 연동 코드**(`kakao_link_codes`, TTL 10분)를 거칩니다.
+- 그룹 멤버 표시가 `phone_number_masked` → **`nickname`**(카카오 닉네임)으로 바뀌었습니다.
+- **회원 탈퇴 시 카카오 연결 끊기(unlink) 호출은 의무**입니다 (어드민 키 방식, `services/kakao_client.py`).
+- ⚠️ **무료 티어 어뷰징 방어가 없습니다.** 카카오계정은 이메일만으로 만들 수 있어 Lite 3건/일은 계정 갈아타기로 우회됩니다. 감수한 트레이드오프이며, 방어가 필요해지면 서버 측 레이트리밋으로 해결합니다 (21장).
+
+### 요금제 한도 — 402 Payment Required (2026-07-14, 20장)
+
+회원은 요금제 하나를 1:1로 갖습니다 (`user_subscriptions`, 기본 **Lite = 무료**). 한도 초과는 어느 라우트에서든 **402 + 동일 본문**(`{"detail", "code":"plan_limit_exceeded", "resource", "plan", "limit"}`)입니다 — `main.py`의 전역 예외 핸들러가 `PlanLimitError`를 변환합니다. `429`(레이트리밋, 기다리면 풀림)와 구분됩니다.
+
+| code | 가격 | 비전 LLM/일 | 그룹 추가 인원(본인 제외) | 반려동물 | 소유 그룹 |
+|---|---:|---:|---:|---:|---:|
+| `lite` | 무료 | 3 | 1 | 1 | 1 |
+| `pro` | 5,000원 | 30 | 5 | 5 | 3 |
+| `premium` | 10,000원 | 100 | 10 | 10 | 5 |
+
+쿼터는 **KST 자정** 리셋(`timeutil.today_kst()`)이며, 그룹 자원의 한도는 **그룹 소유자의 요금제**로 판정합니다. 가입(`signup/verify`)은 이제 `agreed_terms`·`agreed_privacy`가 **필수**입니다.
 
 ---
 
@@ -147,7 +174,6 @@ Auth의 가입·로그인 4종(`signup/request-code`, `signup/verify`, `login/re
 ## 절대 하지 말아야 할 것
 
 - **저장소 루트가 아닌 곳에서 서버를 실행하지 않는다.** `load_dotenv()`가 cwd 기준으로 `.env`를 찾습니다.
-- **`AUTH_INCLUDE_DEV_CODE`를 운영에서 `true`로 두지 않는다.** 기본값이 `true`입니다.
 - **`AUTH_CODE_PEPPER` 기본값을 그대로 배포하지 않는다.**
 - **`.env`를 커밋하지 않는다.** `HF_TOKEN`과 NCP 자격증명이 들어 있습니다.
 - **예외 메시지를 그대로 클라이언트에 반환하지 않는다.** 내부 예외는 `error_logger`에만 남기고, 클라이언트에는 사용자용 한국어 메시지를 줍니다. `detail=f"...: {str(e)}"` 패턴(삭제된 `api/file_upload_api.py`에 있던 안티패턴)을 복제하지 마세요.
@@ -158,6 +184,12 @@ Auth의 가입·로그인 4종(`signup/request-code`, `signup/verify`, `login/re
 - **모델 성능 실험과 제품 API 안정화를 같은 커밋에 섞지 않는다.**
 - **API 계약을 바꾸면서 `k-calAI-RN`을 함께 확인하지 않고 끝내지 않는다.**
 - **무거운 ML 의존성(torch·ultralytics·transformers)을 다시 들이지 않는다.** 이미지 인식은 Gemini API로 처리합니다(Lightsail 경량 배포).
+- **네이티브 카카오 SDK를 도입하지 않는다.** 얻는 건 카톡 앱-투-앱 UX뿐인데 iOS/Android 네이티브 설정·키해시가 붙고 **웹 빌드가 깨집니다**(웹은 FastAPI가 서빙합니다). REST 방식으로 앱·웹을 통일합니다 (21장).
+- **카카오 `client_secret`·어드민 키를 앱에 넣지 않는다.** `EXPO_PUBLIC_*`는 번들에 평문 노출됩니다. 토큰 교환은 **서버에서만** 합니다.
+- **회원 탈퇴에서 카카오 unlink를 빼먹지 않는다.** 카카오 로그인 서비스의 의무입니다. 단 **파기를 커밋한 뒤** 호출하고, unlink 실패가 개인정보 파기를 막지 않게 합니다.
+- **`PUT /api/me/subscription`을 결제 검증 없이 운영에 노출하지 않는다.** 지금은 누구나 Premium으로 바꿀 수 있습니다. 인앱결제 영수증 검증을 먼저 붙여야 합니다.
+- **`PlanLimitError`를 `ValueError`로 바꾸지 않는다.** api 모듈의 `except ValueError → 400`에 잡혀 업그레이드 유도가 일반 입력 오류로 뭉개집니다.
+- **비전 쿼터를 Gemini 호출 성공 후에 차감하지 않는다.** 동시 요청이 전부 한도를 통과합니다. 선차감 → 실패 시 환불이 규약입니다.
 - **`estimate` 조회 경로에 LLM을 넣지 않는다.** LLM은 **미등록 라벨을 1회 적재할 때만** 씁니다. 조회는 항상 DB를 읽습니다 — 같은 음식이 요청마다 다른 kcal을 내면 안 됩니다 (`docs/DATA_MODEL.md` 13·19장).
 - **`source='llm'` 행에 유사도(trgm) 매칭을 허용하지 않는다.** 추정값에 유사도를 얹으면 한 번의 오추정이 이름이 비슷한 다른 음식들로 번집니다. llm 행은 **정확·공백무시 일치만** 반환합니다.
 - **LLM 추정값을 게이트 없이 적재하지 않는다.** 적재된 값은 동결되어 자정되지 않습니다. 범위·매크로 정합성 검증을 통과 못 하면 **버리고 404**입니다.

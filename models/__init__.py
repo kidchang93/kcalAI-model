@@ -1,4 +1,4 @@
-from .auth_model import AuthSession, PhoneVerificationCode, User
+from .auth_model import AuthSession, KakaoLinkCode, User
 from .consent_model import UserAllergy, UserCondition, UserConsent, UserHealthProfile
 from .group_model import Group, GroupMember, GroupPet
 from .health_model import (
@@ -13,7 +13,7 @@ from .pet_model import Pet, PetFeedingLog
 
 __all__ = [
     "AuthSession",
-    "PhoneVerificationCode",
+    "KakaoLinkCode",
     "User",
     "FoodNutrition",
     "MealItem",

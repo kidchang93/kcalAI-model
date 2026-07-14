@@ -6,28 +6,32 @@
 2. **API 계약은 모델 교체보다 오래 산다.** YOLO 가중치를 바꿔도 응답 스키마는 유지합니다.
 3. **레이어는 한 방향으로만 의존한다.** `api → services → models`.
 4. **실패도 계약이다.** 성공 응답만큼 실패 응답 형태를 고정합니다.
-5. **비밀은 코드에 없다.** pepper, HF 토큰, DB 자격증명은 환경변수로만 주입합니다.
+5. **비밀은 코드에 없다.** pepper, 카카오 client_secret·어드민 키, Gemini 키, DB 자격증명은 환경변수로만 주입합니다. 앱 번들에는 어떤 비밀값도 넣지 않습니다.
 
 ## 코드에서 확인된 설계 결정
 
 | 결정 | 위치 | 이유 |
 |------|------|------|
-| 인증번호를 pepper + sha256 해시로 저장 | `services/auth_service.py:137` | DB 유출 시 코드 재사용 방지 |
-| 인증번호를 `consumed_at`으로 1회용 처리 | `services/auth_service.py:125` | 재사용 공격 차단 |
-| 세션 토큰을 `secrets.token_urlsafe(48)`로 생성 | `services/auth_service.py:132` | JWT 대신 불투명 토큰 → 서버측 폐기(`revoked_at`) 가능 |
-| `signup`/`login`을 `purpose`로 구분하고 해시 입력에 포함 | `services/auth_service.py:138` | 가입용 코드로 로그인하는 교차 사용 차단 |
-| 휴대폰 번호를 저장 전 정규화 | `services/auth_service.py:19` | `010-1234-5678`, `+82 10...`을 동일 키로 취급 |
+| 세션 토큰·연동 코드를 `secrets.token_urlsafe`로 생성하고 **해시만 저장** | `services/auth_service.py` | JWT 대신 불투명 토큰 → 서버측 폐기(`revoked_at`) 가능. 연동 코드는 딥링크 URL에 실려 나가므로 DB 유출과 조합되면 안 된다 |
 | 서비스는 `ValueError`/`RuntimeError`를 던지고 api가 HTTP로 변환 | `api/auth_api.py:36` | 서비스 레이어가 HTTP를 모르게 유지 |
 | 추론을 로컬 LLM이 아닌 HF Inference API로 | `services/gpt_oss_service.py:24` | 로컬 CPU로는 20B 모델 최소사양 미달 (커밋 `4184460` 참조) |
 | 이미지 분류를 `transformers` 파이프라인에서 YOLO로 교체 | `services/predict_service.py:22` | 한국 음식 150클래스 자체 학습 모델 적용 (커밋 `494eed1`) |
 | YOLO 모델을 모듈 전역에 로드 | `services/predict_service.py:22` | 요청마다 로드하면 지연이 큼. 대신 서버 시작 시간과 cwd에 묶임 |
 | S3 연동(`/api/s3/*` 8라우트, `S3Service`, boto3) 전면 제거 | 2026-07-12 | NCP Object Storage 자원 중단 확정. `meals.photo_s3_key` 컬럼만 선반영 유지 (`docs/DATA_MODEL.md` 4장) |
 | `/api/predict`·`/api/gpt-predict`에 Bearer 인증 적용 | `api/predict_api.py` (2026-07-12) | 무인증 공개 추론 라우트 제거. `sensitive_health` 동의는 요구하지 않음 (단순 이미지 인식) |
+| 요금제를 코드 enum이 아닌 **참조 테이블**(`plans`)로 | `models/subscription_model.py` (2026-07-14) | 가격·한도는 릴리즈 없이 조정돼야 하고 앱이 목록을 그린다 (10장 규칙) |
+| 한도 초과를 **402**로, `PlanLimitError` 전역 핸들러 | `main.py` (2026-07-14) | 429(기다리면 풀림)와 구분. 어느 라우트든 같은 본문이라야 앱이 한 곳에서 업그레이드로 분기 |
+| 비전 쿼터를 **선차감 → 실패 시 환불** | `services/subscription_service.py` (2026-07-14) | 성공 후 차감이면 동시 요청이 전부 한도를 통과한다. 판정·증가는 한 문장의 UPSERT로 원자화 |
+| 쿼터 리셋만 **KST 자정** (기록은 UTC 경계 유지) | `timeutil.py` (2026-07-14) | "오늘 몇 건 남았나"는 사용자 체감값이라 국내 기준시를 따른다 |
+| 인증을 **카카오 로그인 단일 수단**으로 (SMS 철회) | `services/kakao_client.py` (2026-07-14) | 인증 비용 0원. 전화번호는 로그인 식별자·그룹 표시 외에 쓰이지 않았다. **대가로 무료 티어 어뷰징 방어를 잃었다** (카카오계정은 이메일만으로 생성 가능) — 21장 |
+| 카카오 **네이티브 SDK 대신 REST(서버 주도)** | `api/auth_api.py` (2026-07-14) | 커스텀 스킴은 Redirect URI 등록 불가 + `client_secret` 필수 → 토큰 교환은 서버에서. 앱·웹 빌드가 같은 코드로 동작 |
+| 콜백이 **1회용 연동 코드**를 발급 | `models/auth_model.py:KakaoLinkCode` (2026-07-14) | 카카오 인가 코드는 1회용인데 신규 회원은 동의·요금제 선택을 거쳐야 한다 |
+| 그룹 정원을 **소유자 요금제**로 판정 | `services/subscription_service.py` (2026-07-14) | 정원을 결제한 사람은 소유자다. 무료 회원도 Premium 그룹에는 들어올 수 있다 |
 
 ## 의도적으로 하지 않은 것
 
 - **JWT를 쓰지 않습니다.** 불투명 세션 토큰 + DB 조회 방식입니다.
-- **비밀번호가 없습니다.** 휴대폰 번호 + 일회용 코드가 유일한 인증 수단입니다.
+- **비밀번호가 없습니다.** 카카오 로그인이 유일한 인증 수단입니다 (2026-07-14 이전엔 휴대폰 OTP).
 - **로컬 LLM을 띄우지 않습니다.** HF Inference API를 호출합니다.
 
 ## 미완성 설계 (구현 전 반드시 확인)
@@ -36,11 +40,10 @@
 |------|-----------|-------------|
 | ~~`/api/s3/*` 실패 응답~~ | **소멸** — S3 라우트 전체 제거 (2026-07-12) | — |
 | ~~엔드포인트 인증~~ | **해결됨** — `/api/predict`·`/api/gpt-predict`에 `Depends(get_current_user)` 적용 (2026-07-12) | — |
-| 세션 토큰 검증 | 발급만 하고 **검증하는 코드가 없음** | `Depends(get_current_user)` 도입 |
-| 로그아웃 | `revoked_at` 컬럼만 존재 | `POST /api/auth/logout` 추가 여부 |
-| 코드 발급 rate limit | 무제한 | 번호당 발급 횟수/간격 제한 |
-| SMS 발송 | 없음. `dev_code`로 응답에 노출 | 실제 발송 연동 시점 |
-| DB 마이그레이션 | `create_all`만 사용 | Alembic 도입 여부 |
+| ~~SMS 발송~~ | **소멸** (2026-07-14) — 인증을 카카오 로그인으로 교체하며 SMS·OTP를 제거했다 (21장) | — |
+| **카카오 콘솔 설정** | 코드는 완성. Redirect URI 등록·client_secret·어드민 키가 없으면 실제 로그인이 안 된다 | **사용자 작업** (developers.kakao.com) |
+| 카카오 연결 해제 웹훅 | 사용자가 카카오에서 직접 연결을 끊으면 우리 DB가 모른다 | 웹훅 수신 라우트 추가 여부 |
+| **요금제 결제 연동** | `PUT /api/me/subscription`이 **검증 없이** 플랜을 바꾼다 — 누구나 Premium이 된다 | 인앱결제(App Store / Play Billing) 영수증 검증. **이 상태로 운영 배포 불가** (20장) |
 | 칼로리 프롬프트 | **앱에 하드코딩** (`k-calAI-RN/services/calorie-api.ts:71`) | 서버 템플릿화 시점 |
 | `runs/` 70MB | 저장소에 커밋됨 | 외부 스토리지 이전 (S3 연동은 제거됨 — 대안 스토리지 결정 필요) |
 | 라벨 표시명 | YOLO가 한국어 클래스명을 그대로 반환 | 사용자 친화 표시명 매핑이 필요한지 |
@@ -108,7 +111,7 @@ raise HTTPException(status_code=500, detail=f"파일 업로드 실패: {str(e)}"
 사용자에게 보일 문장은 **한국어**로, 다음 행동을 알려주는 형태로 작성합니다.
 
 ```python
-raise ValueError("이미 가입된 휴대폰 번호입니다. 로그인으로 진행해주세요.")
+raise ValueError("이미 가입된 카카오 계정입니다. 로그인으로 진행해주세요.")
 ```
 
 내부 예외(`str(e)`, 스택트레이스, 라이브러리 이름, 외부 SDK 오류코드)를 그대로 담지 않습니다.

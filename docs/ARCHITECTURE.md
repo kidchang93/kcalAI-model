@@ -11,7 +11,7 @@ kcalAI-model/
 ├── api/
 │   ├── __init__.py             # 라우터 재수출
 │   ├── dependencies.py         # get_current_user (Bearer 세션 토큰 검증)
-│   ├── auth_api.py             # /auth/**
+│   ├── auth_api.py             # /auth/kakao/** (OAuth start·callback·login·signup), /auth/logout
 │   ├── predict_api.py          # /predict (업로드 검증 + Gemini 인식, 503 on 실패)
 │   ├── health_api.py           # /me/profile, /me/goal, /me/summary, /me/trends, /meals (PUT 전체 교체 포함), /weights
 │   ├── consent_api.py          # /me/consents, /me/health-profile, /me/conditions, /me/allergies
@@ -20,9 +20,12 @@ kcalAI-model/
 │   ├── nutrition_api.py        # /nutrition/estimate, /nutrition/warnings (기록 경고 판정, sensitive_health 동의 필수)
 │   ├── meta_api.py             # /meta/options (온보딩 선택지 목록)
 │   ├── account_api.py          # DELETE /me (회원 탈퇴 — 계정 파기, DATA_MODEL 18장)
+│   ├── subscription_api.py     # /plans (무인증), /me/subscription (조회·변경, DATA_MODEL 20장)
 │   └── recommendation_api.py   # /recommendations (식단 추천, sensitive_health 동의 필수)
 ├── services/
-│   ├── auth_service.py         # 인증 코드 발급/검증, 세션 생성·검증·폐기
+│   ├── auth_service.py         # 카카오 연동코드·OAuth state 서명, 가입·로그인, 세션 생성·검증·폐기 (21장)
+│   ├── kakao_client.py         # 카카오 OAuth — 인가 URL·토큰 교환(client_secret)·프로필·연결끊기(unlink)
+│   ├── subscription_service.py # 요금제 한도 판정·비전 일일 쿼터(원자적 UPSERT), PlanLimitError (20장)
 │   ├── health_service.py       # 프로필·목표·끼니·체중·추이 집계, Mifflin-St Jeor
 │   ├── consent_service.py      # 동의 이력·유효성 검사, 민감정보 파기(물리 삭제)
 │   ├── group_service.py        # 그룹 생성·참여, invite_code 생성, 멤버십·펫 참여, 라이프사이클(탈퇴·삭제·제거·해제, 17장)
@@ -35,7 +38,8 @@ kcalAI-model/
 │   ├── gemini_vision_service.py # 이미지 인식(단일 백엔드): Gemini structured JSON → 한글 요리명, 재시도
 │   └── upload_validation.py    # 업로드 이미지 크기·타입·디코드 검증 (라우트가 호출)
 ├── schemas/
-│   ├── auth_schema.py
+│   ├── auth_schema.py          # KakaoLoginRequest, KakaoSignupRequest, AuthTokenResponse
+│   ├── subscription_schema.py  # PlanItem, MySubscriptionResponse, PlanLimitErrorResponse (20장)
 │   ├── health_schema.py
 │   ├── consent_schema.py
 │   ├── group_schema.py
@@ -47,14 +51,15 @@ kcalAI-model/
 │   ├── predict_schema.py       # Prediction, PredictionResponse, ErrorResponse
 │   └── gpt_schemas.py          # GptAnswer, GptResponse, GptError
 ├── models/
-│   ├── auth_model.py           # User, PhoneVerificationCode, AuthSession
+│   ├── auth_model.py           # User(kakao_id·nickname), KakaoLinkCode, AuthSession
 │   ├── health_model.py         # UserProfile, UserGoal, MealLog, MealItem, WeightLog, FoodNutrition
 │   ├── consent_model.py        # UserConsent, UserHealthProfile, UserCondition, UserAllergy
 │   ├── group_model.py          # Group, GroupMember, GroupPet
 │   ├── pet_model.py            # Pet, PetFeedingLog
 │   ├── meta_model.py           # ConditionType, AllergenType (참조 테이블)
+│   ├── subscription_model.py   # Plan(참조 테이블), UserSubscription(1:1), VisionUsageDaily (20장)
 │   └── recommendation_model.py # DietRecommendation (추천 캐시)
-├── alembic/                    # DB 마이그레이션 (0001 auth → 0002 health → 0003 consent → 0004 group/pet → 0005 option ref → 0006 diet rec → 0007 food nutrition mfds → 0008 food_label pg_trgm → 0009 meal_items confidence → 0010 condition exclude_keywords → 0011 otp attempt_count → 0012 session token 해시 → 0013 혈액형·Rh 암호화)
+├── alembic/                    # DB 마이그레이션 (0001 auth → 0002 health → 0003 consent → 0004 group/pet → 0005 option ref → 0006 diet rec → 0007 food nutrition mfds → 0008 food_label pg_trgm → 0009 meal_items confidence → 0010 condition exclude_keywords → 0011 otp attempt_count → 0012 session token 해시 → 0013 혈액형·Rh 암호화 → 0014 요금제·쿼터 → 0015 카카오 로그인)
 ├── scripts/
 │   └── import_mfds_food.py     # 식약처 음식 CSV → food_nutrition 임포트 (원본 CSV 는 레포 밖, 커밋 금지)
 ├── webapp/                     # Expo 웹 빌드 산출물 (gitignored, 존재할 때만 정적 서빙)
@@ -122,28 +127,42 @@ api  →  services  →  models  →  database (Base, engine)
 
 HF LLM으로 칼로리를 **서술 문자열**로 생성하던 라우트. 앱 신규 흐름은 숫자 kcal이 필요해 `POST /api/nutrition/estimate`(식약처 DB 조회)를 쓰므로 이 라우트를 소비하지 않았다. `api/predict_api.py`의 라우트와 `services/gpt_oss_service.py`·`schemas/gpt_schemas.py`를 삭제해 **`HF_TOKEN` 하드의존(import 시점 `KeyError`)을 제거**했다. `.env` 로딩은 `database.py`·`crypto.py`로 이관했다.
 
-### 인증 (`POST /api/auth/{mode}/{action}`)
+### 인증 — 카카오 로그인 (2026-07-14, 리비전 0015. SMS·OTP 제거)
+
+**서버가 카카오와 토큰을 교환한다.** 카카오는 Redirect URI에 커스텀 스킴(`kcalairn://`)을 등록할 수 없고(http/https만), 신규 REST 키는 `client_secret`이 기본 활성이라 앱이 직접 교환할 수 없다(시크릿을 번들에 넣게 된다).
 
 ```
-api/auth_api.py  ── Depends(get_db) → Session
+앱(expo-web-browser) ── GET /api/auth/kakao/start?platform=native|web
+  └─ api/auth_api.py
+       └─ auth_service.create_state()    {platform,nonce,exp} 를 pepper 로 HMAC 서명 (CSRF, 테이블 없음)
+       └─ 302 → kauth.kakao.com/oauth/authorize?...&scope=profile_nickname&state=...
+
+카카오 ── GET /api/auth/kakao/callback?code=&state=
+  └─ api/auth_api.py
+       ├─ auth_service.verify_state()    서명·만료 검증 → StateError 면 딥링크로 error=invalid_state
+       ├─ kakao_client.exchange_code()   client_secret 과 함께 토큰 교환 (인가 코드는 1회용)
+       ├─ kakao_client.fetch_profile()   /v2/user/me → (회원번호, 닉네임)
+       ├─ auth_service.create_link_code() 1회용 연동 코드(TTL 10분) 발급 — DB에는 sha256 해시만
+       └─ 302 → kcalairn://auth?code=<연동코드>&is_new=true|false      (웹은 /auth?...)
+
+앱 ── POST /api/auth/kakao/{login|signup}  {link_code, ...}
   └─ services/auth_service.py
-       ├─ normalize_phone_number()      숫자만 추출, 82→0 치환, 휴대폰 패턴(01[016789]+7~8자리)만 허용
-       ├─ _enforce_request_rate_limit() 번호당 재요청 쿨다운 60초 + 시간당 5회 (DB 발급 이력 카운트)
-       ├─ _create_phone_code()          같은 phone+purpose 미소비 코드 전부 무효화(단일 유효 코드) 후
-       │                                6자리 난수 → sha256(pepper:phone:purpose:code) 저장
-       ├─ _consume_valid_code()         최신 유효 코드와 해시 대조. 불일치 시 attempt_count 증가,
-       │                                5회 초과 시 코드 무효화(consumed_at). 일치 시 consumed_at 기록
-       └─ _create_session()             token_urlsafe(48) 원문은 발급 응답에만, DB에는 sha256 해시 저장
-  ← ValueError → HTTPException(400), RateLimitError → HTTPException(429)
+       ├─ _consume_link_code()           해시 대조 → consumed_at 기록 (1회용)
+       ├─ (signup) 동의 검증 → record_signup_consents() + create_subscription()   ← 한 트랜잭션
+       ├─ (login)  닉네임을 카카오 값으로 갱신 (그룹에 보이는 이름이다)
+       └─ _create_session()              token_urlsafe(48) 원문은 응답에만, DB에는 sha256 해시 저장
+  ← ValueError → 400, LookupError(미가입) → 404
 ```
 
-상수는 전부 `services/auth_service.py` 모듈 상단: `MAX_CODE_ATTEMPTS = 5`, `REQUEST_CODE_COOLDOWN_SECONDS = 60`, `REQUEST_CODE_HOURLY_LIMIT = 5` (2026-07-12, 리비전 0011·0012).
+**콜백은 JSON이 아니라 리다이렉트로 답한다** — 인앱 브라우저가 여는 화면이라, 실패도 딥링크에 `error=`를 실어 보내야 사용자가 브라우저에 갇히지 않는다.
+
+**회원 탈퇴 시 `kakao_client.unlink()`(어드민 키) 호출은 의무**다. 단 **우리 쪽 파기를 커밋한 뒤** 부르고, 실패해도 예외를 올리지 않는다 — 카카오 장애가 개인정보 파기(법정 의무)를 막으면 안 된다.
 
 ### 환경 게이트 (`APP_ENV`, 2026-07-12)
 
 `main.py`가 `APP_ENV`(기본 `development`)를 읽어 두 가지를 분기합니다.
 
-- **production 기동 fail-fast**: `services/auth_service.py:ensure_production_auth_config()`(`AUTH_CODE_PEPPER` 기본값·플레이스홀더 또는 `AUTH_INCLUDE_DEV_CODE=true`) + `crypto.py:ensure_production_crypto_config()`(`HEALTH_ENCRYPTION_KEY` 기본키) + `gemini_vision_service.py:ensure_production_vision_config()`(`GEMINI_API_KEY` 없음)이면 import 단계에서 `RuntimeError`로 죽습니다.
+- **production 기동 fail-fast**: `auth_service.ensure_production_auth_config()`(`AUTH_CODE_PEPPER` 기본값) + `crypto.ensure_production_crypto_config()`(`HEALTH_ENCRYPTION_KEY` 기본키) + `gemini_vision_service.ensure_production_vision_config()`(`GEMINI_API_KEY` 없음) + **`kakao_client.ensure_production_kakao_config()`**(카카오 키 4종 — 유일한 인증 수단이라 없으면 아무도 로그인 못 한다)가 import 단계에서 `RuntimeError`로 죽입니다.
 
 ### 이미지 인식 — Gemini 단일 백엔드 (2026-07-12)
 

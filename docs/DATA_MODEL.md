@@ -957,3 +957,247 @@ mfds(실측) > curated(감수) > mfds_processed > mfds_raw > llm(추정)
 
 - 앱(`k-calAI-RN`)의 `source='llm'` 배지·503 처리 — API 계약 변경이므로 같은 작업 단위에서 반영한다.
 - 사용자가 llm 행의 kcal을 수동 교정한 빈도는 그 추정이 나빴다는 가장 강한 신호다. 교정 로그를 재감수 큐로 쓰는 것은 후속 과제.
+
+---
+
+## 20. 요금제·일일 쿼터 · 가입 강화 (2026-07-14 확정 — 리비전 0014)
+
+> 구현 범위: `plans`(참조 테이블) · `user_subscriptions`(회원 1:1) · `vision_usage_daily`(비전 카운터) 3테이블, `GET /api/plans` · `GET·PUT /api/me/subscription`, 그룹·펫·predict 한도 강제, 가입 시 약관 동의 필수화, SMS 실발송 연동. **결제(인앱결제) 연동은 이 범위 밖이다.**
+
+### 요금제 (확정)
+
+| code | label | 가격 | 비전 LLM/일 | 그룹 추가 인원 | 반려동물 | 소유 그룹 |
+|---|---|---:|---:|---:|---:|---:|
+| `lite` | Lite | **0원 (무료)** | **3** | 1 | 1 | 1 |
+| `pro` | Pro | 5,000원 | **30** | 5 | 5 | 3 |
+| `premium` | Premium | 10,000원 | **100** | 10 | 10 | 5 |
+
+- **`max_group_members`는 "본인(owner) 제외" 추가 인원이다.** 정원 = 이 값 + 1 (Lite 그룹은 총 2명).
+- **`max_owned_groups`가 없으면 인원 한도가 무의미하다** — 그룹을 여러 개 만들어 우회할 수 있기 때문이다. 그래서 소유 그룹 개수도 요금제 한도다.
+- Premium 100건/일 근거: Gemini flash 비전 1건 원가가 약 1원이라 100건×30일이라도 3,000원대(요금의 30%)이고, 실사용은 하루 끼니 3~5건 + 재촬영이라 사실상 무제한처럼 쓰인다.
+- 요금제를 **코드 enum 이 아니라 참조 테이블**로 둔 이유는 10장 규칙 그대로다 — 가격·한도는 릴리즈 없이 조정돼야 하고, 앱이 목록을 그려야 한다.
+
+### 테이블
+
+| 테이블 | 컬럼 |
+|---|---|
+| `plans` | `code` `String(20)` PK · `label_ko` · `price_krw` · `daily_vision_quota` · `max_group_members` · `max_pets` · `max_owned_groups` · `sort_order` · `is_active` |
+| `user_subscriptions` | `user_id` **PK**/FK(users) · `plan_code` FK(plans) · `started_at` · `updated_at` |
+| `vision_usage_daily` | `user_id` + `usage_date` **복합 PK** · `used_count` · `updated_at` |
+
+`user_subscriptions.user_id`를 PK로 둬서 **회원 1 : 요금제 1을 스키마로 강제**한다.
+
+### 쿼터 리셋은 KST 자정
+
+기록(`meal_logs`·`weight_logs`)의 하루 경계는 UTC지만, **쿼터는 KST(Asia/Seoul) 자정에 리셋**한다 — "오늘 몇 건 남았나"는 사용자가 체감하는 값이라 국내 서비스 기준시를 따라야 한다. `vision_usage_daily.usage_date`는 KST 날짜다 (`timeutil.today_kst()`). 서버 TZ 설정에 의존하지 않도록 고정 오프셋(+09:00)으로 둔다.
+
+### 쿼터 차감은 원자적 UPSERT — 그리고 선차감·환불이다
+
+```sql
+INSERT INTO vision_usage_daily (user_id, usage_date, used_count) VALUES (:u, :d, 1)
+ON CONFLICT (user_id, usage_date) DO UPDATE SET used_count = vision_usage_daily.used_count + 1
+WHERE vision_usage_daily.used_count < :limit
+RETURNING used_count
+```
+
+- `WHERE`가 거짓이면 갱신되는 행이 없어 **RETURNING이 비고, 그것이 곧 한도 초과 신호**다. 판정과 증가가 한 문장이라, 동시 요청이 각자 COUNT를 읽고 둘 다 통과하는 경합이 생기지 않는다.
+- **Gemini 호출 전에 차감하고, 실패(503)하면 환불한다.** 성공 후 차감으로 미루면 동시 요청이 전부 한도를 통과한다. 먼저 잠그고, 사용자 잘못이 아닌 실패에만 되돌린다.
+- 차감은 **업로드 검증을 통과한 뒤**다 — 형식 오류(413/415/400)로 실패한 요청이 쿼터를 먹으면 안 된다.
+- `consume_vision_quota`는 `(사용량, 한도, **차감한 날짜**)`를 반환하고, **환불은 반드시 그 날짜로** 한다. 환불 시점에 `today_kst()`를 다시 부르면 자정을 걸친 요청(23:59 차감 → 00:00 실패)이 엉뚱한 날의 카운터를 깎는다.
+
+### 그룹·펫 한도는 행 잠금으로 직렬화한다
+
+비전 쿼터와 달리 그룹·펫 한도는 count-then-insert라 원자적이지 않다. `ensure_can_*`는 **소유자의 `user_subscriptions` 행을 `SELECT ... FOR UPDATE`로 잠근 뒤** 센다 (`get_user_plan(..., for_update=True)`). 잠금은 호출자의 commit까지 유지되므로 같은 소유자의 '추가'가 직렬화된다 — 없으면 동시 join 두 건이 둘 다 COUNT를 읽고 통과해 정원을 1 넘긴다.
+
+### `is_active`는 "판매 중"이지 "구독 유효"가 아니다
+
+- `get_plan()` — **기존 구독 해석용. `is_active`를 보지 않는다.** 여기서 활성 플랜만 반환하면, 요금제 하나를 판매 중단하는 순간 그 요금제를 쓰던 **기존 회원 전원의 요청이 깨진다**(predict는 500).
+- `get_purchasable_plan()` — **새로 고르는 경로(가입·변경)용.** 판매 중단된 플랜은 선택할 수 없다.
+
+### 402 Payment Required — 한도 초과의 단일 응답
+
+`429`(레이트리밋, 기다리면 풀림)와 달리 **402는 "결제해야 풀린다"**는 뜻이다. `PlanLimitError`(서비스 레이어의 순수 예외)를 `main.py`의 **전역 예외 핸들러**가 변환한다 — 어느 라우트에서 나든 본문이 같아야 앱이 한 곳에서 업그레이드 화면으로 분기한다.
+
+```jsonc
+{
+  "detail": "Lite 요금제는 반려동물을 1마리까지 등록할 수 있습니다. 요금제를 업그레이드해주세요.",
+  "code": "plan_limit_exceeded",
+  "resource": "pets",          // vision_daily | owned_groups | group_members | pets
+  "plan": "lite",
+  "limit": 1
+}
+```
+
+`PlanLimitError`는 **`ValueError`를 상속하지 않는다** — 각 api 모듈의 `except ValueError → 400`에 잡히면 업그레이드 유도가 일반 입력 오류로 뭉개진다.
+
+| 라우트 | 402가 나는 조건 | resource |
+|---|---|---|
+| `POST /api/predict` | 오늘 사용량 ≥ `daily_vision_quota` | `vision_daily` |
+| `POST /api/groups` | 소유 그룹 수 ≥ `max_owned_groups` | `owned_groups` |
+| `POST /api/groups/join` | (멤버 수 − 1) ≥ `max_group_members` | `group_members` |
+| `POST /api/groups/{id}/pets` | 그룹 참여 펫 수 ≥ `max_pets` | `pets` |
+| `POST /api/pets` | 소유 펫 수(`deleted_at IS NULL`) ≥ `max_pets` | `pets` |
+
+### 그룹 자원은 **소유자의 요금제**로 판정한다
+
+정원·펫 참여 한도는 참여자가 아니라 **그룹 owner의 플랜**을 본다 — 정원을 결제한 사람은 소유자다. 무료 회원도 Premium 소유자의 그룹에는 들어갈 수 있다.
+
+### 다운그레이드 — 초과분은 유지하고 추가만 막는다
+
+Pro에서 펫 3마리를 만든 뒤 Lite로 내려가도 **기존 3마리는 그대로 둔다.** 서버가 사용자가 만든 것을 말없이 지우지 않는다. 초과 상태에서는 '추가'만 402로 막힌다.
+
+### API
+
+| 메서드 | 경로 | 역할 | 인증 |
+|---|---|---|---|
+| `GET` | `/api/plans` | 요금제 목록 | **무인증** — 7장 Bearer 규약의 유일한 예외. 가격표는 비밀이 아니고, 가입 화면이 로그인 전에 그려야 한다 |
+| `GET` | `/api/me/subscription` | 내 요금제 + 오늘 사용량 + `resets_at`(다음 KST 자정) | Bearer |
+| `PUT` | `/api/me/subscription` | 요금제 변경. body `{plan_code}` | Bearer |
+
+`POST /api/predict` 응답에 `vision_used` · `vision_limit`가 추가됐다 (앱이 별도 조회 없이 "오늘 2/3건"을 보여준다).
+
+> **`PUT /api/me/subscription`은 결제 검증이 없다.** 인앱결제를 붙일 때 영수증 검증(App Store / Play Billing)을 통과한 뒤에만 `change_plan`을 호출하도록 좁혀야 한다. 지금은 누구나 Premium으로 바꿀 수 있다 — **이 상태로 운영 배포하면 안 된다.**
+
+### 가입 강화 — 약관 동의 필수화
+
+`POST /api/auth/signup/verify` 바디에 3개 필드가 추가됐다 (**로그인은 무변**):
+
+```jsonc
+{ "phone_number": "010...", "code": "123456",
+  "agreed_terms": true, "agreed_privacy": true,   // 필수. 누락 422 / false 400
+  "plan_code": "lite" }                            // 생략 시 무료 플랜
+```
+
+- 동의 검증은 **회원 행을 만들기 전**에 한다 — 미동의 요청이 인증번호만 소비하고 끝나면 안 된다.
+- **회원·동의(`terms`·`privacy`)·구독이 한 트랜잭션**이다. 동의 없는 회원이나 요금제 없는 회원이 생기면 안 된다.
+- 버전 상수는 `services/consent_service.py`의 `TERMS_VERSION`·`PRIVACY_VERSION`. 약관 문구를 고치면 여기를 올린다.
+- 기존 회원은 0014가 전원 무료 플랜으로 백필한다. 조회 경로(`get_subscription`)에도 자기치유가 있어 구독 행이 없어도 500이 나지 않는다.
+
+### SMS 실발송 (`services/sms_service.py`)
+
+| 항목 | 결정 |
+|---|---|
+| 공급자 | **Solapi** (`SMS_PROVIDER=solapi`). 개인(비사업자) 가입 가능, 본인 명의 휴대폰 문자인증으로 발신번호 등록, SMS 18원/건 |
+| **AWS SNS · Twilio는 후보가 아니다** | 한국은 AWS End User Messaging의 발신번호(long code·short code·sender ID)를 **하나도 지원하지 않는다.** 전기통신사업법 제84조의2가 요구하는 사전등록 발신번호를 확보할 방법이 없어 `[국제발신]`으로 나가고 통신 3사 스팸 필터에 걸린다 — **API는 200인데 사용자는 문자를 못 받는다.** 배포가 Lightsail이라는 이유로 SMS까지 AWS로 통일하면 안 된다 (발송은 어차피 HTTPS 아웃바운드다) |
+| 발송 실패 | 방금 만든 코드 행을 **지운다**. 남기면 60초 쿨다운·시간당 한도(발급 이력 행을 센다)만 소진되어, 문자를 받지도 못한 사용자가 재요청까지 막힌다. api는 **503**(재시도 가능) |
+| 트랜잭션 경계 | 코드 행을 **커밋한 뒤** 발송한다. 트랜잭션을 연 채 외부 HTTP(최대 5초)를 기다리면 공급자가 느려질 때마다 DB 커넥션·행 잠금이 붙잡혀 풀이 마른다 |
+| provider 화이트리스트 | `SUPPORTED_SMS_PROVIDERS = {none, solapi}`. 오타(`solapy`)를 기동 시점에 막는다 — 안 막으면 서버는 뜨고 **모든 발송이 503**이 된다 |
+| 개발 | `SMS_PROVIDER=none`(기본) — 발송하지 않고 인증번호가 `dev_code`로 응답에 나간다 |
+| 운영 게이트 | `APP_ENV=production`이면 `SMS_PROVIDER=none`일 때 **기동 실패** (`ensure_production_sms_config`). 발송 경로가 없으면 아무도 가입할 수 없다 |
+| 발신번호 유효기간 | Solapi 문자인증 등록번호는 **6개월**. 갱신하지 않으면 어느 날 전체 발송이 막힌다 (서류 제출 시 12개월) |
+
+### 실측 (2026-07-14, 로컬)
+
+가입(동의 2종 기록·lite 부여) → `GET /api/me/subscription` = `{used:0, limit:3, resets_at:"2026-07-15T00:00:00+09:00"}` / 펫 1마리 201 → 2마리째 **402** (`resource:"pets"`, `limit:1`) → `PUT /api/me/subscription` `pro` → 재시도 **201** / 사용량을 3으로 채운 뒤 `POST /api/predict` → **402** (`resource:"vision_daily"`, Gemini 미호출) / production 기동 게이트: `SMS_PROVIDER` 미설정·오타 모두 **기동 거부** 확인 / 회귀 테스트 `tests/test_subscription_service.py` 16건 포함 **67건 통과**.
+
+### 남은 과제 (운영 배포 전 필수)
+
+1. **인앱결제 연동** — `PUT /api/me/subscription`에 영수증 검증을 붙이기 전까지 유료 플랜은 사실상 무료다.
+2. 쿼터 소진 알림(푸시)·월 사용량 집계는 범위 밖.
+
+> **SMS 발송(Solapi)은 2026-07-14에 도입 직후 철회했다** — 인증을 카카오 로그인으로 교체했기 때문이다. 21장 참조.
+
+---
+
+## 21. 카카오 로그인 — SMS 인증 교체 (2026-07-14 확정 — 리비전 0015)
+
+> 구현 범위: `users.kakao_id`·`nickname` · `kakao_link_codes` 테이블, `GET /api/auth/kakao/start`·`callback` · `POST /api/auth/kakao/login`·`signup`, 그룹 멤버 표시 교체, 탈퇴 시 카카오 연결 끊기. **휴대폰 OTP(SMS)와 `phone_verification_codes`·`services/sms_service.py`는 제거했다.**
+
+### 왜 바꿨나 — 그리고 무엇을 잃었나
+
+SMS(Solapi)를 붙였다가 **카카오 로그인으로 교체**했다. 인증 비용이 0원이고(SMS는 건당 18원), 전화번호는 이 서비스에서 **로그인 식별자와 그룹 멤버 표시 외에 쓰이는 곳이 없었다** — 알림 발송도, 본인확인도 하지 않는다. 즉 없어도 기능이 줄지 않는다.
+
+**대신 무료 티어 어뷰징 방어를 잃었다.** 카카오계정은 **이메일 인증만으로 만들 수 있어**(휴대폰 인증은 카카오톡 앱 사용에 필요한 것이지 계정 생성 요건이 아니다) 회원번호를 새로 얻는 데 비용이 거의 없다. 즉 **Lite 3건/일은 계정을 갈아타면 우회된다.** 사람 단위로 묶을 수 있는 값은 CI뿐인데 사업자 정보가 등록된 비즈 앱만 신청할 수 있다.
+
+이를 감수한 근거: 이 앱은 **기록이 쌓이는 앱**이라 계정을 버리면 끼니·추이·그룹·펫을 전부 잃는다. 우회의 실익이 있는 층은 "기록은 필요 없고 인식만 공짜로 쓰려는" 소수이며 어차피 유료 전환 대상이 아니다. **쿼터 방어가 실제로 필요해지면 카카오 계정 유일성이 아니라 서버 측(IP·디바이스 레이트리밋, 비용 상한)으로 해결한다.**
+
+### 카카오 앱 등급별로 받을 수 있는 정보 (공식 문서 기준)
+
+| 항목 | 요건 |
+|---|---|
+| **회원번호(`id`)** | 동의 없이 **항상 제공**. 우리의 로그인 식별자 |
+| **닉네임 · 프로필 사진** | **일반(기본) 앱, 심사 없음** ← 지금 쓰는 범위 (`scope=profile_nickname`) |
+| 카카오계정 이메일 | **비즈 앱** 전환 필요. 개인 개발자도 **본인인증만으로 전환 가능**, 심사 없음 |
+| **전화번호 · CI** | 비즈 앱 **+ 개인정보 동의항목 심사**(영업일 3~5일). 카카오 공식 FAQ는 **"사업자 정보가 등록된 비즈앱만 신청 가능"**이라고 명시 → 개인 개발자 단계에서는 **설계에서 배제** |
+
+### 흐름 — 서버가 코드를 교환하고, 앱에는 1회용 연동 코드를 준다
+
+```
+앱  →  GET /api/auth/kakao/start?platform=native|web    (expo-web-browser 로 연다)
+서버 →  302 kauth.kakao.com/oauth/authorize?...&state=<서명값>
+카카오 → GET /api/auth/kakao/callback?code=&state=       (서버가 받는다)
+서버 →  코드 교환(client_secret) → /v2/user/me → **kakao_link_codes** 발급
+서버 →  302 kcalairn://auth?code=<연동코드>&is_new=true|false   (웹은 /auth?...)
+앱  →  POST /api/auth/kakao/{login|signup}  {link_code, ...}  → 세션 토큰
+```
+
+**왜 이렇게 도나 (셋 다 카카오의 제약이다):**
+
+1. **커스텀 스킴(`kcalairn://`)은 카카오 Redirect URI 로 등록할 수 없다.** 카카오는 http/https만 받는다(불일치 시 `KOE006`). 그래서 콜백을 **서버가** 받고, 서버가 앱으로 딥링크를 되돌려준다.
+2. **`client_secret` 이 사실상 필수**다(신규 REST 키는 기본 활성). 앱 번들에 시크릿을 넣으면 추출되므로 **토큰 교환은 반드시 서버**에서 한다. 그래서 앱에는 REST 키조차 필요 없다 — 서버 URL만 연다.
+3. **카카오 인가 코드는 1회용**이다. 신규 회원은 약관 동의·요금제 선택을 거쳐야 가입이 완료되는데, 그 사이 인가 코드를 다시 쓸 수 없다. 그래서 콜백이 회원번호·닉네임을 담은 **1회용 연동 코드(TTL 10분)** 를 발급하고, 앱이 그걸로 로그인 또는 가입을 마무리한다.
+
+**네이티브 카카오 SDK는 쓰지 않는다.** 얻는 건 카톡 앱-투-앱 UX뿐인데, 대가로 iOS/Android 네이티브 설정·키해시·Maven 저장소가 붙고 **웹 빌드에서 동작하지 않는다**(웹은 FastAPI가 서빙한다). REST 방식 하나로 앱·웹을 통일한다.
+
+### 테이블
+
+| 테이블 | 컬럼 |
+|---|---|
+| `users` (변경) | **`kakao_id`** `String(32)` UNIQUE (로그인 식별자) · **`nickname`** `String(50)` · `phone_number` → **nullable·유니크 해제** |
+| `kakao_link_codes` (신규) | `code_hash` `String(64)` UNIQUE · `kakao_id` · `nickname` · `expires_at` · `consumed_at` · `created_at` |
+| ~~`phone_verification_codes`~~ | **삭제** |
+
+- **`phone_number` 컬럼은 남긴다.** 비즈 앱 전환 후 전화번호 동의항목을 받게 되면 다시 채울 자리이고, 기존 행의 값을 지우지 않기 위해서다. 신규 회원은 NULL이다.
+- **연동 코드도 세션 토큰과 같이 해시만 저장한다.** 원문이 딥링크 URL에 실려 나가므로, DB 유출과 조합되면 안 된다.
+- **기존 회원(0015 이전)은 삭제하지 않았다.** `kakao_id`가 NULL이라 로그인만 불가능하다.
+
+### OAuth state — 서명값이라 테이블이 없다
+
+CSRF 방어용 `state`는 `{platform, nonce, exp}`를 `AUTH_CODE_PEPPER`로 HMAC 서명한 값이다. 콜백이 우리가 시작시킨 요청인지, 어느 플랫폼(앱/웹)으로 돌려보낼지를 여기서 읽는다. 서명이 깨지거나 만료되면 **딥링크에 `error=invalid_state`를 실어 되돌린다** — 사용자를 브라우저에 갇히게 두지 않는다.
+
+### API
+
+| 메서드 | 경로 | 역할 | 인증 |
+|---|---|---|---|
+| `GET` | `/api/auth/kakao/start?platform=native\|web` | 카카오 인가 화면으로 302 | 무인증 |
+| `GET` | `/api/auth/kakao/callback` | 카카오가 코드를 들고 오는 지점. **JSON이 아니라 리다이렉트로 답한다** (브라우저가 여는 화면이다). 실패도 딥링크에 `error=`를 실어 보낸다 | 무인증 |
+| `POST` | `/api/auth/kakao/login` | body `{link_code}` → 세션 토큰. **미가입 계정은 404** (앱은 가입 화면으로) | 무인증 |
+| `POST` | `/api/auth/kakao/signup` | body `{link_code, agreed_terms, agreed_privacy, plan_code?}` → 세션 토큰 | 무인증 |
+| `POST` | `/api/auth/logout` | 기존과 동일 | Bearer |
+
+- 동의는 **회원 행을 만들기 전에** 본다 — 미동의 요청이 연동 코드만 소비하고 끝나면 안 된다(그러면 카카오 로그인부터 다시 해야 한다).
+- 회원·동의(`terms`·`privacy`)·구독은 **한 트랜잭션**이다 (20장과 동일).
+- 로그인할 때마다 **닉네임을 카카오 값으로 갱신**한다 — 그룹 멤버에게 보이는 이름이다.
+
+### 그룹 멤버 표시 — 마스킹 번호 → 닉네임
+
+`GET /api/groups/{id}` 의 `members[].phone_number_masked`(`010****1234`)가 **`members[].nickname`** 으로 바뀌었다. 번호 자체가 없어졌기 때문이다. 프로필 동의를 거부해 닉네임이 없으면 `"이름 미설정"`을 준다. **앱 계약 변경이라 같은 작업 단위에서 앱도 고쳤다.**
+
+### 회원 탈퇴 — 카카오 연결 끊기는 **의무**
+
+카카오 공식 문서: *"서비스에서 탈퇴 … 시 서비스는 반드시 탈퇴 과정에 연결 해제 요청을 포함해야 합니다."*
+
+- `POST https://kapi.kakao.com/v1/user/unlink` 를 **어드민 키** 방식(`target_id_type=user_id`)으로 부른다 — 카카오 액세스 토큰을 서버에 보관하지 않기 때문이다.
+- **우리 쪽 파기를 커밋한 뒤에** 부르고, **실패해도 예외를 올리지 않는다.** 카카오 장애로 개인정보 파기(법정 의무)가 막히면 안 된다. 실패는 로그로 남겨 수동 정리한다.
+
+### 환경변수
+
+| 변수 | 필수 | 비고 |
+|---|:---:|---|
+| `KAKAO_REST_API_KEY` | 예 | 인가 URL에 실려 나가는 **공개값** |
+| `KAKAO_CLIENT_SECRET` | 예 | **비밀값.** 신규 REST 키는 기본 활성이라 없으면 토큰 교환 실패 |
+| `KAKAO_ADMIN_KEY` | 예 | **비밀값.** 탈퇴 시 unlink |
+| `KAKAO_REDIRECT_URI` | 예 | 카카오 콘솔 등록값과 **문자 단위로 동일**해야 한다. 운영은 https 강제 |
+| `APP_DEEPLINK_SCHEME` | 아니오 | 기본 `kcalairn` |
+
+`APP_ENV=production`이면 위 4개가 없을 때 **기동 실패**한다(`ensure_production_kakao_config`) — 카카오가 유일한 인증 수단이라 설정이 없으면 아무도 로그인하지 못한다.
+
+### 실측 (2026-07-14, 로컬)
+
+`GET /api/auth/kakao/start` → `kauth.kakao.com/oauth/authorize?...&scope=profile_nickname&state=<서명값>` 302 확인 / 위조 state 콜백 → `kcalairn://auth?error=invalid_state` (브라우저에 갇히지 않음) / 동의 취소 → `error=cancelled` / 회귀 테스트: 카카오 인증 `tests/test_auth_service.py`(19건)·`tests/test_auth_api.py`(11건) 포함 **64건 통과**. **카카오 실호출 e2e는 콘솔에 Redirect URI 등록 후 수행해야 한다 (미완).**
+
+### 남은 과제
+
+1. **카카오 콘솔 설정** — Redirect URI 등록(`http://localhost:8000/api/auth/kakao/callback`, 운영은 https), 클라이언트 시크릿 생성, 어드민 키 확보. 이게 끝나야 실호출 e2e가 된다.
+2. **연결 해제 웹훅** — 사용자가 카카오 [연결된 서비스 관리]에서 직접 끊으면 우리 DB가 모른다. 웹훅으로 동기화하는 것은 후속 과제.
+3. 무료 티어 어뷰징 대응(IP·디바이스 레이트리밋)은 실제 남용이 관측되면 착수한다.

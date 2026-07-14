@@ -3,7 +3,7 @@
 사용법 (저장소 루트에서):
     venv/bin/python scripts/purge_expired_auth.py
 
-정기 실행(cron/systemd timer)을 권장한다 — phone_verification_codes·auth_sessions가
+정기 실행(cron/systemd timer)을 권장한다 — kakao_link_codes·auth_sessions가
 무한 누적되지 않도록. 보존창은 services/auth_service.py 상단 상수 참조. 멱등하다.
 """
 
