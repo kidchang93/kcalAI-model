@@ -9,6 +9,13 @@ from models.consent_model import UserAllergy, UserCondition, UserConsent, UserHe
 from services import meta_service
 
 SENSITIVE_HEALTH = "sensitive_health"
+TERMS = "terms"
+PRIVACY = "privacy"
+
+# 가입 시 필수로 받는 두 동의의 현재 버전. 약관 문구를 고치면 여기를 올린다 — 기존 회원의
+# 동의 행은 옛 버전으로 남아, 누가 무엇에 동의했는지가 증빙된다.
+TERMS_VERSION = "1.0"
+PRIVACY_VERSION = "1.0"
 
 
 # ---- 동의 ----
@@ -30,6 +37,17 @@ def create_consent(db: Session, user_id: int, kind: str, version: str) -> UserCo
     db.commit()
     db.refresh(consent)
     return consent
+
+
+def record_signup_consents(db: Session, user_id: int) -> None:
+    """가입 필수 동의(이용약관·개인정보 처리방침)를 기록한다.
+
+    가입 트랜잭션 안에서 불리므로 commit 하지 않는다 (호출자가 커밋한다) — 동의 없이 회원
+    행만 남는 상태가 생기면 안 된다.
+    """
+    db.add(UserConsent(user_id=user_id, kind=TERMS, version=TERMS_VERSION))
+    db.add(UserConsent(user_id=user_id, kind=PRIVACY, version=PRIVACY_VERSION))
+    db.flush()
 
 
 def has_active_consent(db: Session, user_id: int, kind: str = SENSITIVE_HEALTH) -> bool:

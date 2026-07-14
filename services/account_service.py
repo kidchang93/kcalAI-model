@@ -1,12 +1,14 @@
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from models.auth_model import AuthSession, PhoneVerificationCode, User
+from models.auth_model import AuthSession, KakaoLinkCode, User
 from models.consent_model import UserAllergy, UserCondition, UserConsent, UserHealthProfile
 from models.group_model import Group, GroupMember, GroupPet
 from models.health_model import MealItem, MealLog, UserGoal, UserProfile, WeightLog
 from models.pet_model import Pet, PetFeedingLog
 from models.recommendation_model import DietRecommendation
+from models.subscription_model import UserSubscription, VisionUsageDaily
+from services.kakao_client import unlink
 
 
 def delete_account(db: Session, user: User) -> None:
@@ -14,17 +16,20 @@ def delete_account(db: Session, user: User) -> None:
     # FK 가 전부 ON DELETE NO ACTION 이므로 자식 → 부모 순서를 지킨다. 근거·연쇄 표는 DATA_MODEL.md 18장.
     # commit 은 마지막 한 번 — 중간 실패 시 세션 종료와 함께 전체 롤백된다.
     user_id = user.id
-    phone_number = user.phone_number
+    kakao_id = user.kakao_id
     owned_group_ids = select(Group.id).where(Group.owner_id == user_id)
     owned_pet_ids = select(Pet.id).where(Pet.owner_id == user_id)
     my_meal_log_ids = select(MealLog.id).where(MealLog.user_id == user_id)
 
-    # 1) 세션·인증코드 — 세션 행 파기로 해당 유저의 모든 토큰이 즉시 무효(401)가 된다.
-    #    phone_verification_codes 는 FK 없이 phone_number 로 귀속되므로 번호 기준으로 파기한다.
+    # 1) 세션·연동코드 — 세션 행 파기로 해당 유저의 모든 토큰이 즉시 무효(401)가 된다.
+    #    kakao_link_codes 는 FK 없이 kakao_id 로 귀속되므로 회원번호 기준으로 파기한다.
     db.execute(delete(AuthSession).where(AuthSession.user_id == user_id))
-    db.execute(
-        delete(PhoneVerificationCode).where(PhoneVerificationCode.phone_number == phone_number)
-    )
+    if kakao_id:
+        db.execute(delete(KakaoLinkCode).where(KakaoLinkCode.kakao_id == kakao_id))
+
+    # 1-2) 구독·사용량 — plans 참조 테이블은 건드리지 않고 회원 귀속 행만 파기한다.
+    db.execute(delete(UserSubscription).where(UserSubscription.user_id == user_id))
+    db.execute(delete(VisionUsageDaily).where(VisionUsageDaily.user_id == user_id))
 
     # 2) 동의·민감정보 — 동의 이력도 개인정보이므로 함께 파기한다 (18장 잠정 결정).
     db.execute(delete(UserConsent).where(UserConsent.user_id == user_id))
@@ -59,3 +64,9 @@ def delete_account(db: Session, user: User) -> None:
     db.execute(delete(User).where(User.id == user_id))
 
     db.commit()
+
+    # 8) 카카오 연결 끊기 — 카카오 로그인 서비스의 **의무**다 (탈퇴 과정에 연결 해제를 포함해야 한다).
+    #    우리 쪽 파기를 **커밋한 뒤**에 부른다: 카카오가 장애여도 개인정보 파기가 막히면 안 된다.
+    #    unlink 는 실패해도 예외를 올리지 않고 로그만 남긴다 (수동 정리 대상).
+    if kakao_id:
+        unlink(kakao_id)

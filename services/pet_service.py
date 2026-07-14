@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from models.group_model import GroupMember, GroupPet
 from models.pet_model import Pet, PetFeedingLog
+from services.subscription_service import ensure_can_create_pet
 
 
 def _day_bounds(target_date: date) -> tuple[datetime, datetime]:
@@ -95,6 +96,9 @@ def create_pet(
     weight_kg: float | None,
     is_neutered: bool | None,
 ) -> dict:
+    # 요금제 한도. soft delete 된 펫은 세지 않는다 (삭제했으면 자리가 비는 게 맞다).
+    ensure_can_create_pet(db, owner_id)
+
     pet = Pet(
         owner_id=owner_id,
         name=name,

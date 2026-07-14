@@ -6,6 +6,11 @@ from sqlalchemy.orm import Session
 from models.auth_model import User
 from models.group_model import Group, GroupMember, GroupPet
 from models.pet_model import Pet
+from services.subscription_service import (
+    ensure_can_add_member,
+    ensure_can_attach_pet,
+    ensure_can_create_group,
+)
 
 # 혼동 문자(I, L, O, 0, 1)를 제외한 대문자·숫자.
 INVITE_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -15,11 +20,10 @@ ROLE_OWNER = "owner"
 ROLE_MEMBER = "member"
 
 
-def mask_phone_number(phone_number: str) -> str:
-    # 그룹 멤버 사이에서도 휴대폰 번호 원본은 노출하지 않는다 (개인정보 최소노출).
-    if len(phone_number) < 8:
-        return phone_number[:3] + "****"
-    return phone_number[:3] + "****" + phone_number[-4:]
+def display_name(nickname: str | None) -> str:
+    # 그룹 멤버에게 보이는 이름 = 카카오 닉네임. 프로필 동의를 거부하면 빈 값이라 대체 문구를 쓴다.
+    # (2026-07-14 이전에는 마스킹한 휴대폰 번호였다. SMS 제거로 번호 자체가 사라졌다.)
+    return nickname.strip() if nickname and nickname.strip() else "이름 미설정"
 
 
 def _generate_invite_code(db: Session) -> str:
@@ -60,6 +64,9 @@ def get_membership(db: Session, group_id: int, user_id: int) -> GroupMember | No
 
 
 def create_group(db: Session, owner_id: int, name: str, kind: str) -> dict:
+    # 소유 그룹 개수도 요금제 한도다. 이게 없으면 그룹을 여러 개 만들어 인원 한도를 우회할 수 있다.
+    ensure_can_create_group(db, owner_id)
+
     group = Group(owner_id=owner_id, name=name, kind=kind, invite_code=_generate_invite_code(db))
     db.add(group)
     db.flush()
@@ -89,6 +96,9 @@ def join_group(db: Session, user_id: int, invite_code: str) -> dict:
     if get_membership(db, group.id, user_id) is not None:
         raise ValueError("이미 참여한 그룹입니다.")
 
+    # 정원은 참여자가 아니라 **그룹 소유자의 요금제**로 판정한다 — 정원을 결제한 사람은 소유자다.
+    ensure_can_add_member(db, group)
+
     db.add(GroupMember(group_id=group.id, user_id=user_id, role=ROLE_MEMBER))
     db.commit()
     return _summary(db, group, role=ROLE_MEMBER)
@@ -103,7 +113,7 @@ def get_group_detail(db: Session, user_id: int, group_id: int) -> dict:
         raise PermissionError("그룹 멤버만 조회할 수 있습니다.")
 
     member_rows = db.execute(
-        select(GroupMember, User.phone_number)
+        select(GroupMember, User.nickname)
         .join(User, User.id == GroupMember.user_id)
         .where(GroupMember.group_id == group_id)
         .order_by(GroupMember.joined_at.asc(), GroupMember.id.asc())
@@ -126,11 +136,11 @@ def get_group_detail(db: Session, user_id: int, group_id: int) -> dict:
         "members": [
             {
                 "user_id": member.user_id,
-                "phone_number_masked": mask_phone_number(phone_number),
+                "nickname": display_name(nickname),
                 "role": member.role,
                 "joined_at": member.joined_at,
             }
-            for member, phone_number in member_rows
+            for member, nickname in member_rows
         ],
         "pets": [
             {
@@ -162,6 +172,9 @@ def attach_pet(db: Session, user_id: int, group_id: int, pet_id: int) -> None:
     )
     if exists is not None:
         raise ValueError("이미 그룹에 참여한 반려동물입니다.")
+
+    # 그룹에 들어올 수 있는 펫 수도 소유자 요금제로 판정한다 (멤버 정원과 같은 규칙).
+    ensure_can_attach_pet(db, group)
 
     db.add(GroupPet(group_id=group_id, pet_id=pet_id))
     db.commit()
