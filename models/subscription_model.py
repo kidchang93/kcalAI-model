@@ -113,12 +113,17 @@ class BillingKey(Base):
 class Payment(Base):
     """결제 원장 — 최초/갱신 청구 1건마다 1행. 감사·정산 근거이자 멱등 장치다
     (`order_id` UNIQUE 로 같은 주문의 중복 반영을 막는다).
+
+    **행을 지우지 않는다.** 회원이 탈퇴해도 거래 기록은 남기고 `user_id` 만 NULL 로 끊는다
+    (`account_service.delete_account`) — 개인정보는 파기하면서 대금결제 기록은 보존하기 위함이다.
     """
 
     __tablename__ = "payments"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    # NULL = 탈퇴 회원의 익명화된 원장. 청구 시점에는 언제나 값이 있다(_create_ready_payment).
+    # 조회는 user_id 일치로만 하므로(payment_service) 익명화된 행은 누구에게도 노출되지 않는다.
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True, nullable=True)
     # 서버가 생성해 토스에 보낸 주문번호. UNIQUE 로 중복 청구·중복 반영을 막는다.
     order_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     plan_code: Mapped[str] = mapped_column(ForeignKey("plans.code"), nullable=False)

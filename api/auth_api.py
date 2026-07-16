@@ -154,6 +154,8 @@ def signup_with_kakao(request: KakaoSignupRequest, db: Session = Depends(get_db)
             request.agreed_terms,
             request.agreed_privacy,
             request.plan_code,
+            request.terms_version,
+            request.privacy_version,
         )
         return {
             "access_token": raw_token,

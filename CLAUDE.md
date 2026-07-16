@@ -81,7 +81,7 @@ open http://127.0.0.1:8000/docs
 | 린트 | 없음 |
 | 포맷 | 없음 |
 
-테스트는 Postgres에 붙습니다 (인증 로직의 tz-aware datetime 충실도). 각 테스트는 외부 트랜잭션 + SAVEPOINT 롤백으로 격리되어 대상 DB를 오염시키지 않습니다. 공유 DB의 기존 데이터와 번호가 겹칠 수 있으니, 깔끔한 격리가 필요하면 `TEST_DATABASE_URL`로 전용 DB를 지정하세요. 현재 커버리지는 `tests/test_auth_service.py`·`tests/test_auth_api.py`(카카오 로그인, 21장)와 `tests/test_subscription_service.py`(요금제·쿼터, 20장)입니다.
+테스트는 Postgres에 붙습니다 (인증 로직의 tz-aware datetime 충실도). 각 테스트는 외부 트랜잭션 + SAVEPOINT 롤백으로 격리되어 대상 DB를 오염시키지 않습니다. 공유 DB의 기존 데이터와 번호가 겹칠 수 있으니, 깔끔한 격리가 필요하면 `TEST_DATABASE_URL`로 전용 DB를 지정하세요. 현재 **116건**이며 커버리지는 `test_auth_service.py`·`test_auth_api.py`(카카오 로그인, 21장), `test_subscription_service.py`(요금제·쿼터, 20장), `test_billing_service.py`(자동결제, 24장), `test_toss_client.py`(**토스 어댑터의 비밀값 미유출**, 2026-07-16), `test_payment_service.py`(결제 내역, 23장), `test_crypto.py`, `test_upload_validation.py`, `test_web_spa.py`입니다.
 | 수동 검증 | `uvicorn main:app` 기동 + `/docs` 200 + `http/*.http` 요청 |
 
 ---
@@ -196,11 +196,15 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 - **네이티브 카카오 SDK를 도입하지 않는다.** 얻는 건 카톡 앱-투-앱 UX뿐인데 iOS/Android 네이티브 설정·키해시가 붙고 **웹 빌드가 깨집니다**(웹은 FastAPI가 서빙합니다). REST 방식으로 앱·웹을 통일합니다 (21장).
 - **카카오 `client_secret`·어드민 키를 앱에 넣지 않는다.** `EXPO_PUBLIC_*`는 번들에 평문 노출됩니다. 토큰 교환은 **서버에서만** 합니다.
 - **회원 탈퇴에서 카카오 unlink를 빼먹지 않는다.** 카카오 로그인 서비스의 의무입니다. 단 **파기를 커밋한 뒤** 호출하고, unlink 실패가 개인정보 파기를 막지 않게 합니다.
+- **동의 문서를 개정하면 서버 상수(`consent_service`의 `TERMS_VERSION`·`PRIVACY_VERSION`·`SENSITIVE_HEALTH_VERSION`)와 앱 문서(`k-calAI-RN`의 `constants/legal.ts`·`constants/consent.ts`)를 같은 작업 단위에서 올린다.** 서버만 올리면 기존 앱 사용자의 가입·동의가 전부 400이 됩니다(`ensure_current_version`). 앱이 보낸 버전을 대조해 기록하는 이유는 증빙 때문입니다 — 앱이 v1.0을 띄워 놓고 서버가 "2.0에 동의함"으로 기록하면 그 이력은 거짓입니다 (18장 아래 절).
+- **`users`를 참조하는 테이블을 추가하면 `account_service.delete_account`에 반드시 반영한다.** FK가 전부 `ON DELETE NO ACTION`이라, 빠뜨리면 그 데이터를 가진 회원은 `ForeignKeyViolation` → **500으로 영구히 탈퇴할 수 없습니다**(= 개인정보 파기 의무 위반). 2026-07-16에 `payments`·`billing_keys` 누락으로 실제 발생했습니다 — 리비전 0017이 테이블을 추가했는데 2026-07-11에 작성된 삭제 연쇄가 그대로였습니다. `tests/test_account_service.py`가 FK 전수와 삭제 목록을 대조하니, 새 테이블은 그 테스트의 `handled` 집합에도 추가하세요.
+- **결제 원장(`payments`)을 탈퇴 시 삭제하지 않는다.** 개인정보는 파기하되(제21조) 대금결제 기록은 보존해야 해서(전자상거래법 제6조), `user_id`만 NULL로 끊어 **익명화**합니다 (18장). 반대로 **`billing_keys`는 반드시 파기**합니다 — 거래 기록이 아니라 카드 재청구 자격증명입니다.
 - **결제 검증 없이 유료 플랜을 부여하지 않는다.** 유료 부여 경로는 **`POST /api/billing/confirm`(실제 청구 성공) 하나뿐**입니다. `PUT /api/me/subscription`은 2026-07-16부터 **무료(lite)로만** 바꿀 수 있고(유료 전환은 400), 가입(`POST /api/auth/kakao/signup`)의 `plan_code`도 **유료를 고르면 무료로 시작**합니다(의사표시로만 받음 — 가입을 400으로 막으면 서비스 진입 자체가 실패하므로). 새 부여 경로를 만들 때도 이 원칙을 지키세요.
 - **`TOSS_SECRET_KEY`·`billingKey`를 로그·응답·에러 메시지에 남기지 않는다.** 시크릿 키는 이 값만으로 임의 청구가 가능하고, 빌링키는 그 회원 카드의 재청구 자격증명입니다. 로그에는 결제사 **코드**만 남깁니다(`code=REJECT_CARD_COMPANY`). 앱에 내려가는 키는 `client_key`(공개값)뿐입니다.
 - **클라이언트가 보낸 결제 금액을 신뢰하지 않는다.** 금액은 언제나 서버가 `plans.price_krw`에서 정합니다 — 요청 스키마에 금액 필드 자체를 두지 않습니다 (`BillingConfirmRequest`). 받으면 100원짜리 Premium이 팔립니다.
 - **토스 API를 테스트에서 실제로 호출하지 않는다.** 테스트 키라도 결제사 트래픽입니다. `toss_client`를 monkeypatch로 대체합니다 (`tests/test_billing_service.py`).
 - **결제 실패 시 구독을 활성화하지 않는다.** 청구 예외가 나면 구독 행을 건드리지 않습니다 — 결제 안 된 Pro가 생기면 안 됩니다.
+- **`confirm`의 중복 방어를 `order_id`·`_mark_payment_done`에 기대지 않는다.** 그 둘은 **주문번호가 같아야** 걸리는 갱신 배치의 방어선인데, `confirm`은 호출마다 새 `order_id`를 만듭니다. 중복은 **구독 상태**로 판정합니다 (`_is_duplicate_confirm` — 같은 플랜 + `active` + 기간 남음이면 청구 없이 200). 이 게이트를 지우면 새로고침·502 후 재시도·결제창 2회 완주가 그대로 이중 결제가 됩니다(방어 전 실측: 5,000원 2회 청구). 단 `past_due`·`canceled`·다른 플랜은 **통과시켜야** 합니다 — 카드를 바꿔 복구하거나 업그레이드하는 정당한 경로입니다 (24장).
 - **만료 강등에서 `plan_code`를 덮어쓰지 않는다.** 만료는 **읽을 때 해석**합니다 (`get_effective_plan`). 행을 lite로 쓰면 갱신 배치가 청구 대상을 잃고 이력이 사라집니다 (24장).
 - **`PlanLimitError`를 `ValueError`로 바꾸지 않는다.** api 모듈의 `except ValueError → 400`에 잡혀 업그레이드 유도가 일반 입력 오류로 뭉개집니다.
 - **비전 쿼터를 Gemini 호출 성공 후에 차감하지 않는다.** 동시 요청이 전부 한도를 통과합니다. 선차감 → 실패 시 환불이 규약입니다.
