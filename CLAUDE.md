@@ -63,6 +63,8 @@ open http://127.0.0.1:8000/docs
 
 **자주 먹는 음식 1인분 보정** (식약처 식품중량이 비현실적으로 작아 과소평가되던 요리·원물의 1인분을 현실화 — "칼로리가 너무 작게 나온다" 해소, `docs/DATA_MODEL.md` 14장): `venv/bin/python scripts/correct_common_foods.py` — 데이터 인라인, **source 제한 없이 덮어써** mfds/raw 행도 보정하고 `source='curated'`로 바꿔 재적재에도 유지합니다. 계산 **모델(1인분×serving_ratio)은 불변**이고 값만 보정합니다(제육볶음 202→430·떡볶이 193→360·사과 52→95 등 31건). 항목·값은 `CORRECTIONS`에서 조정합니다.
 
+**자동결제 갱신 배치** (청구 예정일이 지난 구독을 청구 — `docs/DATA_MODEL.md` 24장): `venv/bin/python scripts/charge_due_subscriptions.py` — 저장소 루트에서 실행, **멱등**(성공 건은 `next_billing_at`이 한 달 뒤로 밀려 재실행 시 대상에서 빠짐). 하루 1회 cron 권장. 한 건의 실패가 배치를 멈추지 않으며 실패 건은 `past_due`로 다음날 재시도합니다. `TOSS_SECRET_KEY` 미설정 시 실행을 거부합니다(exit 1). **실행하면 실제 결제가 일어납니다.**
+
 **만료 인증 데이터 정리 배치** (`kakao_link_codes`·`auth_sessions` 무한 누적 방지): `venv/bin/python scripts/purge_expired_auth.py` — 만료 코드(발급 1일 뒤)·만료·폐기 세션(7일 뒤)을 물리 삭제, 멱등. 정기 실행(cron/systemd)을 권장. 보존창은 `services/auth_service.py`의 `CODE_RETENTION_DAYS`·`SESSION_RETENTION_DAYS`.
 
 ### 반드시 저장소 루트에서 실행할 것
@@ -100,6 +102,9 @@ open http://127.0.0.1:8000/docs
 | `GEMINI_API_KEY` | 사실상 예 | 없음 | `services/gemini_vision_service.py` — 이미지 인식(단일 백엔드)에 필요. `APP_ENV=production`이면 없을 때 기동 실패. **로그·응답에 미노출** |
 | `GEMINI_MODEL` | 아니오 | `gemini-flash-latest` | 〃 — 재현성 필요 시 핀 버전(예: `gemini-3.5-flash`) |
 | `GEMINI_TIMEOUT_MS` | 아니오 | `15000` | 〃 — Gemini 호출 타임아웃(ms) |
+| `TOSS_SECRET_KEY` | production 예 | 없음 | `services/toss_client.py` — 자동결제. **비밀값.** 이 값만으로 임의 청구가 가능하다. Basic `base64("{키}:")` 인증. `APP_ENV=production`이면 없을 때 기동 실패. **로그·응답에 미노출** |
+| `TOSS_CLIENT_KEY` | production 예 | 없음 | 〃 — **공개값.** 결제창 SDK 초기화용으로 `/api/billing/checkout` 응답에 실려 앱에 내려간다 |
+| `TOSS_TIMEOUT_SECONDS` | 아니오 | `10` | 〃 — 토스 호출 타임아웃(초) |
 | `KAKAO_REST_API_KEY` | 예 | 없음 | `services/kakao_client.py` — 인가 URL에 실려 나가는 **공개값** |
 | `KAKAO_CLIENT_SECRET` | 예 | 없음 | 〃 — **비밀값.** 신규 REST 키는 기본 활성이라 없으면 토큰 교환 실패 |
 | `KAKAO_ADMIN_KEY` | 예 | 없음 | 〃 — **비밀값.** 회원 탈퇴 시 카카오 연결 끊기(unlink) |
@@ -111,15 +116,16 @@ open http://127.0.0.1:8000/docs
 
 ---
 
-## API 목록 (코드 실측, 2026-07-12 기준 47개)
+## API 목록 (openapi.json 실측, 2026-07-16 기준 **55개**)
 
-계약 상세는 `docs/DATA_MODEL.md`가 정본입니다 (4장 CRUD, 7장 사용자 층, 9장 그룹·반려동물, 10장 메타, 11장 식단 추천, 15장 추이 집계, 16장 기록 경고 판정, 17장 그룹 라이프사이클, 18장 회원 탈퇴·펫 권장 칼로리).
+계약 상세는 `docs/DATA_MODEL.md`가 정본입니다 (4장 CRUD, 7장 사용자 층, 9장 그룹·반려동물, 10장 메타, 11장 식단 추천, 15장 추이 집계, 16장 기록 경고 판정, 17장 그룹 라이프사이클, 18장 회원 탈퇴·펫 권장 칼로리, 23장 결제 내역, **24장 자동결제**).
 
 | 도메인 | 라우트 | 정의 파일 |
 |--------|--------|-----------|
 | Auth | `GET /api/auth/kakao/start` · `GET /api/auth/kakao/callback` · `POST /api/auth/kakao/login` · `POST /api/auth/kakao/signup` · `POST /api/auth/logout` | `api/auth_api.py` |
-| Subscription | `GET /api/plans` (**무인증** — 가입 화면이 로그인 전에 그린다) · `GET·PUT /api/me/subscription` | `api/subscription_api.py` |
-| Payments | `GET /api/payments` (내 결제 내역, 최신순) · `GET /api/payments/{id}` (본인 것만, 없거나 남의 것이면 **404** 존재 은닉) — **읽기 전용 조회**. 청구 흐름은 미구현이라 결제 데이터는 아직 없다 (DATA_MODEL 23장) | `api/payment_api.py` |
+| Subscription | `GET /api/plans` (**무인증** — 가입 화면이 로그인 전에 그린다) · `GET·PUT /api/me/subscription` (**PUT은 무료(lite) 다운그레이드만** — 유료 전환은 400, 결제를 거쳐야 한다. 24장) | `api/subscription_api.py` |
+| Payments | `GET /api/payments` (내 결제 내역, 최신순) · `GET /api/payments/{id}` (본인 것만, 없거나 남의 것이면 **404** 존재 은닉) — **읽기 전용 조회**. 원장은 빌링 흐름(24장)이 쓴다 (DATA_MODEL 23장) | `api/payment_api.py` |
+| Billing | `POST /api/billing/checkout` (결제창 값 발급) · `POST /api/billing/confirm` (카드 등록 + 최초 청구 → 구독 활성화) · `POST /api/billing/cancel` (자동갱신 해지, 기간까지는 유료) — 전부 Bearer. **금액은 서버가 `plans.price_krw`에서 정한다**(요청에 금액 필드 없음). 실패: 400 · **502**(결제사 오류) · 503(키 미설정) (DATA_MODEL 24장) | `api/billing_api.py` |
 | Predict | `POST /api/predict` (Bearer 필수, `sensitive_health` 동의 불필요, 업로드 검증 413/415/400. 사진 1장에서 **서로 다른 음식들**을 각각 인식해 `foods`(label·score·portion_g, 최대 10)로 반환 — 한 음식의 후보 나열이 아니다, 22장. **요금제 일일 쿼터 선차감 → 초과 시 402**(쿼터는 사진당 1건, 음식 개수 무관), 인식 실패 시 환불. 응답 후 **백그라운드로 인식된 전 음식 라벨을 영양 DB에 적재** — `prewarm_labels`, 19장) | `api/predict_api.py` |
 | Nutrition | `POST /api/nutrition/estimate` (Bearer만 — 질병·알러지 미사용이라 동의 불필요. 미등록 라벨은 LLM 1회 추정 후 `source='llm'`로 동결 적재, 실패 404 / 추정 백엔드 장애 503 — `docs/DATA_MODEL.md` 19장) · `POST /api/nutrition/warnings` (Bearer + `sensitive_health` 동의 필수) | `api/nutrition_api.py` |
 | Health | `GET·PUT /api/me/profile` · `GET·PUT /api/me/goal` · `GET /api/me/summary` · `GET /api/me/trends` · `POST·GET /api/meals` · `PUT·DELETE /api/meals/{meal_id}` · `POST·GET /api/weights` | `api/health_api.py` |
@@ -190,7 +196,12 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 - **네이티브 카카오 SDK를 도입하지 않는다.** 얻는 건 카톡 앱-투-앱 UX뿐인데 iOS/Android 네이티브 설정·키해시가 붙고 **웹 빌드가 깨집니다**(웹은 FastAPI가 서빙합니다). REST 방식으로 앱·웹을 통일합니다 (21장).
 - **카카오 `client_secret`·어드민 키를 앱에 넣지 않는다.** `EXPO_PUBLIC_*`는 번들에 평문 노출됩니다. 토큰 교환은 **서버에서만** 합니다.
 - **회원 탈퇴에서 카카오 unlink를 빼먹지 않는다.** 카카오 로그인 서비스의 의무입니다. 단 **파기를 커밋한 뒤** 호출하고, unlink 실패가 개인정보 파기를 막지 않게 합니다.
-- **`PUT /api/me/subscription`을 결제 검증 없이 운영에 노출하지 않는다.** 지금은 누구나 Premium으로 바꿀 수 있습니다. 인앱결제 영수증 검증을 먼저 붙여야 합니다.
+- **결제 검증 없이 유료 플랜을 부여하지 않는다.** 유료 부여 경로는 **`POST /api/billing/confirm`(실제 청구 성공) 하나뿐**입니다. `PUT /api/me/subscription`은 2026-07-16부터 **무료(lite)로만** 바꿀 수 있고(유료 전환은 400), 가입(`POST /api/auth/kakao/signup`)의 `plan_code`도 **유료를 고르면 무료로 시작**합니다(의사표시로만 받음 — 가입을 400으로 막으면 서비스 진입 자체가 실패하므로). 새 부여 경로를 만들 때도 이 원칙을 지키세요.
+- **`TOSS_SECRET_KEY`·`billingKey`를 로그·응답·에러 메시지에 남기지 않는다.** 시크릿 키는 이 값만으로 임의 청구가 가능하고, 빌링키는 그 회원 카드의 재청구 자격증명입니다. 로그에는 결제사 **코드**만 남깁니다(`code=REJECT_CARD_COMPANY`). 앱에 내려가는 키는 `client_key`(공개값)뿐입니다.
+- **클라이언트가 보낸 결제 금액을 신뢰하지 않는다.** 금액은 언제나 서버가 `plans.price_krw`에서 정합니다 — 요청 스키마에 금액 필드 자체를 두지 않습니다 (`BillingConfirmRequest`). 받으면 100원짜리 Premium이 팔립니다.
+- **토스 API를 테스트에서 실제로 호출하지 않는다.** 테스트 키라도 결제사 트래픽입니다. `toss_client`를 monkeypatch로 대체합니다 (`tests/test_billing_service.py`).
+- **결제 실패 시 구독을 활성화하지 않는다.** 청구 예외가 나면 구독 행을 건드리지 않습니다 — 결제 안 된 Pro가 생기면 안 됩니다.
+- **만료 강등에서 `plan_code`를 덮어쓰지 않는다.** 만료는 **읽을 때 해석**합니다 (`get_effective_plan`). 행을 lite로 쓰면 갱신 배치가 청구 대상을 잃고 이력이 사라집니다 (24장).
 - **`PlanLimitError`를 `ValueError`로 바꾸지 않는다.** api 모듈의 `except ValueError → 400`에 잡혀 업그레이드 유도가 일반 입력 오류로 뭉개집니다.
 - **비전 쿼터를 Gemini 호출 성공 후에 차감하지 않는다.** 동시 요청이 전부 한도를 통과합니다. 선차감 → 실패 시 환불이 규약입니다.
 - **`estimate` 조회 경로에 LLM을 넣지 않는다.** LLM은 **미등록 라벨을 1회 적재할 때만** 씁니다. 조회는 항상 DB를 읽습니다 — 같은 음식이 요청마다 다른 kcal을 내면 안 됩니다 (`docs/DATA_MODEL.md` 13·19장).

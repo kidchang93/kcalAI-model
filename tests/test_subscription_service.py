@@ -3,7 +3,7 @@
 카카오 회원번호는 다른 테스트와 겹치지 않도록 82000000xx 대역을 쓴다.
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -12,7 +12,7 @@ from models.auth_model import User
 from models.subscription_model import Plan, UserSubscription, VisionUsageDaily
 from services import auth_service, group_service, pet_service, subscription_service
 from services.subscription_service import PlanLimitError
-from timeutil import today_kst
+from timeutil import UTC, today_kst
 
 
 def _make_user(db, kakao_id: str) -> User:
@@ -20,6 +20,22 @@ def _make_user(db, kakao_id: str) -> User:
     db.add(user)
     db.commit()
     return user
+
+
+def _grant_paid_plan(db, user_id: int, plan_code: str) -> None:
+    """유료 플랜을 부여하는 테스트 셋업 — 결제 경로(billing_service.confirm_billing)의 대역이다.
+
+    `change_plan` 으로는 더 이상 유료 전환을 할 수 없다 (24장: 결제를 거쳐야 한다). 여기 테스트들이
+    보려는 건 '유료 회원의 한도'이지 결제 흐름이 아니므로, 구독 행을 결제 성공 후와 같은 상태로
+    직접 만든다. 결제 흐름 자체는 tests/test_billing_service.py 가 덮는다.
+    """
+    subscription = subscription_service.get_subscription(db, user_id)
+    subscription.plan_code = plan_code
+    subscription.status = "active"
+    subscription.current_period_end = datetime.now(UTC) + timedelta(days=30)
+    subscription.next_billing_at = subscription.current_period_end
+    subscription.cancel_at_period_end = False
+    db.commit()
 
 
 def _signup(db, kakao_id: str, plan_code: str | None = None) -> User:
@@ -37,10 +53,13 @@ def test_signup_grants_free_plan_by_default(db):
     assert subscription_service.get_subscription(db, user.id).plan_code == "lite"
 
 
-def test_signup_selects_paid_plan(db):
+def test_signup_paid_plan_still_starts_free(db):
+    # 가입의 plan_code 로 유료를 부여하면 결제 없이 Premium 을 얻는 경로가 된다.
+    # 유료 선택은 의사표시로만 받고 무료로 시작한다 — 업그레이드는 결제(billing/confirm)뿐.
     user = _signup(db, "82000000002", "premium")
 
-    assert subscription_service.get_user_plan(db, user.id).code == "premium"
+    assert subscription_service.get_subscription(db, user.id).plan_code == "lite"
+    assert subscription_service.get_user_plan(db, user.id).code == "lite"
 
 
 def test_signup_with_unknown_plan_is_rejected(db):
@@ -114,7 +133,7 @@ def test_upgrade_raises_the_daily_quota(db):
     with pytest.raises(PlanLimitError):
         subscription_service.consume_vision_quota(db, user.id)
 
-    subscription_service.change_plan(db, user.id, "pro")
+    _grant_paid_plan(db, user.id, "pro")
 
     # 사용량은 유지되고 한도만 올라간다 (6번째 호출이 통과한다).
     used, limit, _ = subscription_service.consume_vision_quota(db, user.id)
@@ -126,7 +145,7 @@ def test_upgrade_raises_the_daily_quota(db):
 def test_deactivated_plan_still_serves_existing_subscribers(db):
     """판매 중단은 '신규 선택 차단'이지 '기존 구독 무효화'가 아니다."""
     user = _make_user(db, "82000000050")
-    subscription_service.change_plan(db, user.id, "pro")
+    _grant_paid_plan(db, user.id, "pro")
 
     plan = db.get(Plan, "pro")
     plan.is_active = False
@@ -137,11 +156,12 @@ def test_deactivated_plan_still_serves_existing_subscribers(db):
     used, limit, _ = subscription_service.consume_vision_quota(db, user.id)
     assert limit == 30
 
-    # 목록·신규 선택에서는 사라진다.
+    # 목록·신규 선택에서는 사라진다. (선택 차단의 seam 은 get_purchasable_plan 이다 — change_plan 은
+    # 24장 이후 유료 전환 자체를 막으므로 is_active 를 검증하지 못한다.)
     assert "pro" not in {item["code"] for item in subscription_service.list_plans_view(db)["plans"]}
 
     with pytest.raises(ValueError):
-        subscription_service.change_plan(db, user.id, "pro")
+        subscription_service.get_purchasable_plan(db, "pro")
 
 
 # ---- 그룹·반려동물 한도 ----
@@ -174,7 +194,7 @@ def test_group_capacity_is_judged_by_owner_plan(db):
     assert raised.value.limit == 1
 
     # 소유자가 업그레이드하면 정원이 늘어난다 (참여자 요금제와 무관하다).
-    subscription_service.change_plan(db, owner.id, "pro")
+    _grant_paid_plan(db, owner.id, "pro")
     joined = group_service.join_group(db, second.id, invite_code)
     assert joined["member_count"] == 3
 
@@ -201,7 +221,7 @@ def test_soft_deleted_pet_frees_a_slot(db):
 
 def test_downgrade_keeps_existing_data_and_only_blocks_additions(db):
     owner = _make_user(db, "82000000040")
-    subscription_service.change_plan(db, owner.id, "pro")
+    _grant_paid_plan(db, owner.id, "pro")
 
     pet_service.create_pet(db, owner.id, "콩이", "dog", None, None, None, None)
     pet_service.create_pet(db, owner.id, "나비", "cat", None, None, None, None)

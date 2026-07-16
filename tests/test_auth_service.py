@@ -61,12 +61,15 @@ def test_signup_creates_user_with_kakao_id_and_nickname(db):
     assert subscription_service.get_subscription(db, user.id).plan_code == "lite"
 
 
-def test_signup_selects_paid_plan(db):
+def test_signup_paid_plan_still_starts_free(db):
+    # 가입 요청의 plan_code 를 그대로 믿으면 **결제 없이 Premium 을 얻는 경로**가 된다.
+    # 유료를 골랐어도 무료로 시작하고, 업그레이드는 결제(/api/billing/confirm)를 거쳐야 한다.
     user, _, _ = auth_service.kakao_signup(
         db, _issue_link_code(db, "9000000002"), True, True, "premium"
     )
 
-    assert subscription_service.get_user_plan(db, user.id).code == "premium"
+    assert subscription_service.get_subscription(db, user.id).plan_code == "lite"
+    assert subscription_service.get_user_plan(db, user.id).code == "lite"
 
 
 def test_signup_without_consent_is_rejected_and_keeps_code_usable(db):

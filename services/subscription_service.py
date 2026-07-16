@@ -7,10 +7,16 @@ from sqlalchemy.orm import Session
 from models.group_model import Group, GroupMember, GroupPet
 from models.pet_model import Pet
 from models.subscription_model import Plan, UserSubscription, VisionUsageDaily
-from timeutil import KST, today_kst
+from timeutil import KST, UTC, today_kst
 
 # 가입 시 요금제를 고르지 않으면 무료 플랜으로 시작한다.
 DEFAULT_PLAN_CODE = "lite"
+
+# user_subscriptions.status (24장). 구독 행의 해석은 이 모듈이 주인이라 여기서 정의하고,
+# billing_service 가 import 해서 쓴다 (양쪽에 리터럴을 두면 조용히 어긋난다).
+STATUS_ACTIVE = "active"
+STATUS_CANCELED = "canceled"  # 자동갱신 해지 — 기간 만료까지는 유료 유지
+STATUS_PAST_DUE = "past_due"  # 갱신 실패 — 유예 중
 
 # 402 본문의 resource 값 — 앱이 어떤 업그레이드 화면을 띄울지 이걸로 분기한다.
 RESOURCE_VISION_DAILY = "vision_daily"
@@ -100,13 +106,56 @@ def get_subscription(
     return subscription
 
 
+def get_effective_plan(db: Session, subscription: UserSubscription) -> Plan:
+    """구독 행을 **실효 요금제**로 해석한다 — 유료인데 기간이 지났으면 무료(lite)다.
+
+    행을 바꾸지 않는 이유가 핵심이다. 만료 시점에 `plan_code` 를 lite 로 써 버리면 (1) 갱신
+    배치가 무엇을 청구해야 할지 잃고, (2) "이 회원은 Pro 였다"는 이력이 사라지며, (3) 만료를
+    감지한 첫 요청이 쓰기 트랜잭션을 여는 부작용이 생긴다. 그래서 저장은 사실 그대로 두고
+    **읽을 때 해석**한다 — 만료 강등이 한 곳(여기)에만 있으면 비전 쿼터·그룹·펫 한도가 전부
+    자동으로 만료를 존중한다.
+
+    `current_period_end` 가 없는 유료 구독은 만료 개념이 없는 것으로 본다 — 결제 이전에
+    부여된 구독(가입 시 plan_code 선택)이 여기 해당한다.
+    """
+    plan = get_plan(db, subscription.plan_code)
+
+    if plan.price_krw <= 0 or subscription.current_period_end is None:
+        return plan
+
+    period_end = subscription.current_period_end
+    # DB(timestamptz)는 tz-aware 를 주지만 수기·테스트 데이터의 naive 값을 UTC 로 간주한다.
+    if period_end.tzinfo is None:
+        period_end = period_end.replace(tzinfo=UTC)
+
+    if period_end > datetime.now(UTC):
+        return plan
+
+    return get_plan(db, DEFAULT_PLAN_CODE)
+
+
 def get_user_plan(db: Session, user_id: int, for_update: bool = False) -> Plan:
-    return get_plan(db, get_subscription(db, user_id, for_update).plan_code)
+    return get_effective_plan(db, get_subscription(db, user_id, for_update))
 
 
 def create_subscription(db: Session, user_id: int, plan_code: str | None) -> UserSubscription:
-    # 가입 트랜잭션 안에서도 불리므로 commit 하지 않는다 (호출자가 커밋한다).
+    """가입 시 구독 행 생성. **유료 플랜은 여기서 부여하지 않는다.**
+
+    가입 요청의 `plan_code` 를 그대로 믿으면 **결제 없이 Premium 을 얻는 경로**가 된다
+    (게다가 `current_period_end` 가 null 이라 만료 강등도 비켜간다). 유료를 골랐더라도
+    **무료로 시작**하고, 업그레이드는 `/api/billing/*` 결제 흐름(실제 청구 성공)으로만 한다.
+
+    400 으로 막지 않는 이유: 가입 자체가 실패하면 사용자가 서비스에 들어오지도 못한다.
+    유료 선택은 '의사표시'로 받고, 결제는 가입 후 요금제 화면에서 잇는다.
+
+    가입 트랜잭션 안에서도 불리므로 commit 하지 않는다 (호출자가 커밋한다).
+    """
+    # 없는 plan_code 는 여기서 ValueError → 400 (기존 계약 유지).
     plan = get_purchasable_plan(db, plan_code or DEFAULT_PLAN_CODE)
+
+    if plan.price_krw > 0:
+        plan = get_purchasable_plan(db, DEFAULT_PLAN_CODE)
+
     subscription = UserSubscription(user_id=user_id, plan_code=plan.code)
     db.add(subscription)
     db.flush()
@@ -114,14 +163,30 @@ def create_subscription(db: Session, user_id: int, plan_code: str | None) -> Use
 
 
 def change_plan(db: Session, user_id: int, plan_code: str) -> UserSubscription:
-    """요금제 변경.
+    """요금제 변경 — **무료(lite)로의 다운그레이드만** 허용한다 (24장).
+
+    유료 플랜으로의 변경은 여기서 막는다. 이 경로에는 결제 검증이 없어, 열어 두면 누구나
+    Premium 으로 바꿀 수 있다. 업그레이드는 `POST /api/billing/confirm`(실제 청구)을 거친다.
 
     다운그레이드로 이미 보유한 그룹·펫이 새 한도를 넘더라도 기존 데이터는 건드리지 않는다
     (사용자가 만든 것을 서버가 말없이 지우지 않는다). 초과 상태에서는 '추가'만 막힌다.
+
+    무료 전환은 **즉시** 적용되며 남은 유료 기간을 포기한다. 기간을 유지한 채 자동갱신만 끄려면
+    `POST /api/billing/cancel` 을 쓴다 — 유료 구독자에게는 그쪽이 정답이다.
     """
     plan = get_purchasable_plan(db, plan_code)
+
+    if plan.price_krw > 0:
+        raise ValueError("결제를 통해 업그레이드해주세요.")
+
     subscription = get_subscription(db, user_id)
     subscription.plan_code = plan.code
+    # 무료로 내려가면 청구 상태를 비운다 — 남겨 두면 갱신 배치가 이미 무료인 회원을 청구 대상으로
+    # 집어 든다(next_billing_at 이 살아 있으므로).
+    subscription.status = STATUS_ACTIVE
+    subscription.current_period_end = None
+    subscription.next_billing_at = None
+    subscription.cancel_at_period_end = False
     db.commit()
     db.refresh(subscription)
     return subscription
@@ -235,7 +300,9 @@ def list_plans_view(db: Session) -> dict:
 
 def my_subscription_view(db: Session, user_id: int) -> dict:
     subscription = get_subscription(db, user_id)
-    plan = get_plan(db, subscription.plan_code)
+    # 실효 플랜이다 — 만료된 유료 구독은 lite 로 보인다. 화면의 쿼터 표시가 402 판정과
+    # 어긋나면 안 되므로, 여기서도 get_user_plan 과 같은 해석을 쓴다.
+    plan = get_effective_plan(db, subscription)
     used = get_vision_usage(db, user_id)
 
     return {
@@ -247,6 +314,11 @@ def my_subscription_view(db: Session, user_id: int) -> dict:
             "resets_at": next_vision_reset_at(),
         },
         "started_at": subscription.started_at,
+        # 구독 상태(24장). 앱이 "해지 예약됨 · 7/31까지 이용 가능"을 그리려면 셋 다 필요하다.
+        "status": subscription.status,
+        "current_period_end": subscription.current_period_end,
+        "next_billing_at": subscription.next_billing_at,
+        "cancel_at_period_end": subscription.cancel_at_period_end,
     }
 
 
