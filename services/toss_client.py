@@ -123,9 +123,18 @@ def _post(url: str, payload: dict, *, action: str) -> dict:
             timeout=TOSS_TIMEOUT_SECONDS,
         )
     except requests.RequestException as error:
-        # 예외 객체에 URL 은 있어도 헤더(시크릿)는 없다. 그래도 repr 은 타입·메시지만 쓴다.
-        error_logger.error(f"toss {action} request fail: {error!r}")
-        raise TossError("결제 서버와 통신하지 못했습니다. 잠시 후 다시 시도해주세요.") from error
+        # **예외 메시지에 요청 URL 이 통째로 들어간다.** charge_billing 은 토스 규격상 빌링키를
+        # URL 경로에 싣기 때문에(`{CHARGE_BILLING_URL}/{billing_key}`), repr/str 을 그대로 찍으면
+        # 빌링키가 평문으로 로그에 남는다 — 저장은 AES-256-GCM 으로 해 두고 로그로 흘리면 그
+        # 암호화가 무의미해진다. 연결 계열 예외(ConnectionError → MaxRetryError, SSLError 등)가
+        # URL 을 메시지에 담는다(read timeout 은 안 담지만 구분해 믿을 이유가 없다).
+        #
+        # 그래서 **예외 타입 이름만** 남긴다. action 이 어느 호출인지 알려주고 타입이 원인 범주를
+        # (연결 거부·타임아웃·TLS) 알려주므로 진단에는 충분하다.
+        error_logger.error(f"toss {action} request fail: {type(error).__name__}")
+        # `from None` 으로 원인 체인을 끊는다 — 체인을 남기면 상위 어딘가가 트레이스백을 찍는
+        # 순간(logger.exception, 미처리 예외) 같은 URL 이 그 경로로 다시 샌다.
+        raise TossError("결제 서버와 통신하지 못했습니다. 잠시 후 다시 시도해주세요.") from None
 
     if response.status_code >= 400:
         code, raw_message = _read_error(response)
@@ -195,7 +204,9 @@ def charge_billing(
 ) -> ChargeResult:
     """빌링키로 자동청구. `amount` 는 **서버가 plans.price_krw 에서 정한 값**이어야 한다.
 
-    빌링키는 URL 경로에 들어가지만 로그에는 남기지 않는다 (`_post` 는 url 을 로깅하지 않는다).
+    빌링키는 토스 규격상 URL 경로에 들어간다. `_post` 는 url 을 직접 로깅하지 않을 뿐 아니라
+    **요청 예외의 메시지·원인 체인도 남기지 않는다** — 둘 다 URL 을 담아 빌링키를 흘리기 때문이다
+    (`tests/test_toss_client.py` 가 이 속성을 건다).
     """
     ensure_configured()
     payload = _post(
