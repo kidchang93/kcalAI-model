@@ -828,7 +828,10 @@ UNIQUE(`user_id`, `rec_date`, `meal_type`).
 | 순서 | 테이블 | 조건 | 처리 |
 |---|---|---|---|
 | 1 | `auth_sessions` | `user_id` | 물리 삭제 (토큰 전체 무효) |
-| 2 | `phone_verification_codes` | `phone_number` (FK 없음 — 번호로 귀속) | 물리 삭제 |
+| 2 | `kakao_link_codes` | `kakao_id` (FK 없음 — 회원번호로 귀속) | 물리 삭제 |
+| 2-2 | `user_subscriptions` · `vision_usage_daily` | `user_id` | 물리 삭제 (`plans` 참조 테이블은 불변) |
+| 2-3 | `billing_keys` | `user_id` | **물리 삭제** — 카드를 다시 긁을 수 있는 자격증명이라 보존할 이유가 없다 (암호문이어도 마찬가지) |
+| 2-4 | `payments` | `user_id` | **익명화 (`user_id = NULL`), 행은 보존** — 아래 참고 |
 | 3 | `user_consents` | `user_id` | 물리 삭제 (잠정 — 위 참고) |
 | 4 | `user_health_profiles` · `user_conditions` · `user_allergies` | `user_id` | 물리 삭제 (7장 파기 규칙과 동일) |
 | 5 | `meal_items` | `meal_log_id ∈ 내 meal_logs` | 물리 삭제 (soft delete된 끼니의 항목 포함) |
@@ -844,7 +847,17 @@ UNIQUE(`user_id`, `rec_date`, `meal_type`).
 #### 타인 데이터에 남는 참조 — 실측 근거
 
 - `pet_feeding_logs`에는 **작성자 FK가 없다** (컬럼: `pet_id`·`fed_at`·`food_label`·`amount_g`·`kcal`, `models/pet_model.py` 실측). 따라서 **내가 타인 펫에 남긴 급여 기록은 참조가 없어 그대로 보존**된다 — 삭제도 null화도 불필요하다. 기록은 펫의 데이터다 (17장 "그룹은 공유 통로일 뿐"과 같은 원칙).
-- `users`를 참조하는 FK 13개 전부(1·3·4·6·9·10·11·12단계)와 `pets`·`groups`·`meal_logs`의 자식 FK가 위 표에서 전부 소거된다. DB `information_schema` 전수 조회로 대조했다.
+- `users`를 참조하는 FK **17개** 전부와 `pets`·`groups`·`meal_logs`의 자식 FK가 위 표에서 전부 소거된다. DB `information_schema` 전수 조회로 대조했다. **`tests/test_account_service.py`가 이 대조를 자동화한다** — FK가 늘었는데 연쇄에 없으면 테스트가 그 테이블 이름을 지목하고 실패한다.
+
+#### 🔴 결제 원장은 파기하지 않고 익명화한다 (2026-07-16)
+
+**두 법이 반대 방향을 가리킨다.** 개인정보보호법 제21조는 탈퇴 시 파기하라 하고, 전자상거래법 제6조는 대금결제 기록을 5년 보존하라 한다. 둘을 동시에 지키는 방법은 **원장 행은 남기고 개인 식별자만 끊는 것**이다 — `payments.user_id = NULL`로 만들면 주문번호·금액·일시·결제수단은 감사 근거로 남으면서 그 행은 더 이상 특정 개인과 연결되지 않는다. `order_id`는 `ord_{uuid4}`라 회원 정보를 담지 않고(`_new_order_id`), `fail_reason`은 우리가 만든 한국어 문구다(23장). 조회는 `user_id` 일치로만 하므로(`payment_service`) 익명화된 행은 누구에게도 노출되지 않는다.
+
+`billing_keys`는 **반대로 반드시 파기**한다. 거래 기록이 아니라 카드 재청구 자격증명이라 보존할 이유가 없다.
+
+리비전 **0018**이 `payments.user_id`를 nullable로 바꿨다. FK는 그대로 `NO ACTION`으로 둔다 — `ON DELETE SET NULL`로 DB에 맡기면 "익명화한다"는 의도가 코드에서 사라지고, 실수로 `users`를 지웠을 때 원장이 조용히 끊기는 것을 막지 못한다.
+
+> **이것이 고쳐지기 전까지 결제 이력이 있는 회원은 탈퇴가 500으로 실패했다** — `/api/billing/confirm`을 한 번이라도 부른 회원 전부이며, **청구가 실패한 사람도 포함**된다(`_create_ready_payment`가 청구 전에 `ready` 행을 커밋한다). 원인은 이 표의 낡음이다: 삭제 연쇄는 2026-07-11 작성인데 `payments`·`billing_keys`는 **0017(2026-07-16)**에 추가됐고 목록이 갱신되지 않았다. 위 FK 대조 테스트가 같은 사고를 막는다.
 
 #### 실측 (2026-07-11, 로컬 — 일회용 계정 2개)
 
@@ -1331,9 +1344,20 @@ CSRF 방어용 `state`는 `{platform, nonce, exp}`를 `AUTH_CODE_PEPPER`로 HMAC
 | **금액은 서버가 정한다** | `confirm` 요청 스키마(`BillingConfirmRequest`)에 금액 필드가 **없다**. `plans.price_krw`만 쓴다 — 클라이언트가 보낸 금액을 받으면 100원짜리 Premium이 팔린다 |
 | **시크릿 키·빌링키는 서버 전용** | `TOSS_SECRET_KEY`는 이 값만으로 임의 청구가 가능하고 `billingKey`는 그 회원 카드의 재청구 자격증명이다. 로그·응답·에러 메시지에 **절대** 넣지 않는다 (로그에는 결제사 **코드**만). 앱에 내려가는 키는 `client_key`(공개값)뿐 |
 | **빌링키는 암호화 저장** | `BillingKey.billing_key`는 `crypto.EncryptedString`(AES-256-GCM). 청구 직전에만 복호화 |
-| **멱등** | `payments.order_id` UNIQUE + `_mark_payment_done`이 이미 `done`인 주문을 재반영하지 않는다(기간 이중 연장 방지). 갱신 배치는 성공 시 `next_billing_at`이 한 달 뒤로 밀려 같은 날 재실행해도 대상에서 빠진다 |
+| **멱등 — 갱신 배치** | `payments.order_id` UNIQUE + `_mark_payment_done`이 이미 `done`인 주문을 재반영하지 않는다(기간 이중 연장 방지). 갱신 배치는 성공 시 `next_billing_at`이 한 달 뒤로 밀려 같은 날 재실행해도 대상에서 빠진다. ⚠️ **이 둘은 `confirm`을 덮지 못한다** — 주문번호가 같아야 걸리는데 `confirm`은 호출마다 새 `order_id`를 만든다 |
+| **멱등 — `confirm`** | **이미 낸 기간에 다시 청구하지 않는다** (`_is_duplicate_confirm`, 2026-07-16). 같은 플랜 + `active` + 기간이 남아 있으면 청구·토스 호출 없이 현재 구독을 **200**으로 돌려준다. 통과시키는 경우: 다른 플랜(업그레이드는 별개 결제) · `past_due`(카드 바꿔 재결제하려는 정당한 시도를 막으면 복구할 길이 사라진다) · `canceled`(재구독 의사표시) · 기간이 없거나 지난 경우 |
 | **결제 실패 시 구독 미활성화** | 청구 예외가 나면 구독 행을 건드리지 않는다 — 결제 안 된 Pro가 생기면 안 된다 |
 | **예외 원문 미노출** | `TossError.message`는 **우리가 만든 한국어 문구**다(토스 원문이 아니다). 원문·`fail_code`는 `error_logger`와 원장에만 남는다 |
+
+### 중복 `confirm` — 상태로 막는다 (2026-07-16)
+
+`confirm`은 **다시 들어온다**. 새로고침·뒤로가기(토스가 브라우저를 통째로 되돌려 만든 실제 URL이라 재마운트가 흔하다), 502·타임아웃 뒤 사용자의 재시도, 결제창 2회 완주가 전부 같은 결과를 낸다. 그런데 이 경로는 호출마다 새 `order_id`를 만들어 위 '멱등 — 갱신 배치'의 두 방어선이 **하나도 걸리지 않았다**. 남은 방어는 "토스가 authKey 재사용을 거절해 준다"뿐이었는데, 그건 **결제사에 위임된 것**이고 결제창을 두 번 완주하면 authKey가 서로 달라 그마저 통하지 않는다. 실측 결과 confirm 2회에 **5,000원이 두 번 청구되고 둘 다 `done`**, 기간은 연장이 아니라 `now+1개월`로 **재설정**됐다(= 산 날이 사라진다).
+
+그래서 `_is_duplicate_confirm`이 청구 전에 판정한다. **주문번호가 아니라 구독 상태**가 기준이다 — "이미 이 플랜을 사서 기간이 남아 있는가".
+
+**한계**: 게이트와 청구 사이에 토스 HTTP가 있어 구독 행을 잠근 채 통과할 수 없다(잠금을 쥔 채 결제사를 기다리면 커넥션 풀이 마른다 — 바로 아래 규약). 따라서 **완전히 동시에 도착한** confirm 둘은 여전히 각자 청구할 수 있다. 실제 재호출 경로는 전부 순차(사람이 결제창을 두 번 완주하는 데 최소 수 초, 첫 청구는 토스 왕복 ~1초)라 이 게이트가 막는다. 완전한 방어가 필요해지면 멱등성 키 테이블이 다음 수순이다.
+
+앱은 이 변경으로 **더 안전해질 뿐 계약은 그대로다** — 응답 스키마가 같고, 중복 confirm이 502 대신 200을 준다(앱은 200을 성공으로 그린다). `k-calAI-RN/app/billing/success.tsx`의 서버 상태 되묻기는 이중 방어로 남는다.
 
 ### 원장(`payments`)이 먼저다
 
@@ -1420,13 +1444,25 @@ CSRF 방어용 `state`는 `{platform, nonce, exp}`를 `AUTH_CODE_PEPPER`로 HMAC
 
 ### 테스트
 
-`tests/test_billing_service.py` 28건. **토스 API는 호출하지 않는다** — `toss_client`의 `issue_billing_key`·`charge_billing`·`ensure_configured`를 monkeypatch로 대체한다(실제 호출은 테스트 키라도 결제사 트래픽이고, 네트워크에 의존하면 회귀가 아니게 된다). 커버: checkout 검증(무료·없는 플랜·키 미설정·customerKey 재사용) · confirm 성공(빌링키 **암호문** 저장을 원문 컬럼 조회로 확인 · payment done · 구독 활성화 · 기간 +1개월 · 서버 결정 금액) · confirm 청구 실패(payment failed · 구독 미활성화) · 멱등(배치 2회 실행 · done 주문 재반영 거부) · cancel(기간 유지 · 다음청구 null) · 만료 강등(`get_user_plan`→lite, 행 보존) · PUT 유료 차단 · 배치(연장 · past_due 재시도 · 재시도 창 만료 · 해지 건 제외 · 한 건 실패가 배치를 죽이지 않음) · 말일 클램프.
+`tests/test_billing_service.py` **33건**(2026-07-16 중복 confirm 방어 5건 추가 — confirm 2회에 청구 1회·기간 미재설정·토스 미호출 · 업그레이드는 청구 · `past_due` 재결제는 청구 · 만료 후 재결제는 청구 · 해지 후 재구독은 청구). **토스 API는 호출하지 않는다** — `toss_client`의 `issue_billing_key`·`charge_billing`·`ensure_configured`를 monkeypatch로 대체한다(실제 호출은 테스트 키라도 결제사 트래픽이고, 네트워크에 의존하면 회귀가 아니게 된다). 커버: checkout 검증(무료·없는 플랜·키 미설정·customerKey 재사용) · confirm 성공(빌링키 **암호문** 저장을 원문 컬럼 조회로 확인 · payment done · 구독 활성화 · 기간 +1개월 · 서버 결정 금액) · confirm 청구 실패(payment failed · 구독 미활성화) · 멱등(배치 2회 실행 · done 주문 재반영 거부) · cancel(기간 유지 · 다음청구 null) · 만료 강등(`get_user_plan`→lite, 행 보존) · PUT 유료 차단 · 배치(연장 · past_due 재시도 · 재시도 창 만료 · 해지 건 제외 · 한 건 실패가 배치를 죽이지 않음) · 말일 클램프.
 
 기존 `tests/test_subscription_service.py`는 유료 플랜 부여를 `change_plan` → `_grant_paid_plan`(결제 성공 후 상태를 직접 구성)으로 바꿨다 — 유료 전환이 막혔기 때문이며, 각 테스트의 의도(한도·판매중단·다운그레이드)는 그대로다.
+
+`tests/test_toss_client.py` 8건 (2026-07-16 추가). 어댑터 자체에 테스트가 없어 **빌링키 로그 유출이 살아남았던** 자리다(아래 실측). 여기서도 토스는 호출하지 않는다 — 연결 실패는 **닫힌 로컬 포트**(127.0.0.1:9)로 만들고(가짜 예외를 던지는 monkeypatch로는 "requests가 URL을 메시지에 담는다"는 전제 자체를 검증할 수 없다), 그 밖은 `requests.post`를 대체한다. 커버: 연결 실패 시 빌링키·시크릿 미유출 + 진단(action·예외 타입)은 남음 · `TossError.__cause__`가 **끊겨 있음**(체인을 남기면 상위가 트레이스백을 찍는 순간 URL이 다시 샌다) · URL을 담은 임의 예외 메시지 미기록 · 4xx는 결제사 코드만 로깅 + 사용자에겐 우리 문구 · 미지 코드 폴백(코드는 원장용으로 보존) · non-json 응답 · Basic `base64("{키}:")` 규격 · 키 미설정 시 `TossNotConfiguredError`.
 
 ### 실측 (2026-07-16, 로컬)
 
 `venv/bin/python -m pytest` **108건 통과**(기존 80 + 신규 28). `import main` OK. openapi: 3라우트 계약 확인(`BillingConfirmRequest`에 금액 필드 없음, `MySubscriptionResponse`에 4필드 추가). curl 실측 — 무토큰 401 / 유료 checkout(키 미설정) **503** / 무료 플랜 checkout **400** / 없는 플랜 **400** / `PUT /me/subscription` premium **400 "결제를 통해 업그레이드해주세요"** / lite **200** / 무료 회원 cancel **400** / confirm(키 미설정) **503**(토스 미호출). production 기동 게이트: 키 없음·한쪽만 있음 모두 **기동 거부**, 둘 다 있으면 기동. 로그 유출 검사: 결제사 400 응답을 흉내낸 호출에서 `error_log.txt`에 남은 것은 `status=400 code=REJECT_CARD_COMPANY`뿐이고 **시크릿 키·빌링키는 0건**, 사용자 메시지에 결제사 원문 미포함.
+
+> ⚠️ **위 로그 유출 검사는 400 분기만 봤고, 그 범위 밖에 실제 유출이 있었다** (2026-07-16 발견·수정). `charge_billing`은 토스 규격상 빌링키를 **URL 경로**에 싣는데(`/v1/billing/{billingKey}`), `requests`의 연결 계열 예외(ConnectionError → MaxRetryError, SSLError 등)는 **메시지에 URL을 통째로 담는다**. 이를 `{error!r}`로 찍던 `_post`의 `except requests.RequestException` 분기에서 빌링키가 평문으로 `error_log.txt`와 journald에 남았다 — `BillingKey.billing_key`를 AES-256-GCM으로 암호화해 둔 것이 무의미해지는 유출이다(빌링키 하나면 그 회원 카드를 재청구할 수 있다). read timeout은 URL을 담지 않아 눈에 띄지 않았다.
+>
+> 수정: 예외 **타입 이름만** 로깅하고(`type(error).__name__` — action과 함께면 진단에 충분하다), `raise ... from None`으로 원인 체인을 끊는다(체인을 남기면 상위의 `logger.exception`·미처리 예외 경로로 같은 URL이 다시 샌다). `tests/test_toss_client.py`가 닫힌 포트로 이 속성을 건다 — 수정을 되돌리면 3건이 실패하는 것으로 유효성을 확인했다. 카나리아 빌링키가 로그에 0건.
+
+### 재실측 (2026-07-16, 로컬 — 중복 confirm 방어 후)
+
+`venv/bin/python -m pytest` **121건 통과**(108 + toss_client 8 + 중복 confirm 5). `import main` OK. 두 수정 모두 **테스트를 되돌려 유효성을 확인**했다 — 로그 유출 수정을 되돌리면 3건, 중복 게이트를 무력화하면 1건이 실패한다(로그에 `confirm ok`가 두 번 찍힌다).
+
+curl 실측(중복 confirm): 구독을 `pro`·`active`·기간 한 달 남김으로 두고 소비된 authKey로 `POST /api/billing/confirm` → **200**(이전 502) + 현재 구독 반환, `payments` 신규 행 **0건**(= 청구 없음), 토스 미호출(키 미설정 환경인데도 200 — 게이트가 `issue_billing_key` 앞에서 걸러서 `ensure_configured`에 닿지 않는다).
 
 ### 남은 과제
 

@@ -30,10 +30,17 @@ def get_payment(db: Session, user_id: int, payment_id: int) -> Payment:
 # ---- 응답 조립 (api 레이어는 HTTP 변환만 한다) ----
 
 def _plan_label(db: Session, plan_code: str) -> str:
-    # subscription_service.get_plan 과 같은 조회 방식이되, 여기서는 폴백이 필요해 예외를 던지지
-    # 않는다 — 요금제가 삭제됐어도 과거 결제 내역은 조회 가능해야 한다.
+    """영수증에 찍히는 **상품명**. `plans.label_ko` 는 'Pro' 처럼 짧아 그대로 쓰면 무엇을 샀는지
+    읽히지 않으므로 '요금제'를 붙인다 — 결제창에 보내는 주문명과 같은 규칙이다
+    (`billing_service._order_name` = "{label} 요금제 1개월").
+
+    subscription_service.get_plan 과 같은 조회 방식이되, 여기서는 폴백이 필요해 예외를 던지지
+    않는다 — 요금제가 삭제됐어도 과거 결제 내역은 조회 가능해야 한다.
+    """
     label = db.scalar(select(Plan.label_ko).where(Plan.code == plan_code))
-    return label if label is not None else plan_code
+
+    # 라벨을 못 찾으면 코드(예: 'pro')가 남는다 — 그건 상품명이 아니므로 '요금제'를 붙이지 않는다.
+    return f"{label} 요금제" if label is not None else plan_code
 
 
 def payment_view(db: Session, payment: Payment) -> dict:

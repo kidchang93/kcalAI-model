@@ -69,7 +69,12 @@ def test_list_payments_empty_is_empty_list(db):
     assert payment_service.list_payments_view(db, user.id)["payments"] == []
 
 
-def test_plan_label_comes_from_plans(db):
+def test_plan_label_is_a_product_name_not_a_bare_code(db):
+    """영수증의 **상품명**이라 'Pro' 가 아니라 'Pro 요금제'다 (2026-07-16).
+
+    `plans.label_ko` 를 그대로 쓰면 영수증에 "상품명: Pro" 로 찍혀 무엇을 샀는지 읽히지 않는다.
+    결제창에 보내는 주문명(`billing_service._order_name`)과 같은 규칙을 따른다.
+    """
     user = _make_user(db, "8200001004")
     _add_payment(db, user.id, "ord_pro", plan_code="pro")
 
@@ -77,12 +82,12 @@ def test_plan_label_comes_from_plans(db):
 
     # conftest 가 plans 에 pro → 'Pro' 를 시드한다.
     assert item["plan_code"] == "pro"
-    assert item["plan_label"] == "Pro"
+    assert item["plan_label"] == "Pro 요금제"
 
 
-def test_plan_label_falls_back_to_code_when_plan_missing(db):
+def test_plan_label_falls_back_to_bare_code_when_plan_missing(db):
     # payments.plan_code 는 plans FK 라 실제로는 없는 코드로 결제행을 만들 수 없다. 폴백은
-    # 방어 코드이므로 헬퍼를 직접 검증한다.
+    # 방어 코드이므로 헬퍼를 직접 검증한다. 코드는 상품명이 아니므로 '요금제'를 붙이지 않는다.
     assert payment_service._plan_label(db, "no_such_plan") == "no_such_plan"
 
 
