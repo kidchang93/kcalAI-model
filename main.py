@@ -140,7 +140,21 @@ class ExpoWebFiles(StaticFiles):
             if error.status_code != 404 or path.endswith(".html"):
                 raise
 
-            response = await super().get_response(f"{path}.html", scope)
+            # 1) 라우트별 <path>.html (예: /auth → auth.html).
+            try:
+                response = await super().get_response(f"{path}.html", scope)
+            except StarletteHTTPException as inner:
+                if inner.status_code != 404:
+                    raise
+
+                # 2) SPA 폴백: 확장자 없는 라우트 경로(동적 라우트 /payments/1·/groups/5 등)는
+                #    앱 셸(index.html)을 돌려줘 클라이언트 라우터가 해석하게 한다 — 새로고침·
+                #    딥링크 404 방지. 정적 자산이나 확장자 있는 파일은 404 를 유지한다.
+                last_segment = path.rsplit("/", 1)[-1]
+                if path.startswith("_expo/") or "." in last_segment:
+                    raise
+
+                response = await super().get_response("index.html", scope)
 
         # 앱 셸·라우트 HTML 은 항상 재검증(no-cache)해 배포 후 새 번들을 즉시 집는다 — 안 그러면
         # 브라우저가 옛 index.html(옛 해시 참조)을 써서 배포해도 옛 화면이 남는다.
