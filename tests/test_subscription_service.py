@@ -62,19 +62,19 @@ def test_missing_subscription_self_heals_to_free_plan(db):
 
 # ---- 비전 일일 쿼터 ----
 
-def test_free_plan_allows_three_vision_calls_then_402(db):
+def test_free_plan_allows_five_vision_calls_then_402(db):
     user = _make_user(db, "82000000010")
 
-    for expected in (1, 2, 3):
+    for expected in (1, 2, 3, 4, 5):
         used, limit, _ = subscription_service.consume_vision_quota(db, user.id)
-        assert (used, limit) == (expected, 3)
+        assert (used, limit) == (expected, 5)
 
     with pytest.raises(PlanLimitError) as raised:
         subscription_service.consume_vision_quota(db, user.id)
 
     assert raised.value.resource == "vision_daily"
     assert raised.value.plan_code == "lite"
-    assert raised.value.limit == 3
+    assert raised.value.limit == 5
 
 
 def test_refund_returns_the_reserved_call(db):
@@ -108,7 +108,7 @@ def test_refund_targets_the_consumed_day_not_today(db):
 def test_upgrade_raises_the_daily_quota(db):
     user = _make_user(db, "82000000012")
 
-    for _ in range(3):
+    for _ in range(5):
         subscription_service.consume_vision_quota(db, user.id)
 
     with pytest.raises(PlanLimitError):
@@ -116,9 +116,9 @@ def test_upgrade_raises_the_daily_quota(db):
 
     subscription_service.change_plan(db, user.id, "pro")
 
-    # 사용량은 유지되고 한도만 올라간다 (4번째 호출이 통과한다).
+    # 사용량은 유지되고 한도만 올라간다 (6번째 호출이 통과한다).
     used, limit, _ = subscription_service.consume_vision_quota(db, user.id)
-    assert (used, limit) == (4, 30)
+    assert (used, limit) == (6, 30)
 
 
 # ---- 요금제 판매 중단 (is_active) ----
