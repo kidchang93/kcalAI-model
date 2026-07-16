@@ -1291,3 +1291,147 @@ CSRF 방어용 `state`는 `{platform, nonce, exp}`를 `AUTH_CODE_PEPPER`로 HMAC
 ### 변경 파일
 
 `schemas/payment_schema.py`(신규) · `services/payment_service.py`(신규) · `api/payment_api.py`(신규) · `main.py`(라우터 등록). `Payment` 모델·`payments` 테이블은 리비전 0017에서 이미 만들어졌다.
+
+---
+
+## 24. 토스페이먼츠 자동결제(빌링) (2026-07-16 확정 — 리비전 0017 테이블 기반)
+
+> 구현 범위: `services/toss_client.py`(어댑터) · `services/billing_service.py`(흐름) · `api/billing_api.py`(3라우트) · 만료 강등(`subscription_service`) · `PUT /api/me/subscription` 유료 차단 · 갱신 배치. **마이그레이션 없음** — `billing_keys`·`payments`·`user_subscriptions` 확장 컬럼은 리비전 0017에 이미 있다. 23장(결제 내역 조회)이 이 장이 만든 데이터를 읽는다.
+
+### 흐름
+
+```
+① POST /api/billing/checkout {plan_code}          Bearer
+     └─ 유료·판매중 검증 → customerKey(uuid4) 발급 → {customer_key, client_key, plan_code, amount, order_name}
+        (앱은 client_key + customer_key 로 토스 결제창을 띄운다. 서버는 아직 아무것도 기록하지 않는다)
+
+② 토스 결제창 → 카드 등록 성공 → 앱이 authKey 수신
+
+③ POST /api/billing/confirm {auth_key, customer_key, plan_code}    Bearer   ← **금액 필드가 없다**
+     ├─ 플랜 검증 → amount = plans.price_krw            (서버가 정한다)
+     ├─ toss: POST /v1/billing/authorizations/issue     → billingKey + card{company,number,cardType}
+     ├─ billing_keys UPSERT (billing_key 는 EncryptedString 암호화 저장)
+     ├─ payments INSERT (order_id=uuid4, status='ready') → **commit**
+     ├─ toss: POST /v1/billing/{billingKey}             → paymentKey, method, approvedAt
+     ├─ 성공: payments.status='done' + 구독 활성화(plan_code, active, period_end=+1개월, next_billing_at=period_end)
+     └─ 실패: payments.status='failed'(fail_code·fail_reason) + **구독 미활성화** → 502
+
+④ POST /api/billing/cancel                        Bearer
+     └─ status='canceled', cancel_at_period_end=true, next_billing_at=null  (기간까지는 유료 유지)
+
+⑤ scripts/charge_due_subscriptions.py (cron)
+     └─ next_billing_at <= now 이고 해지 아님 → 청구
+        성공: period_end·next_billing_at += 1개월 / 실패: past_due + 다음날 재시도
+```
+
+### 절대 규칙 (위반하면 돈이 샌다)
+
+| 규칙 | 구현 |
+|---|---|
+| **금액은 서버가 정한다** | `confirm` 요청 스키마(`BillingConfirmRequest`)에 금액 필드가 **없다**. `plans.price_krw`만 쓴다 — 클라이언트가 보낸 금액을 받으면 100원짜리 Premium이 팔린다 |
+| **시크릿 키·빌링키는 서버 전용** | `TOSS_SECRET_KEY`는 이 값만으로 임의 청구가 가능하고 `billingKey`는 그 회원 카드의 재청구 자격증명이다. 로그·응답·에러 메시지에 **절대** 넣지 않는다 (로그에는 결제사 **코드**만). 앱에 내려가는 키는 `client_key`(공개값)뿐 |
+| **빌링키는 암호화 저장** | `BillingKey.billing_key`는 `crypto.EncryptedString`(AES-256-GCM). 청구 직전에만 복호화 |
+| **멱등** | `payments.order_id` UNIQUE + `_mark_payment_done`이 이미 `done`인 주문을 재반영하지 않는다(기간 이중 연장 방지). 갱신 배치는 성공 시 `next_billing_at`이 한 달 뒤로 밀려 같은 날 재실행해도 대상에서 빠진다 |
+| **결제 실패 시 구독 미활성화** | 청구 예외가 나면 구독 행을 건드리지 않는다 — 결제 안 된 Pro가 생기면 안 된다 |
+| **예외 원문 미노출** | `TossError.message`는 **우리가 만든 한국어 문구**다(토스 원문이 아니다). 원문·`fail_code`는 `error_logger`와 원장에만 남는다 |
+
+### 원장(`payments`)이 먼저다
+
+청구 **전에** `ready` 행을 만들고 **커밋한 뒤** 토스를 부른다. 이유 두 가지:
+1. 외부 HTTP 중 프로세스가 죽어도 "청구를 시도했다"는 사실이 남는다(감사 근거).
+2. 트랜잭션을 연 채 결제사(최대 10초)를 기다리면 DB 커넥션·행 잠금이 붙잡혀 풀이 마른다 — SMS 연동에서 얻은 규약(20장)과 같다.
+
+`fail_code`(결제사 코드)는 원장·로그 전용이고, `fail_reason`에는 **사용자용 한국어 메시지**를 넣는다 — 23장 계약상 `fail_reason`은 `GET /api/payments`로 사용자에게 나가기 때문이다.
+
+### 상태 전이 (`user_subscriptions.status`)
+
+```
+                confirm 성공          cancel              기간 만료(해석)
+   (lite) ──────────────────→ active ──────→ canceled ──────────→ 실효 lite
+                                 │  ↑                                  ↑
+                    갱신 실패 ↓  │  │ 갱신 성공(재시도 포함)          │
+                              past_due ────────────────────────────────┘
+                        (다음날 재시도, 최대 기간종료+3일)
+```
+
+- `canceled`는 **즉시 해지가 아니다.** `current_period_end`까지 유료를 유지한다 — 이미 받은 돈의 이용권을 회수하지 않는다.
+- `past_due`는 유예다. **기간을 줄이지 않고** 다음날 재시도한다. 재시도는 `current_period_end + BILLING_RETRY_MAX_DAYS`(3일)까지만 — 만료된 카드를 영원히 재시도하면 이미 lite로 강등된 회원 때문에 결제사만 매일 두드리게 된다.
+- 결제수단이 없는 유료 구독(데이터 이상)은 `past_due` + `next_billing_at=null`로 두고 만료에 맡긴다.
+
+### 만료 강등 — 행을 바꾸지 않고 **읽을 때 해석**한다
+
+`subscription_service.get_effective_plan()`이 유료 플랜인데 `current_period_end < now`면 **lite로 해석해서** 반환한다. `plan_code`를 lite로 덮어쓰지 않는 이유:
+
+1. 갱신 배치가 무엇을 청구해야 할지 잃는다.
+2. "이 회원은 Pro였다"는 이력이 사라진다.
+3. 만료를 감지한 첫 **읽기** 요청이 쓰기 트랜잭션을 여는 부작용이 생긴다.
+
+강등이 `get_user_plan` 한 곳에 있으므로 **비전 쿼터·그룹 정원·펫 한도가 전부 자동으로 만료를 존중**한다. `my_subscription_view`도 같은 실효 플랜을 쓴다 — 화면의 쿼터 표시가 402 판정과 어긋나면 안 된다.
+
+> **`current_period_end`가 `null`인 유료 구독은 만료 개념이 없다**(강등하지 않는다). 결제 이전에 부여된 구독 — 즉 `POST /api/auth/kakao/signup`의 `plan_code` 선택 — 이 여기 해당한다. **이건 남은 구멍이다** (아래 '남은 과제' 1번).
+
+### 갱신 배치는 `get_plan`을 쓴다 (`get_purchasable_plan`이 아니다)
+
+판매 중단된(`is_active=false`) 플랜이라도 **이미 구독 중인 회원의 갱신은 계속돼야 한다** — 20장의 `get_plan`/`get_purchasable_plan` 구분 그대로다. 구매 경로(`checkout`·`confirm`)만 `get_purchasable_plan`을 쓴다.
+
+기간 계산은 **달력 인식**(`billing_service.add_one_month`, stdlib `calendar.monthrange`)이다. `timedelta(days=30)`을 쓰면 결제 기념일이 매달 밀린다(30일씩 12번이면 5일 어긋남). 말일은 클램프한다 — 1/31 + 1개월 = 2/28(윤년 2/29). 외부 의존(`dateutil`)은 들이지 않는다.
+
+갱신 기준 시각은 **기존 `current_period_end`**다(now가 아니다) — 재시도로 이틀 늦게 성공해도 기념일이 밀리지 않는다. 다만 배치가 오래 멈췄다 돌아온 경우를 대비해, 계산된 기간이 과거면 미래가 될 때까지 민다(재청구 루프 방지).
+
+### `PUT /api/me/subscription`은 이제 **무료로만** 바꿀 수 있다
+
+유료 플랜으로의 변경은 **400 "결제를 통해 업그레이드해주세요"**다. 이 경로에는 결제 검증이 없어, 열어 두면 누구나 Premium으로 바꿀 수 있었다 (20장이 남긴 과제였다). 업그레이드는 `POST /api/billing/confirm`(실제 청구)을 거친다.
+
+무료 전환은 **즉시** 적용되고 남은 유료 기간을 포기하며, 청구 상태(`current_period_end`·`next_billing_at`)를 비운다 — 남겨 두면 갱신 배치가 이미 무료인 회원을 청구 대상으로 집어 든다. **기간을 유지한 채 자동갱신만 끄려면 `/api/billing/cancel`**이다 — 유료 구독자에게는 그쪽이 정답이므로, 앱의 요금제 화면은 유료 구독자에게 PUT lite가 아니라 cancel을 붙여야 한다.
+
+### API
+
+| 메서드 | 경로 | 역할 | 실패 |
+|---|---|---|---|
+| `POST` | `/api/billing/checkout` | 결제창 값 발급 `{plan_code}` → `{customer_key, client_key, plan_code, amount, order_name}` | 400(무료·없는 플랜) · 401 · 503(키 미설정) |
+| `POST` | `/api/billing/confirm` | 카드 등록 + 최초 청구 `{auth_key, customer_key, plan_code}` → `MySubscriptionResponse` | 400 · 401 · **502**(결제사 오류) · 503 |
+| `POST` | `/api/billing/cancel` | 자동갱신 해지 (바디 없음) → `MySubscriptionResponse` | 400(무료 회원) · 401 |
+
+전부 Bearer 필수. **502는 "우리 서버가 아니라 결제사 쪽 실패"**라 503(미구성)·400(사용자 입력)과 구분한다.
+
+`MySubscriptionResponse`에 4필드가 **추가**됐다 (기존 필드는 불변 — 앱 계약을 깨지 않는 추가다):
+
+```jsonc
+{
+  "plan": { ... },              // **실효 플랜** — 만료된 유료 구독은 lite 로 보인다
+  "vision_usage": { ... },
+  "started_at": "...",
+  "status": "active",           // active | canceled | past_due
+  "current_period_end": null,   // 유료 기간 종료(해지해도 이때까지는 유료)
+  "next_billing_at": null,      // 다음 자동청구(해지·무료면 null)
+  "cancel_at_period_end": false
+}
+```
+
+### 환경변수
+
+| 변수 | 필수 | 설명 |
+|---|:---:|---|
+| `TOSS_SECRET_KEY` | production 필수 | **비밀값.** Basic `base64("{키}:")` 인증. 없으면 `APP_ENV=production` 기동 실패, 개발에서는 빌링 라우트가 503 |
+| `TOSS_CLIENT_KEY` | production 필수 | 공개값. 결제창 SDK 초기화용으로 앱에 내려간다 |
+| `TOSS_TIMEOUT_SECONDS` | 아니오 | 기본 10 |
+
+> 운영 서버에 **테스트 키(`test_sk_`)를 넣어도 기동은 된다** — 스테이징이 `APP_ENV=production`을 쓰기 때문에 접두어로 막지 않았다. 실결제 전환 시 키 교체를 체크리스트에 둘 것.
+
+### 테스트
+
+`tests/test_billing_service.py` 28건. **토스 API는 호출하지 않는다** — `toss_client`의 `issue_billing_key`·`charge_billing`·`ensure_configured`를 monkeypatch로 대체한다(실제 호출은 테스트 키라도 결제사 트래픽이고, 네트워크에 의존하면 회귀가 아니게 된다). 커버: checkout 검증(무료·없는 플랜·키 미설정·customerKey 재사용) · confirm 성공(빌링키 **암호문** 저장을 원문 컬럼 조회로 확인 · payment done · 구독 활성화 · 기간 +1개월 · 서버 결정 금액) · confirm 청구 실패(payment failed · 구독 미활성화) · 멱등(배치 2회 실행 · done 주문 재반영 거부) · cancel(기간 유지 · 다음청구 null) · 만료 강등(`get_user_plan`→lite, 행 보존) · PUT 유료 차단 · 배치(연장 · past_due 재시도 · 재시도 창 만료 · 해지 건 제외 · 한 건 실패가 배치를 죽이지 않음) · 말일 클램프.
+
+기존 `tests/test_subscription_service.py`는 유료 플랜 부여를 `change_plan` → `_grant_paid_plan`(결제 성공 후 상태를 직접 구성)으로 바꿨다 — 유료 전환이 막혔기 때문이며, 각 테스트의 의도(한도·판매중단·다운그레이드)는 그대로다.
+
+### 실측 (2026-07-16, 로컬)
+
+`venv/bin/python -m pytest` **108건 통과**(기존 80 + 신규 28). `import main` OK. openapi: 3라우트 계약 확인(`BillingConfirmRequest`에 금액 필드 없음, `MySubscriptionResponse`에 4필드 추가). curl 실측 — 무토큰 401 / 유료 checkout(키 미설정) **503** / 무료 플랜 checkout **400** / 없는 플랜 **400** / `PUT /me/subscription` premium **400 "결제를 통해 업그레이드해주세요"** / lite **200** / 무료 회원 cancel **400** / confirm(키 미설정) **503**(토스 미호출). production 기동 게이트: 키 없음·한쪽만 있음 모두 **기동 거부**, 둘 다 있으면 기동. 로그 유출 검사: 결제사 400 응답을 흉내낸 호출에서 `error_log.txt`에 남은 것은 `status=400 code=REJECT_CARD_COMPANY`뿐이고 **시크릿 키·빌링키는 0건**, 사용자 메시지에 결제사 원문 미포함.
+
+### 남은 과제
+
+1. **가입 시 유료 `plan_code` 선택이 결제 없이 그대로 부여된다** (`POST /api/auth/kakao/signup`). `current_period_end`가 null이라 만료 강등도 비켜간다 — 즉 **무료로 Premium을 얻는 경로가 남아 있다.** 이 장은 `PUT` 경로만 막았다(21장 계약·기존 테스트 변경을 피하려고). 가입을 lite 고정으로 좁히고 유료는 가입 후 `/api/billing/confirm`으로 유도하는 것이 정답이다.
+2. **웹훅 미구현.** 토스 결제 상태 변경(취소·매입 실패)을 서버가 알 수 없다. 현재는 우리가 부른 청구의 응답만 원장에 반영한다.
+3. **부분 환불·비례 배분(proration) 없음.** 업그레이드는 새 기간 1개월 전액 청구다.
+4. **앱 화면 미구현** — `k-calAI-RN`에 `/api/billing/*` 소비처가 없다(결제창 SDK 연동 포함). 서버 계약만 먼저 고정했다.
+5. 결제 실패 알림(푸시·메일)이 없다 — `past_due` 회원이 카드 교체 시점을 알 방법이 없다.

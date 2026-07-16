@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from api.account_api import router as account_router
 from api.auth_api import router as auth_router
+from api.billing_api import router as billing_router
 from api.consent_api import router as consent_router
 from api.group_api import router as group_router
 from api.health_api import router as health_router
@@ -29,6 +30,7 @@ from services.auth_service import ensure_production_auth_config
 from services.gemini_vision_service import ensure_production_vision_config
 from services.kakao_client import ensure_production_kakao_config
 from services.subscription_service import PlanLimitError
+from services.toss_client import ensure_production_toss_config
 
 # 관측 지표: 모든 요청의 경로·상태·응답시간을 구조적으로 남긴다.
 request_logger = setup_level_logger(logging.INFO)
@@ -36,14 +38,16 @@ request_logger = setup_level_logger(logging.INFO)
 # database·crypto가 import 시점에 load_dotenv()를 수행하므로 .env 값이 반영돼 있다.
 APP_ENV = os.getenv("APP_ENV", "development")
 
-# 운영 기동 fail-fast: 개발 기본값(pepper·암호화 키·Gemini 키 부재·카카오 미설정)을 그대로
+# 운영 기동 fail-fast: 개발 기본값(pepper·암호화 키·Gemini 키 부재·카카오/토스 미설정)을 그대로
 # 배포하면 서버가 뜨지 않는다. 비전은 Gemini 단일 백엔드라 키가 없으면 predict가 불가능하고,
-# **카카오는 유일한 인증 수단**이라 설정이 없으면 아무도 로그인하지 못한다.
+# **카카오는 유일한 인증 수단**이라 설정이 없으면 아무도 로그인하지 못한다. 토스 키가 없으면
+# 유료 요금제를 팔 수 없는데, 그 사실이 사용자의 결제 시도에서야 드러나면 안 된다.
 if APP_ENV == "production":
     ensure_production_auth_config()
     ensure_production_crypto_config()
     ensure_production_vision_config()
     ensure_production_kakao_config()
+    ensure_production_toss_config()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -125,6 +129,7 @@ app.include_router(recommendation_router, prefix="/api", tags=["Recommendations"
 app.include_router(account_router, prefix="/api", tags=["Account"])
 app.include_router(subscription_router, prefix="/api", tags=["Subscription"])
 app.include_router(payment_router, prefix="/api", tags=["Payments"])
+app.include_router(billing_router, prefix="/api", tags=["Billing"])
 
 class ExpoWebFiles(StaticFiles):
     """Expo 웹 export 는 라우트마다 `<route>.html` 을 만든다 (`/auth` → `auth.html`).

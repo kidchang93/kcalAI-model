@@ -34,9 +34,17 @@ class VisionUsage(BaseModel):
 
 
 class MySubscriptionResponse(BaseModel):
+    # 만료된 유료 구독은 lite 로 보인다 (실효 플랜, 24장).
     plan: PlanItem
     vision_usage: VisionUsage
     started_at: datetime
+    # ---- 자동결제 상태 (24장). 무료 회원은 status=active + 나머지 null/false 다. ----
+    # active | canceled(자동갱신 해지, 기간까지는 유료) | past_due(갱신 실패)
+    status: str = "active"
+    # 유료 기간 종료 시각. 해지해도 이 시각까지는 유료다.
+    current_period_end: datetime | None = None
+    next_billing_at: datetime | None = None
+    cancel_at_period_end: bool = False
 
 
 class PlanLimitErrorResponse(BaseModel):
