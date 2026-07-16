@@ -229,13 +229,20 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 
 ---
 
-## 브랜치
+## 브랜치 · 배포
 
 | 브랜치 | 역할 |
 |--------|------|
-| `master` | 기본 브랜치 (`origin/HEAD`) |
-| `dev` | **배포 트리거.** push하면 NCP 서버로 배포됩니다 |
+| `master` | 기본 브랜치(`origin/HEAD`)이자 **배포 기준**. 작업 브랜치를 여기 머지한 뒤 배포합니다 |
+| `dev` | ~~배포 트리거(NCP)~~ **사문화.** `deploy.yml`이 `dev` push → NCP 배포로 남아 있으나 dev를 push하지 않으므로 아무 일도 하지 않습니다. NCP Object Storage도 중단됐습니다 |
+| `release` | ~~배포 브랜치~~ **방치됨** (2026-07-12에 멈춤). `deploy/redeploy.sh`만 이걸 pull하므로 **그 스크립트를 지금 쓰면 낡은 코드가 배포됩니다** |
 | `ck-local` | 로컬 작업 브랜치 |
+
+**배포는 `bash deploy/local_deploy.sh --web --migrate`** (Lightsail, 운영 `https://api.kcalai.link`). SSH 설정은 `deploy/deploy.local.env`에 있습니다. 절차·주의는 **`deploy/DEPLOY.md`가 정본**입니다.
+
+- ⚠️ **이 스크립트는 git이 아니라 현재 작업 트리를 rsync합니다** — 브랜치도 커밋 여부도 보지 않습니다. 배포 전 `git status`로 확인하세요. 커밋하지 않은 편집도 그대로 운영에 올라갑니다.
+- **`git push`는 배포를 트리거하지 않습니다.** push는 GitHub 원격만 갱신합니다.
+- 마이그레이션이 있는 배포에서 `--migrate`를 빠뜨리면 새 코드가 옛 스키마를 씁니다.
 
 ## 연관 저장소
 
