@@ -213,6 +213,92 @@ def test_confirm_rejects_free_plan(db, toss):
     assert toss.issued_calls == []
 
 
+# ---- 2-1) 중복 confirm 방어 (2026-07-16) ----
+#
+# confirm 은 호출마다 새 order_id 를 만들기 때문에 order_id UNIQUE 도 _mark_payment_done 의
+# done 가드도 이 경로에서는 걸리지 않는다 — 방어를 넣기 전에는 confirm 2회에 5,000원이 두 번
+# 청구됐다(실측). 중복을 막는 것만큼 **정당한 재결제를 막지 않는 것**도 회귀 대상이다.
+
+def test_confirm_twice_charges_only_once(db, toss):
+    """새로고침·뒤로가기·502 후 재시도로 들어온 두 번째 confirm 은 청구하지 않는다."""
+    user = _make_user(db, "8300000060")
+
+    first = billing_service.confirm_billing(db, user.id, "auth_1", "cus_1", "pro")
+    first_period_end = first.current_period_end
+
+    # authKey 가 다르다 = 결제창을 두 번 완주한 경우. 토스의 authKey 재사용 거절도 통하지 않는다.
+    second = billing_service.confirm_billing(db, user.id, "auth_2", "cus_1", "pro")
+
+    assert len(toss.charge_calls) == 1, "두 번째 confirm 이 또 청구했다"
+    assert [row.amount for row in db.scalars(select(Payment).where(Payment.user_id == user.id))] == [
+        PRO_PRICE
+    ]
+    # 멱등: 같은 구독을 그대로 돌려주고 기간을 재설정하지 않는다(재설정하면 산 날이 밀려 손해다).
+    assert second.current_period_end == first_period_end
+    assert second.plan_code == "pro"
+    # 두 번째는 빌링키 발급도 시도하지 않는다 — 토스를 부르지 않는 것이 방어의 요점이다.
+    assert len(toss.issued_calls) == 1
+
+
+def test_confirm_different_plan_still_charges(db, toss):
+    """업그레이드는 별개 결제다 (기간 중 전액 재청구는 감수한 결정, 24장)."""
+    user = _make_user(db, "8300000061")
+    billing_service.confirm_billing(db, user.id, "auth_1", "cus_1", "pro")
+
+    subscription = billing_service.confirm_billing(db, user.id, "auth_2", "cus_1", "premium")
+
+    assert len(toss.charge_calls) == 2
+    assert toss.charge_calls[1]["amount"] == 10000
+    assert subscription.plan_code == "premium"
+
+
+def test_confirm_while_past_due_still_charges(db, toss):
+    """갱신 실패 중이면 카드를 바꿔 다시 결제할 수 있어야 한다 — 막으면 복구할 길이 사라진다."""
+    user = _make_user(db, "8300000062")
+    billing_service.confirm_billing(db, user.id, "auth_1", "cus_1", "pro")
+
+    # 갱신 실패 상태를 만든다. 기간은 아직 남아 있다(유예).
+    subscription = subscription_service.get_subscription(db, user.id)
+    subscription.status = "past_due"
+    db.commit()
+
+    billing_service.confirm_billing(db, user.id, "auth_2", "cus_1", "pro")
+
+    assert len(toss.charge_calls) == 2
+    assert subscription_service.get_subscription(db, user.id).status == "active"
+
+
+def test_confirm_after_period_expired_charges_again(db, toss):
+    """기간이 끝났으면 다시 사는 것이 맞다 — 이미 lite 로 해석되는 상태다."""
+    user = _make_user(db, "8300000063")
+    billing_service.confirm_billing(db, user.id, "auth_1", "cus_1", "pro")
+
+    subscription = subscription_service.get_subscription(db, user.id)
+    subscription.current_period_end = datetime.now(UTC) - timedelta(days=1)
+    db.commit()
+
+    billing_service.confirm_billing(db, user.id, "auth_2", "cus_1", "pro")
+
+    assert len(toss.charge_calls) == 2
+
+
+def test_confirm_duplicate_does_not_revive_canceled_subscription(db, toss):
+    """해지 예약된 구독은 중복으로 보지 않는다 — 재구독 의사표시라 게이트를 통과시킨다.
+
+    (기간이 남은 채 재결제하면 이중 지불이지만 그건 재구독 정책 문제다. 앱에는 경로가 없다.)
+    """
+    user = _make_user(db, "8300000064")
+    billing_service.confirm_billing(db, user.id, "auth_1", "cus_1", "pro")
+    billing_service.cancel_billing(db, user.id)
+
+    subscription = billing_service.confirm_billing(db, user.id, "auth_2", "cus_1", "pro")
+
+    assert len(toss.charge_calls) == 2
+    # 재결제했으므로 자동갱신이 다시 켜진다.
+    assert subscription.cancel_at_period_end is False
+    assert subscription.status == "active"
+
+
 # ---- 3) 해지 ----
 
 def test_cancel_keeps_paid_plan_until_period_end(db, toss):

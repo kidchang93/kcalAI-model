@@ -1,12 +1,15 @@
 """자동결제(토스 빌링) — 카드 등록·최초 청구·해지·갱신 배치 (DATA_MODEL.md 24장).
 
-규약 세 가지가 이 모듈의 전부다.
+규약 네 가지가 이 모듈의 전부다.
 
 1. **금액은 언제나 서버가 정한다** (`plans.price_krw`). 클라이언트가 보낸 금액은 받지도 않는다 —
    받으면 100원짜리 Premium 이 팔린다.
 2. **원장(`payments`)이 먼저다.** 청구 전에 `ready` 행을 커밋해 두고, 결과로 `done`/`failed` 를
    덮는다. 외부 HTTP 중에 프로세스가 죽어도 "청구를 시도했다"는 사실이 남는다.
 3. **이미 `done` 인 주문은 다시 반영하지 않는다** (`order_id` UNIQUE + `_mark_payment_done`).
+   단 이 둘은 **갱신 배치의 방어선**이다 — 주문번호가 같아야 걸리기 때문이다.
+4. **이미 낸 기간에 다시 청구하지 않는다** (`_is_duplicate_confirm`). confirm 은 호출마다 새
+   `order_id` 를 만들어 3번이 걸리지 않으므로, 중복은 **구독 상태**로 판정한다.
 
 빌링키는 `crypto.EncryptedString` 으로 암호화 저장되며(`BillingKey.billing_key`), 청구 직전에만
 복호화해 쓴다. 로그·응답에 실어 나르지 않는다.
@@ -154,10 +157,26 @@ def confirm_billing(
     청구가 실패하면 **구독을 활성화하지 않는다** — 결제 안 된 Premium 이 생기면 안 된다.
     빌링키 발급까지는 성공했을 수 있는데, 그 카드는 남겨 둔다(사용자가 다시 시도하면 재발급 없이
     쓸 수 있고, 카드 등록 자체가 과금은 아니다).
+
+    **중복 confirm 은 청구하지 않고 현재 구독을 그대로 돌려준다** (`_is_duplicate_confirm`).
+    이 경로는 호출마다 새 `order_id` 를 만들기 때문에 `order_id` UNIQUE 도 `_mark_payment_done`
+    의 done 가드도 걸리지 않아, 방어가 없으면 한 달치가 두 번 청구된다(실측). 유일한 방어가
+    "토스가 authKey 재사용을 거절해 준다"였는데, 그건 **결제사에 위임된 것**이고 결제창을 두 번
+    완주하면 authKey 가 서로 달라 그마저 통하지 않는다.
+
+    한계: 게이트와 청구 사이에 토스 HTTP 가 있어 구독 행을 잠근 채 통과할 수 없다(잠금을 쥔 채
+    결제사를 기다리면 커넥션 풀이 마른다 — 아래 규약). 그래서 **완전히 동시에 도착한** confirm
+    둘은 여전히 각자 청구할 수 있다. 실제 재호출 경로(새로고침·뒤로가기·502 후 재시도)는 전부
+    순차라 이 게이트가 막는다.
     """
     plan = _ensure_paid_plan(db, plan_code)
     # 금액은 서버가 정한다. 클라이언트는 금액을 보내지 않고, 보내더라도 이 함수는 받지 않는다.
     amount = plan.price_krw
+    subscription = get_subscription(db, user_id)
+
+    if _is_duplicate_confirm(subscription, plan.code, datetime.now(UTC)):
+        info_logger.info(f"billing confirm skip(duplicate) user_id={user_id} plan={plan.code}")
+        return subscription
 
     issued = toss_client.issue_billing_key(auth_key, customer_key)
     _upsert_billing_key(db, user_id, customer_key, issued)
@@ -175,6 +194,37 @@ def confirm_billing(
         f"billing confirm ok user_id={user_id} plan={plan.code} order_id={payment.order_id}"
     )
     return subscription
+
+
+def _is_duplicate_confirm(
+    subscription: UserSubscription, plan_code: str, now: datetime
+) -> bool:
+    """이 confirm 이 "이미 이룬 결과를 다시 요청한 것"인가.
+
+    셋을 모두 만족할 때만 중복이다 — **같은 플랜**의 **활성** 구독이고 **기간이 아직 남아 있다**.
+    이 상태에서 또 청구하면 사용자는 이미 산 달을 한 번 더 사게 된다.
+
+    통과시키는(= 청구하는) 경우와 그 이유:
+
+    - **다른 플랜**: 업그레이드·변경이라 별개 결제다. 기간 중 업그레이드가 전액 재청구되는 것은
+      감수한 결정이다 (DATA_MODEL.md 24장).
+    - **`past_due`**: 갱신 청구가 실패한 상태다. 카드를 바꿔 다시 결제하려는 정당한 시도를
+      막지 않는다 — 여기서 막으면 사용자가 스스로 복구할 길이 사라진다.
+    - **`canceled`**: 해지 뒤 다시 구독하겠다는 의사표시다. 기간이 남은 채 재결제하면 이중 지불이
+      되지만 그건 '재구독 정책'이지 이 게이트가 다룰 중복이 아니다 — 앱에는 경로도 없다(해당
+      플랜 카드가 '사용 중'이라 구독 버튼을 그리지 않는다).
+    - **기간이 없거나(`current_period_end is None`) 지난 경우**: 결제 이전에 부여된 구독이거나
+      만료된 구독이라, 새로 사는 것이 맞다 (`get_effective_plan` 이 이미 lite 로 해석한다).
+    """
+    if subscription.plan_code != plan_code:
+        return False
+
+    if subscription.status != STATUS_ACTIVE:
+        return False
+
+    period_end = subscription.current_period_end
+
+    return period_end is not None and _as_utc(period_end) > now
 
 
 def _upsert_billing_key(
