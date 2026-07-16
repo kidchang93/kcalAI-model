@@ -1,8 +1,9 @@
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
+from crypto import EncryptedString
 from database import Base
 
 
@@ -34,6 +35,21 @@ class UserSubscription(Base):
 
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
     plan_code: Mapped[str] = mapped_column(ForeignKey("plans.code"), index=True, nullable=False)
+    # ---- 자동결제(토스 빌링) 상태. 무료(lite)는 전부 기본값(만료·청구 없음). ----
+    # active | canceled(자동갱신 해지 — 기간 만료까지는 유료 유지) | past_due(갱신 실패)
+    status: Mapped[str] = mapped_column(String(20), server_default=text("'active'"), nullable=False)
+    # 유료 구독의 현재 결제 기간 종료 시각. 이 시각 이후엔 lite 로 강등한다(무료는 null).
+    current_period_end: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # 다음 자동청구 예정 시각(자동갱신 아니면 null).
+    next_billing_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # 사용자가 자동갱신을 껐는지(기간 만료까지는 유료 유지).
+    cancel_at_period_end: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -63,4 +79,58 @@ class VisionUsageDaily(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class BillingKey(Base):
+    """자동결제(토스 빌링) 결제수단. 회원당 1개(활성). `billing_key` 는 이 값만으로 카드를
+    청구할 수 있는 **민감정보**라 앱 레이어 AES-GCM 으로 암호화 저장한다(EncryptedString).
+    로그·응답에 평문 노출 금지. 카드 표시는 마스킹된 번호·카드사만 쓴다.
+    """
+
+    __tablename__ = "billing_keys"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    # 토스 billingKey (DB 에는 암호문으로 저장). 청구 시에만 복호화해 쓴다.
+    billing_key: Mapped[str] = mapped_column(EncryptedString(512), nullable=False)
+    # 토스 customerKey (구매자 식별자, 청구 시 함께 보낸다). 개인정보 아님.
+    customer_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    card_company: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    # 마스킹된 카드번호(토스가 마스킹해 준다). 앞6·뒤4만.
+    card_number: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    card_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class Payment(Base):
+    """결제 원장 — 최초/갱신 청구 1건마다 1행. 감사·정산 근거이자 멱등 장치다
+    (`order_id` UNIQUE 로 같은 주문의 중복 반영을 막는다).
+    """
+
+    __tablename__ = "payments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    # 서버가 생성해 토스에 보낸 주문번호. UNIQUE 로 중복 청구·중복 반영을 막는다.
+    order_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    plan_code: Mapped[str] = mapped_column(ForeignKey("plans.code"), nullable=False)
+    amount: Mapped[int] = mapped_column(Integer, nullable=False)
+    # ready | done | failed | canceled
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    # 토스 paymentKey (청구 성공 시). 취소·조회에 쓴다.
+    payment_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    method: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fail_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    fail_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
