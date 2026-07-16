@@ -3,6 +3,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -147,14 +148,17 @@ class ExpoWebFiles(StaticFiles):
                 if inner.status_code != 404:
                     raise
 
-                # 2) SPA 폴백: 확장자 없는 라우트 경로(동적 라우트 /payments/1·/groups/5 등)는
-                #    앱 셸(index.html)을 돌려줘 클라이언트 라우터가 해석하게 한다 — 새로고침·
-                #    딥링크 404 방지. 정적 자산이나 확장자 있는 파일은 404 를 유지한다.
-                last_segment = path.rsplit("/", 1)[-1]
-                if path.startswith("_expo/") or "." in last_segment:
+                # 2) 동적 라우트: Expo 는 `/payments/[id]` 를 `payments/[id].html` 로 export
+                #    한다. `/payments/1` 은 그 파일에 해당하므로 부모 디렉터리의 `[param].html`
+                #    로 넘긴다 (새로고침·딥링크 404 방지).
+                #    **아무 경로나 index.html 을 주는 SPA 폴백은 하지 않는다** — 진짜 404 를
+                #    숨기기 때문이다 (test_unknown_path_is_still_404).
+                dynamic_file = self._dynamic_route_file(path)
+
+                if dynamic_file is None:
                     raise
 
-                response = await super().get_response("index.html", scope)
+                response = await super().get_response(dynamic_file, scope)
 
         # 앱 셸·라우트 HTML 은 항상 재검증(no-cache)해 배포 후 새 번들을 즉시 집는다 — 안 그러면
         # 브라우저가 옛 index.html(옛 해시 참조)을 써서 배포해도 옛 화면이 남는다.
@@ -166,6 +170,28 @@ class ExpoWebFiles(StaticFiles):
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
 
         return response
+
+    def _dynamic_route_file(self, path: str) -> str | None:
+        """`payments/1` → `payments/[id].html` (그 파일이 있을 때만). 없으면 None → 404 유지.
+
+        Expo 는 동적 라우트를 `[param].html` 로 export 하므로, 부모 디렉터리에 그런 파일이
+        있으면 그 경로가 곧 동적 라우트다. 이 좁은 해석만 허용해 **모르는 경로는 404 로 남긴다**.
+        """
+        parent, separator, _last = path.rpartition("/")
+
+        if not separator:
+            return None
+
+        directory = Path(self.directory) / parent
+
+        if not directory.is_dir():
+            return None
+
+        # `[id].html` 같은 파일을 찾는다. glob 에서 대괄호는 문자클래스라 escape 해서 매칭한다.
+        for candidate in sorted(directory.glob("[[]*[]].html")):
+            return f"{parent}/{candidate.name}"
+
+        return None
 
 
 # 웹 빌드(Expo export 산출물) 정적 서빙. 반드시 모든 API 라우터 등록 뒤에 mount 해야
