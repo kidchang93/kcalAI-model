@@ -53,14 +53,19 @@ def read_consents(
     "/me/consents",
     response_model=ConsentResponse,
     status_code=status.HTTP_201_CREATED,
-    responses={401: {"model": ConsentError}},
+    responses={400: {"model": ConsentError}, 401: {"model": ConsentError}},
 )
 def create_consent(
     request: ConsentCreateRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return consent_service.create_consent(db, current_user.id, request.kind, request.version)
+    try:
+        return consent_service.create_consent(db, current_user.id, request.kind, request.version)
+    except ValueError as error:
+        # 앱이 옛 문서를 보여주고 있다 (ensure_current_version). 메시지는 서비스가 만든
+        # 사용자용 한국어 문구다 — 앱을 업데이트하면 해소된다.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
 @router.post(

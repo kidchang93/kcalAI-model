@@ -24,7 +24,7 @@ from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from models.auth_model import AuthSession, KakaoLinkCode, User
-from services.consent_service import record_signup_consents
+from services.consent_service import PRIVACY, TERMS, ensure_current_version, record_signup_consents
 from services.subscription_service import create_subscription
 
 
@@ -191,10 +191,20 @@ def kakao_signup(
     agreed_terms: bool,
     agreed_privacy: bool,
     plan_code: str | None = None,
+    terms_version: str | None = None,
+    privacy_version: str | None = None,
 ) -> tuple[User, AuthSession, str]:
     # 동의는 회원 행을 만들기 전에 본다 — 미동의 요청이 연동 코드만 소비하고 끝나지 않게 한다.
     if not (agreed_terms and agreed_privacy):
         raise ValueError("서비스 이용약관과 개인정보 처리방침에 모두 동의해야 가입할 수 있습니다.")
+
+    # 버전 대조도 **코드 소비 전**이다. 옛 문서를 띄운 앱의 요청이 1회용 코드만 태우고 400 이
+    # 되면, 사용자는 카카오 로그인부터 다시 해야 한다.
+    if terms_version is not None:
+        ensure_current_version(TERMS, terms_version)
+
+    if privacy_version is not None:
+        ensure_current_version(PRIVACY, privacy_version)
 
     link_code = _consume_link_code(db, raw_code)
 
@@ -207,7 +217,7 @@ def kakao_signup(
 
     # 회원·동의·구독은 한 트랜잭션이다. 셋 중 하나만 남는 상태(동의 없는 회원, 요금제 없는
     # 회원)가 생기면 안 된다. 없는 plan_code 는 여기서 ValueError → 400.
-    record_signup_consents(db, user.id)
+    record_signup_consents(db, user.id, terms_version, privacy_version)
     create_subscription(db, user.id, plan_code)
 
     session, raw_token = _create_session(user.id)
