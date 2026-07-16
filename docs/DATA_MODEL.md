@@ -942,14 +942,14 @@ mfds(실측) > curated(감수) > mfds_processed > mfds_raw > llm(추정)
 
 김치찌개 → mfds 244kcal (LLM 호출 0회) / 뿔레아사도(미등록) → LLM 1회, 400kcal·`1인분(약 300g)`·탄5.5·단45.0·지22.0 적재(매크로 합 400kcal로 정합) / 재요청·공백 변형("뿔레 아사도") → 캐시 히트, 같은 행·같은 값, **LLM 0회** / "플라스틱 의자" → 404, **DB 미적재**.
 
-### 인식 후보 전량 적재 (프리워밍, 2026-07-13 추가)
+### 인식 음식 전량 적재 (프리워밍, 2026-07-13 추가 · 2026-07-16 다중 음식으로 개정)
 
-`/api/predict`는 후보를 최대 3개 돌려주지만 사용자는 하나만 고른다. 나머지도 **버리기 아까운 인식 결과**이므로, predict가 응답을 보낸 **뒤** 백그라운드(`BackgroundTasks`)로 전 후보를 조회·적재한다 — `services/nutrition_service.prewarm_labels()`.
+`/api/predict`는 사진에 있는 **서로 다른 음식**(밥·국·반찬 등)을 각각 돌려준다(최대 10, 22장). 사용자는 그중 일부를 끼니로 기록한다. 인식된 라벨은 전부 **버리기 아까운 결과**이므로, predict가 응답을 보낸 **뒤** 백그라운드(`BackgroundTasks`)로 전 라벨을 조회·적재한다 — `services/nutrition_service.prewarm_labels()`.
 
-- 이미 데이터셋·llm 캐시에 있으면 **LLM을 타지 않는다**. 대부분의 후보가 여기서 끝나므로 호출량은 크게 늘지 않는다.
+- 이미 데이터셋·llm 캐시에 있으면 **LLM을 타지 않는다**. 대부분의 라벨이 여기서 끝나므로 호출량은 크게 늘지 않는다.
 - 실패(음식 아님·게이트 탈락·Gemini 장애)는 **삼킨다**. 백그라운드가 사용자 응답을 깨뜨리면 안 되고, 실패한 라벨은 다음에 다시 시도되면 그만이다.
 - 요청 세션은 응답과 함께 닫히므로 **자체 세션**(`SessionLocal`)을 연다.
-- 부수 효과: 사용자가 **어느 후보를 고르든 estimate가 캐시 히트**한다(첫 선택도 즉시 응답).
+- 부수 효과: 사용자가 **어느 음식을 기록하든 estimate가 캐시 히트**한다(첫 선택도 즉시 응답).
 
 > **실측 (2026-07-13):** 사모사 사진 → 후보 `사모사`·`튀김만두`. 응답 8.5초(백그라운드는 응답을 막지 않음). 적재 결과 — `사모사`는 미등록이라 **llm 301kcal 신규 적재**, `튀김만두`는 이미 mfds에 있어 **LLM 미호출 스킵**.
 
@@ -968,9 +968,11 @@ mfds(실측) > curated(감수) > mfds_processed > mfds_raw > llm(추정)
 
 | code | label | 가격 | 비전 LLM/일 | 그룹 추가 인원 | 반려동물 | 소유 그룹 |
 |---|---|---:|---:|---:|---:|---:|
-| `lite` | Lite | **0원 (무료)** | **3** | 1 | 1 | 1 |
+| `lite` | Lite | **0원 (무료)** | **5** | 1 | 1 | 1 |
 | `pro` | Pro | 5,000원 | **30** | 5 | 5 | 3 |
 | `premium` | Premium | 10,000원 | **100** | 10 | 10 | 5 |
+
+> Lite 비전 쿼터는 2026-07-16에 3 → **5**로 올렸다(리비전 0016, 22장). 0014는 fresh DB에 3을 넣고, 0016 UPDATE가 fresh·기존 DB 양쪽을 5로 수렴시킨다. 아래 본문의 `daily_vision_quota` 판정 로직은 값에 무관하게 동일하다.
 
 - **`max_group_members`는 "본인(owner) 제외" 추가 인원이다.** 정원 = 이 값 + 1 (Lite 그룹은 총 2명).
 - **`max_owned_groups`가 없으면 인원 한도가 무의미하다** — 그룹을 여러 개 만들어 우회할 수 있기 때문이다. 그래서 소유 그룹 개수도 요금제 한도다.
@@ -1201,3 +1203,44 @@ CSRF 방어용 `state`는 `{platform, nonce, exp}`를 `AUTH_CODE_PEPPER`로 HMAC
 1. **카카오 콘솔 설정** — Redirect URI 등록(`http://localhost:8000/api/auth/kakao/callback`, 운영은 https), 클라이언트 시크릿 생성, 어드민 키 확보. 이게 끝나야 실호출 e2e가 된다.
 2. **연결 해제 웹훅** — 사용자가 카카오 [연결된 서비스 관리]에서 직접 끊으면 우리 DB가 모른다. 웹훅으로 동기화하는 것은 후속 과제.
 3. 무료 티어 어뷰징 대응(IP·디바이스 레이트리밋)은 실제 남용이 관측되면 착수한다.
+
+---
+
+## 22. `/api/predict` 다중 음식 인식 · Lite 쿼터 5 (2026-07-16 확정 — 리비전 0016)
+
+두 가지를 바꾼다. (1) Lite 무료 요금제의 일일 비전 쿼터를 3 → **5**로 올린다. (2) `/api/predict`가 **한 음식의 후보 나열**이 아니라 **사진에 있는 서로 다른 음식들**을 각각 돌려주도록 응답 계약을 바꾼다.
+
+### Lite 쿼터 3 → 5 (리비전 0016)
+
+- `alembic/versions/0016_lite_vision_quota_5.py` — `upgrade`는 `UPDATE plans SET daily_vision_quota = 5 WHERE code = 'lite'`, `downgrade`는 3으로 되돌린다.
+- **0014의 시드는 건드리지 않는다.** 0014는 fresh DB에 3을 넣고, 0016이 그 뒤에서 5로 수렴시킨다. 이미 3이 적재된 기존 배포 DB도 이 UPDATE로 5가 된다 — 히스토리 재작성이 아니라 신규 리비전 체인이다.
+- 판정 로직(`consume_vision_quota`, 원자적 UPSERT `WHERE used_count < limit`)은 값에 무관하게 동일하다. 20장 요금제 표를 5로 갱신했다.
+- 회귀: `tests/test_subscription_service.py`의 `test_free_plan_allows_five_vision_calls_then_402`(5회 통과 후 6회째 402)·`test_upgrade_raises_the_daily_quota`(5 소진 후 pro 승격 시 6회째 통과)로 고정.
+
+### `/api/predict` 응답 계약 — `predictions` → `foods`
+
+기존 응답의 `predictions`(**한 음식의 후보들**)를 **`foods`(사진 속 서로 다른 음식들)**로 대체한다. 밥·국·반찬이 한 상에 있으면 각각 별도 항목이다.
+
+```jsonc
+// POST /api/predict (multipart: file 1장) 응답
+{
+  "foods": [
+    { "label": "김치찌개", "score": 0.92, "portion_g": 250 },
+    { "label": "쌀밥",     "score": 0.88, "portion_g": 210 }
+  ],
+  "vision_used": 2,
+  "vision_limit": 5
+}
+```
+
+- 각 항목: `label`(흔한 한글 요리명 — mfds/curated 매핑 유도), `score`(0~1 confidence), `portion_g`(int|null, 1인분 추정 g — **신규 필드**).
+- **개수 상한 10** (`_MAX_FOODS`, `services/gemini_vision_service.py`). 폭주 응답이 prewarm 부하로 번지는 것을 막는다.
+- **쿼터는 사진(호출)당 1건** 선차감/환불 그대로 — `foods` 개수와 무관하다. 음식 여러 개를 한 사진으로 한 번에 인식하는 것이 이 변경의 취지다.
+- **음식 없음(빈 배열)** → `VisionError` → **503 + 쿼터 환불** (기존과 동일). 사용자 잘못이 아닌 실패에만 환불.
+- 프롬프트도 "같은 음식의 후보 나열이 아니라 실제로 존재하는 서로 다른 음식을 각각" 반환하도록 바꿨다.
+
+변경 파일: `schemas/predict_schema.py`(`Prediction`→`DetectedFood{label,score,portion_g}`, `PredictionResponse.predictions`→`foods`), `services/gemini_vision_service.py`(프롬프트·`_RESPONSE_SCHEMA{foods:[...]}`·`_MAX_FOODS`·`identify_food`가 portion_g 포함 반환), `api/predict_api.py`(반환 dict·로그·prewarm). prewarm은 인식된 **전 음식 라벨**을 예열한다(19장).
+
+### 앱 계약 (같은 작업 단위에서 반영 필요)
+
+`k-calAI-RN/services/calorie-api.ts`가 `data.predictions`를 읽으므로 **`foods`로 바꿔야** 한다(안 바꾸면 "predictions 배열이 없습니다"로 실패). `Prediction` 타입에 `portion_g?: number | null` 추가. 서버 계약만으로는 완결되지 않는 **크로스 레포 변경**이다.

@@ -117,7 +117,7 @@ open http://127.0.0.1:8000/docs
 |--------|--------|-----------|
 | Auth | `GET /api/auth/kakao/start` · `GET /api/auth/kakao/callback` · `POST /api/auth/kakao/login` · `POST /api/auth/kakao/signup` · `POST /api/auth/logout` | `api/auth_api.py` |
 | Subscription | `GET /api/plans` (**무인증** — 가입 화면이 로그인 전에 그린다) · `GET·PUT /api/me/subscription` | `api/subscription_api.py` |
-| Predict | `POST /api/predict` (Bearer 필수, `sensitive_health` 동의 불필요, 업로드 검증 413/415/400. **요금제 일일 쿼터 선차감 → 초과 시 402**, 인식 실패 시 환불. 응답 후 **백그라운드로 전 후보를 영양 DB에 적재** — `prewarm_labels`, 19장) | `api/predict_api.py` |
+| Predict | `POST /api/predict` (Bearer 필수, `sensitive_health` 동의 불필요, 업로드 검증 413/415/400. 사진 1장에서 **서로 다른 음식들**을 각각 인식해 `foods`(label·score·portion_g, 최대 10)로 반환 — 한 음식의 후보 나열이 아니다, 22장. **요금제 일일 쿼터 선차감 → 초과 시 402**(쿼터는 사진당 1건, 음식 개수 무관), 인식 실패 시 환불. 응답 후 **백그라운드로 인식된 전 음식 라벨을 영양 DB에 적재** — `prewarm_labels`, 19장) | `api/predict_api.py` |
 | Nutrition | `POST /api/nutrition/estimate` (Bearer만 — 질병·알러지 미사용이라 동의 불필요. 미등록 라벨은 LLM 1회 추정 후 `source='llm'`로 동결 적재, 실패 404 / 추정 백엔드 장애 503 — `docs/DATA_MODEL.md` 19장) · `POST /api/nutrition/warnings` (Bearer + `sensitive_health` 동의 필수) | `api/nutrition_api.py` |
 | Health | `GET·PUT /api/me/profile` · `GET·PUT /api/me/goal` · `GET /api/me/summary` · `GET /api/me/trends` · `POST·GET /api/meals` · `PUT·DELETE /api/meals/{meal_id}` · `POST·GET /api/weights` | `api/health_api.py` |
 | Consent | `GET·POST /api/me/consents` · `POST /api/me/consents/revoke` · `GET·PUT /api/me/health-profile` · `GET·PUT /api/me/conditions` · `GET·PUT /api/me/allergies` | `api/consent_api.py` |
@@ -145,11 +145,11 @@ Auth의 카카오 4종(`kakao/start`, `kakao/callback`, `kakao/login`, `kakao/si
 
 | code | 가격 | 비전 LLM/일 | 그룹 추가 인원(본인 제외) | 반려동물 | 소유 그룹 |
 |---|---:|---:|---:|---:|---:|
-| `lite` | 무료 | 3 | 1 | 1 | 1 |
+| `lite` | 무료 | 5 | 1 | 1 | 1 |
 | `pro` | 5,000원 | 30 | 5 | 5 | 3 |
 | `premium` | 10,000원 | 100 | 10 | 10 | 5 |
 
-쿼터는 **KST 자정** 리셋(`timeutil.today_kst()`)이며, 그룹 자원의 한도는 **그룹 소유자의 요금제**로 판정합니다. 가입(`signup/verify`)은 이제 `agreed_terms`·`agreed_privacy`가 **필수**입니다.
+Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장). 쿼터는 **KST 자정** 리셋(`timeutil.today_kst()`)이며, 그룹 자원의 한도는 **그룹 소유자의 요금제**로 판정합니다. 가입(`signup/verify`)은 이제 `agreed_terms`·`agreed_privacy`가 **필수**입니다.
 
 ---
 
