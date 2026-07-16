@@ -1246,3 +1246,48 @@ CSRF 방어용 `state`는 `{platform, nonce, exp}`를 `AUTH_CODE_PEPPER`로 HMAC
 ### 앱 계약 (같은 작업 단위에서 반영 필요)
 
 `k-calAI-RN/services/calorie-api.ts`가 `data.predictions`를 읽으므로 **`foods`로 바꿔야** 한다(안 바꾸면 "predictions 배열이 없습니다"로 실패). `Prediction` 타입에 `portion_g?: number | null` 추가. 서버 계약만으로는 완결되지 않는 **크로스 레포 변경**이다.
+
+---
+
+## 23. 결제 내역 조회 API (읽기 전용, 리비전 0017 테이블 기반)
+
+`payments` 테이블(`models/subscription_model.py`의 `Payment` — 리비전 0017)을 **읽기 전용으로 노출**한다. 청구(토스 빌링) 흐름은 아직 미구현이라 결제 데이터는 없다 — 조회 계약만 먼저 고정한다. **마이그레이션·스키마 변경 없음** (테이블은 이미 존재).
+
+### API
+
+| 메서드 | 경로 | 역할 | 인증 |
+|---|---|---|---|
+| `GET` | `/api/payments` | 내 결제 내역 (최신순, `created_at` desc → `id` desc) | Bearer |
+| `GET` | `/api/payments/{id}` | 결제 1건 상세. **본인 것만** — 없거나 남의 것이면 **404**(존재 은닉) | Bearer |
+
+`404` 규칙은 `meal_logs`·`pets`와 같다(남의 소유도 존재 자체를 숨긴다). 서비스 레이어는 `get_payment`에서 `LookupError`를 던지고 `api/payment_api.py`가 404로 변환한다. `LookupError` 메시지는 서비스가 만든 한국어 사용자 메시지라 그대로 노출한다(라이브러리 예외 `str(e)` 노출 금지 규칙과 무관).
+
+### 응답 스키마 (`PaymentItem`)
+
+```jsonc
+// GET /api/payments → { "payments": [PaymentItem] }   (없으면 빈 배열)
+// GET /api/payments/{id} → PaymentItem
+{
+  "id": 1,
+  "order_id": "ord_...",
+  "plan_code": "pro",
+  "plan_label": "Pro",         // plans.label_ko 조회. 요금제 삭제·조회 실패 시 plan_code 로 폴백
+  "amount": 5000,
+  "status": "done",            // ready | done | failed | canceled (토스 어휘라 Literal 로 굳히지 않음)
+  "method": "카드",            // nullable
+  "approved_at": "2026-07-16T00:00:00Z",  // nullable
+  "fail_reason": null,         // nullable
+  "created_at": "2026-07-16T00:00:00Z"
+}
+```
+
+- `payment_key`·`fail_code`는 응답에 **노출하지 않는다**(결제 게이트웨이 내부 식별자·코드). 사용자에게 필요한 필드만 내린다.
+- `plan_label`은 `payment_service.payment_view`가 `plans`에서 조회한다(subscription_service 와 같은 조회 방식, 없으면 `plan_code` 폴백) — api 레이어는 조립하지 않는다.
+
+### 앱 계약
+
+`k-calAI-RN`에는 아직 `/api/payments` 소비처가 없다(결제 화면 미구현). 이 라우트는 앱 계약을 **깨지 않는 신규 추가**다. 결제/구독 관리 화면을 붙일 때 이 계약을 소비한다.
+
+### 변경 파일
+
+`schemas/payment_schema.py`(신규) · `services/payment_service.py`(신규) · `api/payment_api.py`(신규) · `main.py`(라우터 등록). `Payment` 모델·`payments` 테이블은 리비전 0017에서 이미 만들어졌다.

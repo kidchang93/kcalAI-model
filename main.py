@@ -16,6 +16,7 @@ from api.group_api import router as group_router
 from api.health_api import router as health_router
 from api.meta_api import router as meta_router
 from api.nutrition_api import router as nutrition_router
+from api.payment_api import router as payment_router
 from api.pet_api import router as pet_router
 from api.predict_api import router as predict_router
 from api.recommendation_api import router as recommendation_router
@@ -122,6 +123,7 @@ app.include_router(meta_router, prefix="/api", tags=["Meta"])
 app.include_router(recommendation_router, prefix="/api", tags=["Recommendations"])
 app.include_router(account_router, prefix="/api", tags=["Account"])
 app.include_router(subscription_router, prefix="/api", tags=["Subscription"])
+app.include_router(payment_router, prefix="/api", tags=["Payments"])
 
 class ExpoWebFiles(StaticFiles):
     """Expo 웹 export 는 라우트마다 `<route>.html` 을 만든다 (`/auth` → `auth.html`).
