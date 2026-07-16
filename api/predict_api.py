@@ -87,17 +87,18 @@ async def predict(
         raise
 
     duration_ms = (time.perf_counter() - started) * 1000
-    # 관측 지표: 백엔드·모델·응답 시간·상위 예측을 구조적으로 남긴다.
+    # 관측 지표: 백엔드·모델·응답 시간·인식 음식 수·상위 음식을 구조적으로 남긴다.
     top = results[0] if results else None
     top_label = top.label if top else "-"
     top_score = float(top.score) if top else 0.0
     info_logger.info(
         f"predict ok backend=gemini model={GEMINI_MODEL} duration_ms={duration_ms:.1f} "
-        f"top_label={top_label} top_score={top_score:.4f} quota={used}/{limit}"
+        f"food_count={len(results)} top_label={top_label} top_score={top_score:.4f} "
+        f"quota={used}/{limit}"
     )
 
-    # 사용자는 후보 하나만 고르지만, 나머지 인식 결과도 버리지 않는다 — 응답을 보낸 뒤
-    # 백그라운드로 전 후보를 조회·적재한다. 이미 있는 라벨은 LLM을 타지 않는다 (19장).
-    background_tasks.add_task(prewarm_labels, [p.label for p in results])
+    # 인식된 전 음식 라벨을 응답 후 백그라운드로 조회·적재한다 — 사용자가 어느 음식을
+    # 기록하든 estimate가 캐시 히트한다. 이미 있는 라벨은 LLM을 타지 않는다 (19장).
+    background_tasks.add_task(prewarm_labels, [f.label for f in results])
 
-    return {"predictions": results, "vision_used": used, "vision_limit": limit}
+    return {"foods": results, "vision_used": used, "vision_limit": limit}
