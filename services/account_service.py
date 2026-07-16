@@ -1,4 +1,4 @@
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from models.auth_model import AuthSession, KakaoLinkCode, User
@@ -7,7 +7,7 @@ from models.group_model import Group, GroupMember, GroupPet
 from models.health_model import MealItem, MealLog, UserGoal, UserProfile, WeightLog
 from models.pet_model import Pet, PetFeedingLog
 from models.recommendation_model import DietRecommendation
-from models.subscription_model import UserSubscription, VisionUsageDaily
+from models.subscription_model import BillingKey, Payment, UserSubscription, VisionUsageDaily
 from services.kakao_client import unlink
 
 
@@ -15,6 +15,11 @@ def delete_account(db: Session, user: User) -> None:
     # 회원 탈퇴 = 개인정보보호법 제21조(파기)에 따른 물리 삭제다. soft delete 행(deleted_at)도 파기한다.
     # FK 가 전부 ON DELETE NO ACTION 이므로 자식 → 부모 순서를 지킨다. 근거·연쇄 표는 DATA_MODEL.md 18장.
     # commit 은 마지막 한 번 — 중간 실패 시 세션 종료와 함께 전체 롤백된다.
+    #
+    # ⚠️ users 를 참조하는 FK 가 늘어나면 **여기에 반드시 추가**한다. 빠뜨리면 그 회원은
+    #    ForeignKeyViolation → 500 으로 **영구히 탈퇴할 수 없다**(2026-07-16에 payments·billing_keys
+    #    누락으로 실제 발생했다 — 0017 에서 테이블이 추가됐는데 이 목록이 갱신되지 않았다).
+    #    `tests/test_account_service.py` 가 FK 전수와 이 목록을 대조해 회귀를 막는다.
     user_id = user.id
     kakao_id = user.kakao_id
     owned_group_ids = select(Group.id).where(Group.owner_id == user_id)
@@ -30,6 +35,17 @@ def delete_account(db: Session, user: User) -> None:
     # 1-2) 구독·사용량 — plans 참조 테이블은 건드리지 않고 회원 귀속 행만 파기한다.
     db.execute(delete(UserSubscription).where(UserSubscription.user_id == user_id))
     db.execute(delete(VisionUsageDaily).where(VisionUsageDaily.user_id == user_id))
+
+    # 1-3) 결제수단 — **파기**한다. billing_key 는 그 회원 카드를 다시 긁을 수 있는 자격증명이라
+    #      보존할 이유가 없다(암호문이어도 마찬가지다). 탈퇴자의 카드가 우리 DB 에 남으면 안 된다.
+    db.execute(delete(BillingKey).where(BillingKey.user_id == user_id))
+
+    # 1-4) 결제 원장 — **파기하지 않고 익명화**한다. 개인정보는 지워야 하지만(제21조) 대금결제
+    #      기록은 남겨야 한다(전자상거래법 제6조). 둘을 동시에 지키는 방법이 user_id 를 끊는 것이다:
+    #      주문번호·금액·일시·결제수단은 감사 근거로 남고, 그 행은 더 이상 특정 개인과 연결되지
+    #      않는다. 조회는 user_id 일치로만 하므로(payment_service) 익명화된 행은 노출되지 않는다.
+    #      fail_reason 은 우리가 만든 한국어 문구라 개인정보가 없다(23장).
+    db.execute(update(Payment).where(Payment.user_id == user_id).values(user_id=None))
 
     # 2) 동의·민감정보 — 동의 이력도 개인정보이므로 함께 파기한다 (18장 잠정 결정).
     db.execute(delete(UserConsent).where(UserConsent.user_id == user_id))
