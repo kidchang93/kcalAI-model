@@ -133,12 +133,23 @@ class ExpoWebFiles(StaticFiles):
 
     async def get_response(self, path: str, scope):
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
         except StarletteHTTPException as error:
             if error.status_code != 404 or path.endswith(".html"):
                 raise
 
-            return await super().get_response(f"{path}.html", scope)
+            response = await super().get_response(f"{path}.html", scope)
+
+        # 앱 셸·라우트 HTML 은 항상 재검증(no-cache)해 배포 후 새 번들을 즉시 집는다 — 안 그러면
+        # 브라우저가 옛 index.html(옛 해시 참조)을 써서 배포해도 옛 화면이 남는다.
+        # 해시된 정적 자산(/_expo/static/...)은 내용 주소라 오래 캐시해도 안전하다(불변).
+        content_type = response.headers.get("content-type", "")
+        if content_type.startswith("text/html"):
+            response.headers["Cache-Control"] = "no-cache"
+        elif path.startswith("_expo/static/"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+
+        return response
 
 
 # 웹 빌드(Expo export 산출물) 정적 서빙. 반드시 모든 API 라우터 등록 뒤에 mount 해야
