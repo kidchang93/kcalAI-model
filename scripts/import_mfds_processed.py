@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from database import SessionLocal  # noqa: E402
 from models.health_model import FoodNutrition  # noqa: E402
+from services.serving_size import parse_serving_size_g  # noqa: E402
 
 SOURCE_PROCESSED = "mfds_processed"
 OVERWRITABLE_SOURCES = ("llm", SOURCE_PROCESSED)
@@ -133,9 +134,13 @@ def build_records(buckets: dict[str, dict]) -> list[dict]:
             serving_value = statistics.median(amounts)
             factor = Decimal(str(serving_value)) / Decimal("100")  # 기준량은 항상 100g/100ml
             serving_desc = f"1회 제공량 (약 {round(serving_value)}{unit})"
+            # 1회 제공량 표기에서 g/ml 숫자를 뽑아 1인분 무게로 저장한다 (공용 헬퍼, ml 은 밀도≈1).
+            serving_size_g = parse_serving_size_g(serving_desc)
         else:
             factor = None
             serving_desc = "100g당"
+            # "100g당" = 100g/100ml 기준값. 사용자가 g 을 입력하면 kcal × 입력g/100 으로 환산된다.
+            serving_size_g = Decimal("100")
 
         kcal_base = Decimal(str(statistics.median(bucket["kcal"])))
         kcal = int((kcal_base if factor is None else kcal_base * factor)
@@ -150,6 +155,7 @@ def build_records(buckets: dict[str, dict]) -> list[dict]:
         record = {
             "kcal_per_serving": kcal,
             "serving_desc": serving_desc[:100],
+            "serving_size_g": serving_size_g,
             "carbs_g": scaled("carbs"),
             "protein_g": scaled("protein"),
             "fat_g": scaled("fat"),
@@ -185,7 +191,8 @@ def upsert(records: list[dict]) -> None:
                 set_={
                     column: statement.excluded[column]
                     for column in (
-                        "kcal_per_serving", "serving_desc", "carbs_g", "protein_g", "fat_g",
+                        "kcal_per_serving", "serving_desc", "serving_size_g",
+                        "carbs_g", "protein_g", "fat_g",
                         "sugar_g", "sodium_mg", "potassium_mg", "phosphorus_mg",
                         "food_group", "source",
                     )

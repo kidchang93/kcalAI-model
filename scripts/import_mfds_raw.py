@@ -128,6 +128,8 @@ def build_records(buckets: dict[str, dict]) -> list[dict]:
             "food_label": name[:100],
             "kcal_per_serving": kcal,
             "serving_desc": "100g당",
+            # "100g당" = 100g 기준값. 사용자가 g 을 입력하면 kcal × 입력g/100 으로 환산된다.
+            "serving_size_g": Decimal("100"),
             "carbs_g": median_of("carbs"),
             "protein_g": median_of("protein"),
             "fat_g": median_of("fat"),
@@ -153,7 +155,8 @@ def upsert(records: list[dict]) -> None:
                 set_={
                     column: statement.excluded[column]
                     for column in (
-                        "kcal_per_serving", "serving_desc", "carbs_g", "protein_g", "fat_g",
+                        "kcal_per_serving", "serving_desc", "serving_size_g",
+                        "carbs_g", "protein_g", "fat_g",
                         "sugar_g", "sodium_mg", "potassium_mg", "phosphorus_mg",
                         "food_group", "source",
                     )

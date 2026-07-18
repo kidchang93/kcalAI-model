@@ -581,14 +581,14 @@ UNIQUE(`user_id`, `rec_date`, `meal_type`).
 
 ### 원본의 두 가지 함정 (임포트가 반드시 처리)
 
-1. **영양값은 100g/100ml 기준**(`영양성분함량기준량`)이고 1인분이 아니다. 1인분 값 = 원본값 × `식품중량` ÷ 기준량. 식품중량 누락 12행은 100g 기준으로 저장하고 `serving_desc`를 `"100g당"`으로 남긴다. 같은 `식품중량`의 숫자를 `serving_size_g`(1인분이 몇 g)로도 저장한다 — g/ml 구분 없이 밀도≈1로 그대로. 식품중량 누락 행은 `serving_size_g=NULL`(리비전 0019, 아래 절).
+1. **영양값은 100g/100ml 기준**(`영양성분함량기준량`)이고 1인분이 아니다. 1인분 값 = 원본값 × `식품중량` ÷ 기준량. 식품중량 누락 12행은 100g 기준으로 저장하고 `serving_desc`를 `"100g당"`으로 남긴다. 같은 `식품중량`의 숫자를 `serving_size_g`(1인분이 몇 g)로도 저장한다 — g/ml 구분 없이 밀도≈1로 그대로. 식품중량 누락 행은 `serving_desc="100g당"`이므로 `serving_size_g=100`(100g 기준값 → 사용자 g 입력 시 kcal × 입력g/100, 2026-07-18).
 2. **식품명이 유일하지 않다** (프랜차이즈 동일 메뉴가 업체별 중복, 최대 20행). 같은 이름은 식품중량이 있는 행 우선으로 1행만 선택한다.
 
 ### `food_nutrition` 확장 (리비전 0007)
 
 추가 컬럼 (전부 nullable): `sugar_g` · `sodium_mg` · `potassium_mg` · `phosphorus_mg` (Numeric) · `food_group` (String(30), 원본 `식품대분류명`). `source`에 `'mfds'` 값 추가. 임포트는 idempotent upsert이며, **같은 라벨의 `source='llm'` 행은 mfds가 덮어쓴다** — 실측이 추정에 우선한다.
 
-**`serving_size_g` 확장 (리비전 0019):** 앱이 사용자가 먹은 g을 자유 입력하면 kcal을 재계산할 수 있도록, 1인분이 몇 g인지(= `serving_desc`가 가리키는 1회 제공량의 무게)를 담는 `Numeric(6,1)` nullable 컬럼. 앱은 `serving_ratio = 사용자입력g ÷ serving_size_g`로 환산하고, **ml은 밀도≈1로 g과 동일 수치 취급**(국·죽·면 국물류 — "291.90ml"이면 291.9). 값이 없으면(원물 등 1회 제공량 미상) NULL → 앱이 인분 모드로 폴백. 채우는 경로: `import_mfds_food.py`는 원본 `식품중량` 숫자를, `correct_common_foods.py`·`seed_curated_foods.py`는 `serving_desc`에서 g/ml 숫자를 파싱(공용 헬퍼 `services/serving_size.py`, "100g당"·"1그릇"처럼 무게 없는 표기는 None), estimate의 llm 신규 적재는 Gemini `serving_desc`를 같은 헬퍼로 파싱(19장). `import_mfds_raw.py`·`import_mfds_processed.py`는 채우지 않고 NULL로 둔다 — upsert가 지정 컬럼만 갱신하므로 재임포트가 다른 경로의 값을 덮지 않는다. **estimate 응답에 `serving_size_g: float | None`으로 실린다(앱 계약 변경 — `k-calAI-RN`과 함께 배포).**
+**`serving_size_g` 확장 (리비전 0019):** 앱이 사용자가 먹은 g을 자유 입력하면 kcal을 재계산할 수 있도록, 1인분이 몇 g인지(= `serving_desc`가 가리키는 1회 제공량의 무게)를 담는 `Numeric(6,1)` nullable 컬럼. 앱은 `serving_ratio = 사용자입력g ÷ serving_size_g`로 환산하고, **ml은 밀도≈1로 g과 동일 수치 취급**(국·죽·면 국물류 — "291.90ml"이면 291.9). 값이 없으면(원물 등 1회 제공량 미상) NULL → 앱이 인분 모드로 폴백. 채우는 경로: `import_mfds_food.py`는 원본 `식품중량` 숫자를(누락 "100g당" 행은 100), `correct_common_foods.py`·`seed_curated_foods.py`는 `serving_desc`에서 g/ml 숫자를 파싱(공용 헬퍼 `services/serving_size.py`, "100g당"·"1그릇"처럼 무게 없는 표기는 None), estimate의 llm 신규 적재는 Gemini `serving_desc`를 같은 헬퍼로 파싱(19장). `import_mfds_raw.py`·`import_mfds_processed.py`도 채운다(2026-07-18) — "100g당"/"100ml당" 기준량형은 `serving_size_g=100`(100g 기준값 → 사용자 g 입력 시 kcal × 입력g/100), 가공식품 "1회 제공량 (약 Xg)"은 공용 헬퍼로 파싱. upsert `set_`에 `serving_size_g`를 넣되 `where source in (...)` 가드가 있어 재임포트가 다른 경로(mfds 요리·curated 보정)의 값을 덮지 않는다. **estimate 응답에 `serving_size_g: float | None`으로 실린다(앱 계약 변경 — `k-calAI-RN`과 함께 배포).**
 
 임포트 스크립트는 서버 레포 안에 두고(`scripts/` 관례 확인 후 배치), 원본 CSV 경로를 인자로 받는다.
 
@@ -685,7 +685,7 @@ UNIQUE(`user_id`, `rec_date`, `meal_type`).
 
 - 행이 분석 변형 단위("포도_거봉_생것")라 **일반명 중앙값 집계**. 키는 **중분류명·대표식품명 양쪽**에 잡는다 — 농진청은 품종이 중분류라(거봉·캠벨얼리) 한쪽만 쓰면 "포도" 키에 말린것(건포도 297kcal)만 남는 오염이 실측됐다. 꼬리 '류'("가리비류")와 괄호("파프리카(착색단고추)")는 뗀다 — 안 떼면 조미료 분말 520kcal이 "파프리카"를 차지한다.
 - 상태 선택: **'생것' 우선**(없으면 전체 — 곶감처럼 말린 것이 본체인 키). **차류만 '추출/용액' 한정** — 말린 잎(~380kcal/100g)을 찻잔 kcal로 주면 안 된다. 유지류 제외(포도→포도씨유 오폭)는 가공식품과 동일.
-- 이 CSV엔 식품중량이 없어 전부 "100g당". 우선순위는 요리(mfds)·감수(curated)·가공식품(mfds_processed) 다음 — upsert 가드로 기존 행 보존(김=조미김, 달걀=알가공 유지). `serving_size_g`(리비전 0019)는 원물·가공식품 임포트(`import_mfds_raw.py`·`import_mfds_processed.py`)에서 **채우지 않고 NULL로 둔다** — 1회 제공량이 미상이거나("100g당") 다른 경로(mfds 요리·curated 보정)가 채운 값을 재임포트가 덮지 않도록, upsert `set_`에서 `serving_size_g`를 뺀다(지정 컬럼만 갱신). 앱은 NULL이면 인분 모드로 폴백한다.
+- 이 CSV엔 식품중량이 없어 전부 "100g당". 우선순위는 요리(mfds)·감수(curated)·가공식품(mfds_processed) 다음 — upsert 가드로 기존 행 보존(김=조미김, 달걀=알가공 유지). `serving_size_g`(리비전 0019)는 원물·가공식품 임포트(`import_mfds_raw.py`·`import_mfds_processed.py`)에서 **"100g당" 기준량형은 `serving_size_g=100`으로 채운다**(2026-07-18) — 100g/100ml 기준값이라 사용자가 g을 입력하면 kcal × 입력g/100으로 정확히 환산된다. 가공식품 "1회 제공량 (약 Xg)"은 공용 헬퍼(`services/serving_size.py`)로 파싱한다. upsert `set_`에 `serving_size_g`를 넣되 `where source in (...)` 가드로 다른 경로(mfds 요리·curated 보정)가 채운 값은 덮지 않는다. 무게 없는 표기("반 모" 등)만 NULL로 남고 앱은 인분 모드로 폴백한다.
 
 ### 실측 (YOLO 721라벨 전수, 2026-07-11)
 

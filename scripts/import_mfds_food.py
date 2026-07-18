@@ -73,10 +73,14 @@ def build_record(row: dict[str, str]) -> dict | None:
     if base is not None and serving is not None:
         factor = serving[0] / base[0]
         serving_desc = f"1인분 (약 {round(serving[0])}{serving[1]})"
+        # 1인분 무게(g). 식품중량의 숫자를 그대로(ml 은 밀도≈1 로 g 취급).
+        serving_size_g = serving[0].quantize(Decimal("0.1"))
     else:
         # 식품중량 누락 행은 환산 없이 기준량(100g/100ml) 값 그대로 저장한다 (12장).
+        # "100g당" = 100g 기준값. 사용자가 g 을 입력하면 kcal × 입력g/100 으로 환산된다.
         factor = None
         serving_desc = "100g당"
+        serving_size_g = Decimal("100")
 
     kcal = int((energy if factor is None else energy * factor).to_integral_value(rounding="ROUND_HALF_UP"))
 
@@ -84,8 +88,7 @@ def build_record(row: dict[str, str]) -> dict | None:
         "food_label": row["식품명"].strip()[:100],
         "kcal_per_serving": kcal,
         "serving_desc": serving_desc[:100],
-        # 1인분 무게(g). 식품중량의 숫자를 그대로(ml 은 밀도≈1 로 g 취급). 누락 행은 None.
-        "serving_size_g": serving[0].quantize(Decimal("0.1")) if serving is not None else None,
+        "serving_size_g": serving_size_g,
         "carbs_g": scale(parse_nutrient(row["탄수화물(g)"]), factor),
         "protein_g": scale(parse_nutrient(row["단백질(g)"]), factor),
         "fat_g": scale(parse_nutrient(row["지방(g)"]), factor),
