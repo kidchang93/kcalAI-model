@@ -111,6 +111,9 @@ class FoodNutrition(Base):
     food_label: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
     kcal_per_serving: Mapped[int] = mapped_column(Integer, nullable=False)
     serving_desc: Mapped[str] = mapped_column(String(100), nullable=False)
+    # 1인분(= serving_desc가 가리키는 1회 제공량)이 몇 g인가. ml은 밀도≈1로 g 취급.
+    # 앱이 사용자 입력 g ÷ serving_size_g 로 kcal 을 재환산한다. 원물 등 1회 제공량 미상은 NULL (리비전 0019).
+    serving_size_g: Mapped[Decimal | None] = mapped_column(Numeric(6, 1), nullable=True)
     carbs_g: Mapped[Decimal | None] = mapped_column(Numeric(6, 1), nullable=True)
     protein_g: Mapped[Decimal | None] = mapped_column(Numeric(6, 1), nullable=True)
     fat_g: Mapped[Decimal | None] = mapped_column(Numeric(6, 1), nullable=True)

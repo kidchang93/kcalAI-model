@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from database import SessionLocal  # noqa: E402
 from models.health_model import FoodNutrition  # noqa: E402
+from services.serving_size import parse_serving_size_g  # noqa: E402
 
 SOURCE_CURATED = "curated"
 
@@ -97,6 +98,8 @@ def correct() -> None:
             "food_label": label,
             "kcal_per_serving": kcal,
             "serving_desc": serving_desc,
+            # serving_desc("1인분 (약 200g)")에서 1인분 무게를 뽑는다 (ml 은 밀도≈1). 못 뽑으면 None.
+            "serving_size_g": parse_serving_size_g(serving_desc),
             "source": SOURCE_CURATED,
         }
         for label, kcal, serving_desc in CORRECTIONS
@@ -108,6 +111,7 @@ def correct() -> None:
         set_ = {
             "kcal_per_serving": statement.excluded.kcal_per_serving,
             "serving_desc": statement.excluded.serving_desc,
+            "serving_size_g": statement.excluded.serving_size_g,
             "source": statement.excluded.source,
         }
         # 기존 mfds/raw 행의 매크로·food_group 은 옛 서빙 기준이라 비운다.

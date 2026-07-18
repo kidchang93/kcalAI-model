@@ -84,6 +84,8 @@ def build_record(row: dict[str, str]) -> dict | None:
         "food_label": row["식품명"].strip()[:100],
         "kcal_per_serving": kcal,
         "serving_desc": serving_desc[:100],
+        # 1인분 무게(g). 식품중량의 숫자를 그대로(ml 은 밀도≈1 로 g 취급). 누락 행은 None.
+        "serving_size_g": serving[0].quantize(Decimal("0.1")) if serving is not None else None,
         "carbs_g": scale(parse_nutrient(row["탄수화물(g)"]), factor),
         "protein_g": scale(parse_nutrient(row["단백질(g)"]), factor),
         "fat_g": scale(parse_nutrient(row["지방(g)"]), factor),
@@ -137,6 +139,7 @@ def upsert(records: list[dict]) -> None:
                     for column in (
                         "kcal_per_serving",
                         "serving_desc",
+                        "serving_size_g",
                         "carbs_g",
                         "protein_g",
                         "fat_g",

@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from database import SessionLocal  # noqa: E402
 from models.health_model import FoodNutrition  # noqa: E402
+from services.serving_size import parse_serving_size_g  # noqa: E402
 
 SOURCE_CURATED = "curated"
 
@@ -115,6 +116,8 @@ def seed() -> None:
             "food_label": label,
             "kcal_per_serving": kcal,
             "serving_desc": serving_desc,
+            # serving_desc("1팩(50g)"·"1잔(200ml)")에서 1인분 무게를 뽑는다. "1그릇"처럼 무게가 없으면 None.
+            "serving_size_g": parse_serving_size_g(serving_desc),
             "source": SOURCE_CURATED,
         }
         for label, kcal, serving_desc in CURATED_FOODS
@@ -129,6 +132,7 @@ def seed() -> None:
             set_={
                 "kcal_per_serving": statement.excluded.kcal_per_serving,
                 "serving_desc": statement.excluded.serving_desc,
+                "serving_size_g": statement.excluded.serving_size_g,
             },
             where=(FoodNutrition.source == SOURCE_CURATED),
         )

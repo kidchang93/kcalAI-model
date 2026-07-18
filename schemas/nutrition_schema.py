@@ -13,6 +13,9 @@ class NutritionEstimateResponse(BaseModel):
     food_label: str
     kcal_per_serving: int
     serving_desc: str
+    # 1인분(serving_desc가 가리키는 1회 제공량)이 몇 g인가. 앱은 사용자 입력 g ÷ serving_size_g 로
+    # kcal 을 재환산한다. ml 은 밀도≈1 로 g 취급. 값이 없으면(원물 등) NULL → 앱이 인분 모드로 폴백 (12·19장).
+    serving_size_g: float | None = None
     carbs_g: float | None
     protein_g: float | None
     fat_g: float | None

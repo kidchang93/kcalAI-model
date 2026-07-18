@@ -9,6 +9,7 @@ from log_utils import setup_level_logger
 from models.health_model import FoodNutrition
 from services import meta_service
 from services.food_synonyms import expand_variants
+from services.serving_size import parse_serving_size_g
 from services.gemini_nutrition_service import (
     NutritionEstimationError,
     NutritionEstimationUnavailable,
@@ -230,6 +231,9 @@ def _estimate_and_store(db: Session, food_label: str) -> FoodNutrition:
             food_label=food_label,
             kcal_per_serving=estimated.kcal_per_serving,
             serving_desc=estimated.serving_desc,
+            # Gemini 가 준 serving_desc("1인분(약 350g)")에서 1인분 무게를 뽑는다. 못 뽑으면 None.
+            # 프롬프트는 건드리지 않는다 — 기존 serving_desc 파싱으로 충분하다 (19장).
+            serving_size_g=parse_serving_size_g(estimated.serving_desc),
             carbs_g=estimated.carbs_g,
             protein_g=estimated.protein_g,
             fat_g=estimated.fat_g,

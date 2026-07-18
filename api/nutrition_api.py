@@ -55,6 +55,9 @@ def estimate(
         "food_label": nutrition.food_label,
         "kcal_per_serving": nutrition.kcal_per_serving,
         "serving_desc": nutrition.serving_desc,
+        "serving_size_g": float(nutrition.serving_size_g)
+        if nutrition.serving_size_g is not None
+        else None,
         "carbs_g": float(nutrition.carbs_g) if nutrition.carbs_g is not None else None,
         "protein_g": float(nutrition.protein_g) if nutrition.protein_g is not None else None,
         "fat_g": float(nutrition.fat_g) if nutrition.fat_g is not None else None,
