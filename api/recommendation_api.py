@@ -33,12 +33,15 @@ def read_recommendation(
     resolved_date = target_date if target_date is not None else datetime.now(UTC).date()
 
     # 추천은 식약처 DB 규칙 기반으로 항상 생성된다 — LLM·502 없음 (13장).
-    recommendation, cached = get_recommendation(db, current_user.id, resolved_date, meal_type)
+    recommendation, cached, tips = get_recommendation(
+        db, current_user.id, resolved_date, meal_type
+    )
 
     return {
         "meal_type": recommendation.meal_type,
         "rec_date": recommendation.rec_date,
         "items": recommendation.items,
         "excluded": recommendation.excluded,
+        "tips": tips,
         "cached": cached,
     }

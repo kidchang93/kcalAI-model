@@ -2,13 +2,13 @@ import random
 from datetime import date
 from math import ceil
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from models.health_model import FoodNutrition
 from models.meta_model import AllergenType, ConditionType
 from models.recommendation_model import DietRecommendation
-from services import health_service, meta_service
+from services import ckd_food_rules, health_service, meta_service
 
 MAX_ITEMS = 3
 # 12장 확정 범위(30~50) 안에서 고정.
@@ -72,7 +72,11 @@ def get_recommendation(
     user_id: int,
     rec_date: date,
     meal_type: str,
-) -> tuple[DietRecommendation, bool]:
+) -> tuple[DietRecommendation, bool, list[str]]:
+    # tips 는 현재 질병 기준으로 매 요청 계산한다 (저장 안 함) — 캐시된 추천에도 최신 안내가 붙는다.
+    conditions = meta_service.list_user_condition_types(db, user_id)
+    tips = _condition_tips(conditions)
+
     cached = db.scalar(
         select(DietRecommendation).where(
             DietRecommendation.user_id == user_id,
@@ -81,11 +85,10 @@ def get_recommendation(
         )
     )
     if cached is not None:
-        return cached, True
+        return cached, True, tips
 
     # 남은 칼로리는 summary 와 동일 산식 (target_kcal - consumed, 목표 미설정이면 None).
     remaining_kcal = health_service.get_summary(db, user_id, rec_date)["remaining_kcal"]
-    conditions = meta_service.list_user_condition_types(db, user_id)
     allergens = meta_service.list_user_allergen_types(db, user_id)
 
     excluded: list[dict] = [
@@ -110,7 +113,25 @@ def get_recommendation(
     db.add(recommendation)
     db.commit()
     db.refresh(recommendation)
-    return recommendation, False
+    return recommendation, False, tips
+
+
+def _condition_tips(conditions: list[ConditionType]) -> list[str]:
+    """사용자 질병 태그 기반 식이 안내 문구 (docs/CKD_NUTRITION.md 3-1).
+
+    신장병(ckd)이면 dietary_tags 에 low_sodium·low_potassium·low_phosphorus 가 있어
+    저염·칼륨 저감·인 주의 안내가 붙는다. 처방이 아니라 지침 근거의 상대 안내다.
+    """
+    tags = {tag for condition in conditions for tag in condition.dietary_tags}
+    tips: list[str] = []
+    if "low_sodium" in tags:
+        tips.append(ckd_food_rules.SODIUM_REDUCTION_TIP)
+    if "low_potassium" in tags:
+        # 칼륨 저감 조리법 핵심 3개 (담그기·데치기·흰쌀밥).
+        tips.extend(ckd_food_rules.POTASSIUM_REDUCTION_TIPS[1:4])
+    if "low_phosphorus" in tags:
+        tips.append(ckd_food_rules.PHOSPHORUS_REDUCTION_TIP)
+    return tips
 
 
 def _candidate_pool(
@@ -140,6 +161,35 @@ def _candidate_pool(
     for allergen in allergens:
         for keyword in allergen.exclude_keywords:
             filters.append(FoodNutrition.food_label.not_like(f"%{keyword}%"))
+
+    # 신장병(low_potassium/low_phosphorus) 이름 기반 사전 제거 — 수치 정렬을 보완한다.
+    # 식사 대분류는 칼륨·인이 83% 채워져 정렬로 걸러지지만, 간식(빵·음료)은 K/P가 거의 없어
+    # 정렬이 무력하다. 지침의 고칼륨/고인 식품(바나나·초콜릿·견과 등)을 이름으로 제거한다
+    # (docs/CKD_NUTRITION.md 3-2). 고→제한이라 병기와 무관하게 동일 목록.
+    condition_tags = {tag for condition in conditions for tag in condition.dietary_tags}
+    ckd_exclude_keywords: list[str] = []
+    if "low_potassium" in condition_tags:
+        ckd_exclude_keywords.extend(ckd_food_rules.POTASSIUM_HIGH_KEYWORDS)
+        # 실측 칼륨 상한 초과 후보는 하드 배제한다 — 정렬만으론 성긴 그룹에서 고칼륨이 새어
+        # 든다(실측: 고구마 804 mg). 급성 심정지 위험이라 정렬이 아닌 배제다 (CKD_NUTRITION §3-2).
+        # NULL(미측정)은 통과시키고 이름 기반 목록이 받는다 — 간식 상보.
+        filters.append(
+            or_(
+                FoodNutrition.potassium_mg.is_(None),
+                FoodNutrition.potassium_mg <= ckd_food_rules.POTASSIUM_SERVING_HIGH_MG,
+            )
+        )
+    if "low_phosphorus" in condition_tags:
+        ckd_exclude_keywords.extend(ckd_food_rules.HIGH_PHOSPHORUS_KEYWORDS)
+        # 실측 인 상한 초과 후보 배제 (내장육 등). 칼륨보다 관대 — 단백질원은 지켜야 한다.
+        filters.append(
+            or_(
+                FoodNutrition.phosphorus_mg.is_(None),
+                FoodNutrition.phosphorus_mg <= ckd_food_rules.PHOSPHORUS_SERVING_HIGH_MG,
+            )
+        )
+    for keyword in ckd_exclude_keywords:
+        filters.append(FoodNutrition.food_label.not_like(f"%{keyword}%"))
 
     # 태그가 여럿이면 질병 sort_order 순서대로 순차 정렬 키가 된다. 실측 없는 행은 뒤로.
     seen_columns: set[str] = set()
@@ -233,8 +283,23 @@ def _select_items(
 
     reason = _rule_reason(conditions)
     return [
-        {"name": row.food_label, "kcal": row.kcal_per_serving, "reason": reason} for row in picked
+        {
+            "name": row.food_label,
+            "kcal": row.kcal_per_serving,
+            "reason": reason,
+            # 1인분 실측 영양값 노출 (docs/CKD_NUTRITION.md 3-1). 미측정 행은 None.
+            "sodium_mg": _to_float(row.sodium_mg),
+            "potassium_mg": _to_float(row.potassium_mg),
+            "phosphorus_mg": _to_float(row.phosphorus_mg),
+            "protein_g": _to_float(row.protein_g),
+        }
+        for row in picked
     ]
+
+
+def _to_float(value) -> float | None:
+    # Numeric(Decimal) → float, None 은 그대로. JSONB 저장·응답 직렬화 공용.
+    return float(value) if value is not None else None
 
 
 def _rule_reason(conditions: list[ConditionType]) -> str:
@@ -263,7 +328,8 @@ def _filter_by_exclude_keywords(
                 {"type": "filtered", "name": candidate["name"], "matched_keyword": matched_keyword}
             )
             continue
-        items.append({"name": candidate["name"], "kcal": candidate["kcal"], "reason": candidate["reason"]})
+        # 영양 필드까지 그대로 통과시킨다 (candidate 는 _select_items 가 만든 완성 dict).
+        items.append(candidate)
     return items
 
 
