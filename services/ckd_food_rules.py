@@ -162,6 +162,14 @@ POTASSIUM_SERVING_HIGH_MG = 600
 # ⚠️ 정책값 — 조정 가능. 추천을 인이 낮은 단백질원으로 유도하되 단백질 자체를 막지 않는 선.
 PHOSPHORUS_SERVING_HIGH_MG = 400
 
+# 경고 판정 축 — dietary_tag → (영양소 코드, 표시명). 경고 항목의 nutrient 필드에 실린다.
+WARNING_AXES: tuple[tuple[str, str, str], ...] = (
+    ("low_sodium", "sodium", "나트륨"),
+    ("low_potassium", "potassium", "칼륨"),
+    ("low_phosphorus", "phosphorus", "인"),
+)
+NUTRIENT_LABELS: dict[str, str] = {code: label for _tag, code, label in WARNING_AXES}
+
 # 병기별 단백질 방향 안내 문구 (단백질 반전 — 코드가 헷갈리지 않게 문장으로도 남긴다).
 PROTEIN_DIRECTION_NOTE: dict[str, str] = {
     CKD_STAGE_NONDIALYSIS: "투석 전에는 단백질을 0.6–0.8 g/kg로 제한합니다 (신장 부담 완화).",
@@ -195,6 +203,11 @@ def potassium_tier(label: str, on_dialysis: bool = True) -> str | None:
     if _matches(label, VEGETABLE_K_LOW) or _matches(label, FRUIT_K_LOW):
         return "low"
     return None
+
+
+def potassium_high_match(label: str) -> str | None:
+    """고칼륨(채소·과일·전분질) 식품이면 매칭 키워드를 반환한다 (경고 판정용)."""
+    return _matches(label, POTASSIUM_HIGH_KEYWORDS)
 
 
 def phosphorus_caution(label: str) -> str | None:

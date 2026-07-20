@@ -783,13 +783,16 @@ UNIQUE(`user_id`, `rec_date`, `meal_type`).
       "code": "diabetes",           // condition_types.code 또는 allergen_types.code
       "label": "당뇨",               // 한국어 표시명 (label_ko)
       "matched_keyword": "설탕",     // 어떤 키워드에 걸렸는지 (최소 노출 — 위 원칙)
-      "matched_label": "설탕물"      // 입력 중 어떤 라벨이 걸렸는지
+      "matched_label": "설탕물",     // 입력 중 어떤 라벨이 걸렸는지
+      "nutrient": null              // 영양 축 경고면 "sodium"|"potassium"|"phosphorus", 아니면 null
     }
   ]
 }
 ```
 
-### 판정 규칙
+> **2026-07-20 강화 (신장병·고혈압, `docs/CKD_NUTRITION.md` 3-3):** 영양 제한 태그(low_sodium/low_potassium/low_phosphorus)가 있는 질병은 exclude_keywords 대신 대한신장학회 지침 분류(`services/ckd_food_rules.py`)로 판정하고, `nutrient`(어느 영양소가 높은지)를 담아 "칼륨이 높은 편"으로 안내한다. 그 외 질병·알러지는 아래 규칙 그대로(nutrient=null). `nutrient`는 **추가·nullable → 하위호환**(앱·구버전 서버 모두 안전). dedupe 단위에 `nutrient`가 추가돼, 한 음식이 칼륨·인 두 축에 걸리면 각각 보고한다.
+
+### 판정 규칙 (영양 축이 없는 질병·알러지 — 기존)
 
 - 사용자의 `user_conditions` · `user_allergies`에 연결된 참조 행의 `exclude_keywords`를 모아, 각 `food_label` 문자열에 키워드가 **부분 문자열로 포함**되는지 검사한다 — 추천 후처리 필터(11장)와 **같은 매칭 함수**를 쓴다 (`services/meta_service.py:match_exclude_keyword`, 추천·경고 공용).
 - 행 순서는 condition 먼저, 각 소스 안에서는 `sort_order` 오름차순. 라벨은 입력 순서(중복 제거 후).

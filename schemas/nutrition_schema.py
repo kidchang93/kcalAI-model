@@ -44,6 +44,10 @@ class NutritionWarningItem(BaseModel):
     # 걸린 키워드 원문 1개만 노출한다 — 전체 사전은 비노출 (16장).
     matched_keyword: str
     matched_label: str
+    # 영양소 축 경고면 sodium|potassium|phosphorus, 키워드 경고면 None.
+    # 신장병·고혈압 등 영양 제한 질병은 "칼륨이 높은 편" 식으로 어느 영양소인지 알려준다
+    # (docs/CKD_NUTRITION.md 3-3). 처방이 아니라 지침 상대 분류다.
+    nutrient: str | None = None
 
 
 class NutritionWarningsResponse(BaseModel):

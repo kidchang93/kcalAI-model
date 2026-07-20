@@ -78,9 +78,13 @@
 
 **왜 정렬이 아니라 배제인가**: 고칼륨혈증은 급성 심정지 위험(KSN2)이라 "낮은 순 정렬 후 상위 절반에서 추첨"으론 부족하다. 칼륨(600)은 엄격, 인(400)은 관대 — 인은 만성이고 필수 단백질원을 지켜야 한다. 두 상한은 지침의 절대 컷오프가 아니라 **정책값**이다(§4). 전분질 곡류(고구마·감자·토란)는 KSN 채소/과일 분류 밖이라 `STARCHY_K_HIGH`로 이름 목록에 보강했다.
 
-### 3-3. 기록 경고를 지침 근거로 강화 (`get_record_warnings`)
+### 3-3. 기록 경고를 지침 근거로 강화 (`get_record_warnings`) — 구현됨
 
-CKD 조건의 경고를 기존 3키워드(젓갈·장아찌·라면)에서 `ckd_food_rules`의 칼륨/인/나트륨 분류로 확장. 경고 항목에 **어느 영양소인지**를 담아 "칼륨이 높은 편이에요"로 안내(계약: `NutritionWarningItem` += `nutrient: str | None`, 앱 `formatWarning` 분기). *(fast-follow — 이번 커밋 범위 밖일 수 있음)*
+영양 제한 태그(low_sodium/low_potassium/low_phosphorus)가 있는 질병(**신장병·고혈압**)은 기존 키워드 매칭 대신 `ckd_food_rules`의 칼륨/인/나트륨 분류로 판정하고, 경고 항목에 **어느 영양소인지**(`nutrient`)를 담아 "'시금치나물'은 칼륨이 높은 편이에요"로 안내한다. 그 외 질병(당뇨·임신·암)은 기존 exclude_keywords 경로 유지(nutrient=None).
+
+- 계약: `NutritionWarningItem` · 앱 `FoodWarning` += `nutrient: sodium|potassium|phosphorus | null`(추가·nullable → 하위호환). 앱 `formatWarning`이 nutrient 있으면 축 문구로 분기.
+- CKD 기존 3키워드(젓갈·장아찌·라면)는 `HIGH_SODIUM_KEYWORDS`에 흡수돼 손실 없이 확장(시금치·바나나·고구마=칼륨, 치즈·아몬드=인 등). 고혈압은 나트륨 축만.
+- dedupe 키에 nutrient 포함 — 한 음식이 두 축에 걸리면 각각 알린다.
 
 ### 노출 원칙 (책임)
 

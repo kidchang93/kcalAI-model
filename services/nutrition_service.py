@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from database import SessionLocal
 from log_utils import setup_level_logger
 from models.health_model import FoodNutrition
-from services import meta_service
+from services import ckd_food_rules, meta_service
 from services.food_synonyms import expand_variants
 from services.serving_size import parse_serving_size_g
 from services.gemini_nutrition_service import (
@@ -258,39 +258,68 @@ def _estimate_and_store(db: Session, food_label: str) -> FoodNutrition:
 
 
 def get_record_warnings(db: Session, user_id: int, food_labels: list[str]) -> list[dict]:
-    """기록 직전 알러지·질병 경고 판정 (DATA_MODEL.md 16장).
+    """기록 직전 알러지·질병 경고 판정 (DATA_MODEL.md 16장, docs/CKD_NUTRITION.md 3-3).
 
-    사용자의 질병·알러지 참조 행의 exclude_keywords 를 각 라벨에 대조한다.
-    매칭 규칙은 추천 후처리 필터와 공용이다 (meta_service.match_exclude_keyword).
+    - 알러지: exclude_keywords 이름 매칭 (기존).
+    - 질병: 영양 제한 태그(low_sodium/low_potassium/low_phosphorus)가 있는 질병
+      (신장병·고혈압)은 대한신장학회 지침 분류로 어느 영양소가 높은지(nutrient)까지 알려준다.
+      그 외 질병(당뇨·임신·암)은 기존 exclude_keywords 이름 매칭.
     키워드 사전은 노출하지 않고 걸린 키워드 1개(matched_keyword)만 내려준다.
     """
     # 입력 순서를 보존하며 중복 라벨을 제거한다 (16장 — 서버 dedupe).
     labels = list(dict.fromkeys(food_labels))
 
-    sources = (
-        ("condition", meta_service.list_user_condition_types(db, user_id)),
-        ("allergy", meta_service.list_user_allergen_types(db, user_id)),
-    )
-
     warnings: list[dict] = []
-    seen: set[tuple[str, str, str]] = set()
-    for source, rows in sources:
-        for row in rows:
+    # 축(nutrient)까지 포함해 dedupe — 같은 음식이 칼륨·인 두 축에 걸리면 각각 알린다.
+    seen: set[tuple[str, str, str, str | None]] = set()
+
+    def add(source: str, code: str, label_ko: str, matched: str, label: str, nutrient: str | None):
+        key = (source, code, label, nutrient)
+        if key in seen:
+            return
+        seen.add(key)
+        warnings.append(
+            {
+                "source": source,
+                "code": code,
+                "label": label_ko,
+                "matched_keyword": matched,
+                "matched_label": label,
+                "nutrient": nutrient,
+            }
+        )
+
+    for allergen in meta_service.list_user_allergen_types(db, user_id):
+        for label in labels:
+            matched = meta_service.match_exclude_keyword(label, allergen.exclude_keywords)
+            if matched is not None:
+                add("allergy", allergen.code, allergen.label_ko, matched, label, None)
+
+    for condition in meta_service.list_user_condition_types(db, user_id):
+        tags = set(condition.dietary_tags)
+        nutrient_axes = [axis for axis in ckd_food_rules.WARNING_AXES if axis[0] in tags]
+        if nutrient_axes:
+            # 영양 제한 질병 — 지침 분류로 축별 경고 (exclude_keywords 는 이 축들에 흡수됨).
             for label in labels:
-                matched = meta_service.match_exclude_keyword(label, row.exclude_keywords)
-                if matched is None:
-                    continue
-                key = (source, row.code, label)
-                if key in seen:
-                    continue
-                seen.add(key)
-                warnings.append(
-                    {
-                        "source": source,
-                        "code": row.code,
-                        "label": row.label_ko,
-                        "matched_keyword": matched,
-                        "matched_label": label,
-                    }
-                )
+                for _tag, nutrient, _display in nutrient_axes:
+                    matched = _ckd_axis_match(nutrient, label)
+                    if matched is not None:
+                        add("condition", condition.code, condition.label_ko, matched, label, nutrient)
+        else:
+            # 그 외 질병 — 기존 키워드 매칭 (nutrient 없음).
+            for label in labels:
+                matched = meta_service.match_exclude_keyword(label, condition.exclude_keywords)
+                if matched is not None:
+                    add("condition", condition.code, condition.label_ko, matched, label, None)
     return warnings
+
+
+def _ckd_axis_match(nutrient: str, label: str) -> str | None:
+    # 영양소 축별 고함량 판정 (services/ckd_food_rules.py). 매칭 키워드 또는 None.
+    if nutrient == "sodium":
+        return ckd_food_rules.sodium_caution(label)
+    if nutrient == "potassium":
+        return ckd_food_rules.potassium_high_match(label)
+    if nutrient == "phosphorus":
+        return ckd_food_rules.phosphorus_caution(label)
+    return None
