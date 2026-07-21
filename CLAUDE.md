@@ -139,6 +139,7 @@ open http://127.0.0.1:8000/docs
 | Account | `DELETE /api/me` (회원 탈퇴 — 개인 데이터 전부 물리 삭제, 소유 그룹은 그룹째 삭제. `docs/DATA_MODEL.md` 18장) | `api/account_api.py` |
 | Exercises | `GET /api/exercise-types` · `POST·GET /api/exercises` · `PUT·DELETE /api/exercises/{id}` · `GET /api/me/exercise-summary` · `GET·PUT /api/me/exercise-goal` (운동 기록·주간 목표 — 식단과 같은 규약: UTC 자정 경계·soft delete·404 존재 은닉. **플랫폼 중립** — 앱·웹 동일, 기기 연동은 `source`가 느는 입력 경로일 뿐. DATA_MODEL 25장, `docs/ACTIVITY_GUIDANCE.md`) | `api/exercise_api.py` |
 | Challenges | `POST·GET /api/groups/{id}/challenges` · `GET·DELETE /api/groups/{id}/challenges/{cid}` (그룹 운동 챌린지. ⚠️ **순위는 제3자 노출**이라 `group_activity_share` 동의자만 담긴다 — DATA_MODEL 26장) | `api/challenge_api.py` |
+| Coaching | `GET /api/me/coaching` (주간 조언 — **규칙 기반, LLM 없음**. Bearer + `sensitive_health` 동의 필수. DATA_MODEL 27장) | `api/coaching_api.py` |
 | Recommendations | `GET /api/recommendations` (Bearer + `sensitive_health` 동의 필수, 캐시 우선) | `api/recommendation_api.py` |
 
 Auth의 카카오 4종(`kakao/start`, `kakao/callback`, `kakao/login`, `kakao/signup`)과 `GET /api/plans`를 제외한 **전 라우트**가 Bearer 인증(`api/dependencies.py`의 `get_current_user`)을 요구합니다 (`/api/auth/logout`도 Bearer 필요). `/api/predict`는 2026-07-12에 Bearer 필수로 전환했습니다. 같은 날 `/api/s3/*` 8개 라우트(NCP Object Storage 중단)와 레거시 `/api/gpt-predict`(HF LLM 서술 생성 — 앱 미사용, HF_TOKEN 하드의존)를 제거했습니다.

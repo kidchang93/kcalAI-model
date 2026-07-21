@@ -1138,6 +1138,32 @@ mfds(실측) > curated(감수) > mfds_processed > mfds_raw > llm(추정)
 
 ---
 
+## 27. 주간 조언 (2026-07-21 확정 — 신규 테이블 없음)
+
+> 근거·규칙표는 `docs/ACTIVITY_GUIDANCE.md` 3-5가 정본이다.
+
+`GET /api/me/coaching` — **Bearer + `sensitive_health` 동의 필수**(질병을 읽어 문구를 바꾼다. 미동의 403).
+
+```jsonc
+{
+  "week_start": "2026-07-20", "week_end": "2026-07-26",
+  "conditions": ["신장 질환"],          // 반영된 질병 표시명
+  "items": [
+    { "code": "strength_short", "tone": "tip",
+      "message": "근력운동은 주 2일 이상이 권장돼요. 어떤 운동이 맞을지는 의료진과 상의하세요.",
+      "evidence": "이번 주 0일 / 권장 2일" }
+  ],
+  "notice": "… 의료기기가 아니며 …"
+}
+```
+
+- **규칙 기반. LLM 없음** — 같은 상황이면 같은 답이어야 한다(estimate 조회와 같은 원칙).
+- 신규 테이블이 없다. 기존 `exercise_logs`·`exercise_goals`·`weight_logs`·`meal_logs`를 읽어 계산한다.
+- 톤은 `good`·`tip`·`caution` 3종이고 **caution 우선 정렬 · 최대 4개**.
+- 질병이 있으면 종목·강도 제시를 빼고 의료진 상담으로 돌린다.
+
+---
+
 ## 20. 요금제·일일 쿼터 · 가입 강화 (2026-07-14 확정 — 리비전 0014)
 
 > 구현 범위: `plans`(참조 테이블) · `user_subscriptions`(회원 1:1) · `vision_usage_daily`(비전 카운터) 3테이블, `GET /api/plans` · `GET·PUT /api/me/subscription`, 그룹·펫·predict 한도 강제, 가입 시 약관 동의 필수화, SMS 실발송 연동. **결제(인앱결제) 연동은 이 범위 밖이다.**
