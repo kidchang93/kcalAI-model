@@ -11,6 +11,8 @@ from models.auth_model import User
 from schemas.exercise_schema import (
     ExerciseCreateRequest,
     ExerciseError,
+    ExerciseGoalRequest,
+    ExerciseGoalResponse,
     ExerciseListResponse,
     ExerciseResponse,
     ExerciseSummaryResponse,
@@ -153,3 +155,35 @@ def read_exercise_summary(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
         ) from error
+
+
+@router.get(
+    "/me/exercise-goal",
+    response_model=ExerciseGoalResponse,
+    responses={401: {"model": ExerciseError}},
+)
+def read_exercise_goal(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # 목표를 설정하지 않았으면 지침 권장량이 기본값으로 내려간다 (is_default=true).
+    return exercise_service.resolve_goal(db, current_user.id)
+
+
+@router.put(
+    "/me/exercise-goal",
+    response_model=ExerciseGoalResponse,
+    responses={401: {"model": ExerciseError}},
+)
+def update_exercise_goal(
+    request: ExerciseGoalRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    exercise_service.upsert_goal(
+        db,
+        current_user.id,
+        weekly_minutes=request.weekly_minutes,
+        weekly_strength_days=request.weekly_strength_days,
+    )
+    return exercise_service.resolve_goal(db, current_user.id)

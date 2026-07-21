@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from models.auth_model import AuthSession, KakaoLinkCode, User
 from models.consent_model import UserAllergy, UserCondition, UserConsent, UserHealthProfile
 from models.group_model import Group, GroupMember, GroupPet
-from models.health_model import ExerciseLog, MealItem, MealLog, UserGoal, UserProfile, WeightLog
+from models.health_model import ExerciseGoal, ExerciseLog, MealItem, MealLog, UserGoal, UserProfile, WeightLog
 from models.pet_model import Pet, PetFeedingLog
 from models.recommendation_model import DietRecommendation
 from models.subscription_model import BillingKey, Payment, UserSubscription, VisionUsageDaily
@@ -58,6 +58,7 @@ def delete_account(db: Session, user: User) -> None:
     db.execute(delete(MealLog).where(MealLog.user_id == user_id))
     db.execute(delete(WeightLog).where(WeightLog.user_id == user_id))
     db.execute(delete(ExerciseLog).where(ExerciseLog.user_id == user_id))
+    db.execute(delete(ExerciseGoal).where(ExerciseGoal.user_id == user_id))
     db.execute(delete(UserGoal).where(UserGoal.user_id == user_id))
     db.execute(delete(UserProfile).where(UserProfile.user_id == user_id))
     db.execute(delete(DietRecommendation).where(DietRecommendation.user_id == user_id))

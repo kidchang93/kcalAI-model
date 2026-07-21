@@ -72,11 +72,31 @@ class ExerciseSummaryResponse(BaseModel):
     strength_days: int
     total_kcal: int
     exercise_count: int
-    # 권장 하한(주 150분) 대비. 달성했으면 remaining 은 0 이다.
+    # 달성 판정의 기준은 **사용자 목표**다. 목표를 설정하지 않았으면 지침 권장량이 기본값으로 들어오고
+    # goal_is_default 가 true 다 (목표 미설정이 기능 부재가 되면 안 된다).
+    target_minutes: int
+    target_strength_days: int
+    goal_is_default: bool
+    # 지침 권장 하한. 목표를 낮게 잡았어도 지침이 뭔지 볼 수 있게 함께 준다.
     recommended_min_minutes: int
     remaining_minutes: int
     achieved: bool
+    # 목표를 연속으로 달성한 주 수(월요일 시작). 진행 중인 주는 이미 달성했을 때만 센다.
+    streak_weeks: int
     notice: str
+
+
+class ExerciseGoalResponse(BaseModel):
+    weekly_minutes: int
+    weekly_strength_days: int
+    # 사용자가 정한 값이 아니라 지침 권장량 기본값이면 true.
+    is_default: bool
+
+
+class ExerciseGoalRequest(BaseModel):
+    # 상한은 지침 권장 상한(주 300분)보다 넉넉히 둔다 — 더 하려는 사람을 막을 이유는 없다.
+    weekly_minutes: int = Field(..., ge=0, le=2000)
+    weekly_strength_days: int = Field(..., ge=0, le=7)
 
 
 class ExerciseError(BaseModel):

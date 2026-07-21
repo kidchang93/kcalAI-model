@@ -164,3 +164,99 @@ class TestSummary:
             exercise_service.get_summary(
                 db, user.id, DAY.date(), (DAY - timedelta(days=1)).date()
             )
+
+
+class TestGoalAndStreak:
+    """개인 주간 목표와 스트릭 (docs/ACTIVITY_GUIDANCE.md 3-4)."""
+
+    def test_default_goal_is_the_guideline(self, db, user):
+        # 목표를 정하지 않아도 기능이 동작해야 한다 — 지침 권장량이 기본값이다.
+        goal = exercise_service.resolve_goal(db, user.id)
+        assert goal["weekly_minutes"] == fitness_rules.AEROBIC_MODERATE_MIN_MINUTES
+        assert goal["weekly_strength_days"] == fitness_rules.STRENGTH_DAYS_MIN
+        assert goal["is_default"] is True
+
+    def test_upsert_closes_previous_goal(self, db, user):
+        exercise_service.upsert_goal(db, user.id, 200, 3)
+        exercise_service.upsert_goal(db, user.id, 90, 1)
+
+        goal = exercise_service.resolve_goal(db, user.id)
+        assert goal["weekly_minutes"] == 90
+        assert goal["is_default"] is False
+        # 이전 목표는 닫혀서 이력으로 남는다 (열린 목표는 언제나 하나).
+        assert exercise_service.get_open_goal(db, user.id).weekly_minutes == 90
+
+    def test_summary_uses_user_goal_not_guideline(self, db, user):
+        exercise_service.upsert_goal(db, user.id, 60, 2)
+        exercise_service.create_exercise(db, user.id, "walking", 60, "moderate", None, DAY, None)
+
+        summary = exercise_service.get_summary(db, user.id, DAY.date(), DAY.date())
+        # 지침(150분) 기준이면 미달성이지만, 사용자 목표(60분) 기준으로는 달성이다.
+        assert summary["target_minutes"] == 60
+        assert summary["achieved"] is True
+        assert summary["remaining_minutes"] == 0
+        # 지침 값도 함께 준다 — 목표를 낮게 잡았어도 지침이 뭔지 볼 수 있어야 한다.
+        assert summary["recommended_min_minutes"] == fitness_rules.AEROBIC_MODERATE_MIN_MINUTES
+
+    def test_streak_counts_consecutive_weeks(self, db, user):
+        from datetime import date as date_cls
+
+        exercise_service.upsert_goal(db, user.id, 60, 2)
+        today = datetime.now(UTC).date()
+        this_week_start, _ = exercise_service.week_bounds(today)
+
+        # 지난 2주를 각각 달성시킨다 (이번 주는 비워 둔다).
+        for weeks_ago in (1, 2):
+            day = this_week_start - timedelta(weeks=weeks_ago)
+            exercise_service.create_exercise(
+                db,
+                user.id,
+                "walking",
+                60,
+                "moderate",
+                None,
+                datetime.combine(day, datetime.min.time(), tzinfo=UTC) + timedelta(hours=12),
+                None,
+            )
+
+        assert isinstance(this_week_start, date_cls)
+        # 진행 중인 주(이번 주)는 미달성이어도 스트릭을 끊지 않는다 — 아직 기회가 있다.
+        assert exercise_service.calculate_streak(db, user.id, today, 60) == 2
+
+    def test_streak_breaks_on_missed_week(self, db, user):
+        today = datetime.now(UTC).date()
+        this_week_start, _ = exercise_service.week_bounds(today)
+
+        # 3주 전만 달성 — 1·2주 전이 비어 스트릭이 끊긴다.
+        day = this_week_start - timedelta(weeks=3)
+        exercise_service.create_exercise(
+            db,
+            user.id,
+            "walking",
+            60,
+            "moderate",
+            None,
+            datetime.combine(day, datetime.min.time(), tzinfo=UTC) + timedelta(hours=12),
+            None,
+        )
+
+        assert exercise_service.calculate_streak(db, user.id, today, 60) == 0
+
+    def test_light_intensity_does_not_build_streak(self, db, user):
+        today = datetime.now(UTC).date()
+        this_week_start, _ = exercise_service.week_bounds(today)
+        day = this_week_start - timedelta(weeks=1)
+
+        exercise_service.create_exercise(
+            db,
+            user.id,
+            "yoga",
+            300,
+            "light",
+            None,
+            datetime.combine(day, datetime.min.time(), tzinfo=UTC) + timedelta(hours=12),
+            None,
+        )
+
+        # 저강도는 권장량 집계에 들어가지 않으므로 스트릭도 쌓이지 않는다.
+        assert exercise_service.calculate_streak(db, user.id, today, 60) == 0

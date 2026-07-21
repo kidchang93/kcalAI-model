@@ -1078,6 +1078,20 @@ mfds(실측) > curated(감수) > mfds_processed > mfds_raw > llm(추정)
 | `DELETE` | `/api/exercises/{id}` | **204**, soft delete |
 | `GET` | `/api/me/exercise-summary?start_date&end_date` | 기간 집계 + 권장 대비 |
 
+### 개인 주간 목표 `exercise_goals` (리비전 0021)
+
+| 메서드 | 경로 | 역할 |
+|---|---|---|
+| `GET` | `/api/me/exercise-goal` | `{weekly_minutes, weekly_strength_days, is_default}` |
+| `PUT` | `/api/me/exercise-goal` | 목표 변경 — 이전 행을 닫고 새 행을 연다(`user_goals`와 같은 이력 구조) |
+
+- **행이 없으면 지침 권장량(150분·2일)이 기본값**이고 `is_default: true`다. 목표 미설정이 기능 부재가 되면 안 된다.
+- ⚠️ `users` 참조 — `delete_account` 삭제 연쇄와 `test_account_service`의 `handled`에 추가돼 있다.
+- 요약 응답 += `target_minutes`·`target_strength_days`·`goal_is_default`·`streak_weeks`. **달성 판정은 목표 기준**이고
+  `recommended_min_minutes`(지침 하한)도 함께 준다.
+- `streak_weeks`: 목표를 연속 달성한 주 수(**월요일 시작**, 최대 26주 조회). **진행 중인 주는 달성했을 때만 센다** —
+  아직 기회가 남은 주를 실패로 세면 월요일마다 0이 된다.
+
 **요약 응답의 핵심**: `equivalent_moderate_minutes = moderate + vigorous × 2` (**고강도 1분 = 중강도 2분**, KPAG).
 이 값을 권장 하한(150분)과 대조해 `remaining_minutes`·`achieved`를 준다. 저강도는 **권장량 집계에 넣지 않는다**
 (지침 기준). 근력운동은 분이 아니라 **날짜 수**로 센다(`strength_days` — 같은 날 두 번 해도 1일).

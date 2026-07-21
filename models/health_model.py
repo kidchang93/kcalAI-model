@@ -161,3 +161,27 @@ class ExerciseLog(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+class ExerciseGoal(Base):
+    """개인 주간 운동 목표 (리비전 0021).
+
+    기록(ExerciseLog)과 분리한다 — 목표가 바뀌어도 기록은 불변이다.
+    UserGoal 과 같은 이력 구조: 열린 목표는 ended_at IS NULL 하나뿐이고 변경 시 이전 행을 닫는다.
+    행이 없으면 지침 권장량(주 150분·근력 2일)이 기본값이다.
+    """
+
+    __tablename__ = "exercise_goals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    # 중강도 환산 분 (고강도는 2배로 환산해 비교한다).
+    weekly_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    weekly_strength_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
