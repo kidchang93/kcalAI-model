@@ -53,6 +53,8 @@ open http://127.0.0.1:8000/docs
 
 **워크스페이스 원클릭 실행기**: `../dev.sh` (Postgres + 서버 + Expo 앱). `../dev.sh server`로 서버만 띄울 수 있습니다.
 
+**로컬 로그인** (카카오 우회 — 알려진 문제 12): `venv/bin/python scripts/dev_login.py --conditions ckd` — 실제 가입·로그인 경로를 그대로 태워 세션을 발급하고, 온보딩 가드를 통과하도록 프로필·목표·민감정보 동의까지 채웁니다. 출력된 `localStorage.setItem(...)` 한 줄을 앱 오리진(기본 `http://localhost:8081`) 브라우저 콘솔에 붙여넣으면 로그인 상태가 됩니다. 계정은 `local-dev:<label>`로 구분되며 **`APP_ENV=production`이면 실행을 거부**합니다.
+
 **식약처 음식 DB 적재** (칼로리 측정 `/api/nutrition/estimate`과 식단 추천의 데이터 원천 — 둘 다 LLM 없이 이 DB만 씁니다, `docs/DATA_MODEL.md` 12·13장): `venv/bin/python scripts/import_mfds_food.py <식약처 음식 CSV 경로>` — 저장소 루트에서 실행, idempotent upsert(재실행 안전). 원본 CSV(`../data/`)는 커밋하지 않습니다.
 
 **식약처 가공식품 DB 선별 적재** (음료·주류·과자·조미료 보강, estimate 전용 — 추천 후보에는 안 들어갑니다, `docs/DATA_MODEL.md` 14장): `venv/bin/python scripts/import_mfds_processed.py <가공식품 xlsx 경로>` — 대표식품명 단위 중앙값 집계(249행), 기존 mfds(요리)·curated 행은 덮지 않습니다.
@@ -178,7 +180,7 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 | 9 | ~~DB 마이그레이션 도구가 없습니다.~~ **해결됨** (2026-07-09). Alembic 도입 — `alembic/versions/0001_initial_auth.py`, `0002_health_tables.py`. 스키마 변경은 이제 `alembic revision`으로 합니다. `create_all`은 남아 있으나 신규 테이블 생성용입니다. | `alembic.ini`, `database.py:32` |
 | 10 | ~~`runs/`에 학습 산출물 74개(약 70MB)가 커밋되어 있습니다.~~ **해소** (2026-07-12): YOLO 제거와 함께 `runs/`를 삭제했습니다. | — |
 | 11 | ~~`.env.example`에 `CORS_ALLOW_ORIGINS`가 누락되어 있습니다.~~ **해결됨** (2026-07-12). `APP_ENV`·`CORS_ALLOW_ORIGINS` 추가. (S3 자격증명 5종은 S3 제거로 더 이상 필요 없습니다) | `.env.example` |
-| 12 | **카카오 앱에 허용 IP 제한이 걸려 있어 로컬에서 로그인이 안 됩니다** (2026-07-21 확인). 콘솔에 등록된 IP(운영 서버)가 아닌 곳에서 호출하면 `kapi.kakao.com`이 `-401 "ip mismatched"`를 줍니다. **토큰 교환은 `kauth`라 성공**하고 `/v2/user/me`만 실패해 로그인 직전에 `kakao_unavailable`로 끝나므로 원인을 오해하기 쉽습니다. 로컬 개발 머신 IP를 콘솔(앱 설정 > 보안 > 허용 IP)에 추가하거나 **개발용 앱을 따로** 두세요 — 공인 IP는 재할당으로 바뀝니다. 진단: `scripts/check_kakao_config.py` | `services/kakao_client.py` |
+| 12 | **카카오 앱에 허용 IP 제한이 걸려 있어 로컬에서 로그인이 안 됩니다** (2026-07-21 확인). 콘솔에 등록된 IP(운영 서버)가 아닌 곳에서 호출하면 `kapi.kakao.com`이 `-401 "ip mismatched"`를 줍니다. **토큰 교환은 `kauth`라 성공**하고 `/v2/user/me`만 실패해 로그인 직전에 `kakao_unavailable`로 끝나므로 원인을 오해하기 쉽습니다. 공인 IP는 재할당으로 바뀌어 등록해도 또 막히므로, **로컬은 카카오 로그인을 쓰지 않고 `scripts/dev_login.py`로 우회**하기로 했습니다 (2026-07-21 결정). 운영은 서버 IP가 고정이라 정상 동작합니다. 진단: `scripts/check_kakao_config.py` | `services/kakao_client.py` |
 
 ---
 
