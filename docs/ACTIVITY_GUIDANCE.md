@@ -153,30 +153,73 @@ BMI = 체중(kg) ÷ 신장(m)². 분류는 **한국(아시아-태평양) 기준*
 
 **하지 않는 것**: 목표 체중 자동 제시, "몇 kg 빼세요", 특정 운동 종목 처방.
 
-### 3-2. 2단계 — 기기 활동 데이터 연동 (네이티브 빌드)
+### 3-2. 2단계 — 운동 기록 (수동 입력 · 플랫폼 중립) — 2026-07-21 확정
 
-플랫폼별로 **라이브러리가 갈린다**. 앱에 단일 인터페이스를 두고 그 뒤에서 분기한다.
+> **원칙: 앱과 웹은 같은 레벨의 서비스다.** 기록·목표·챌린지는 전부 **플랫폼 중립 REST**로 만들고,
+> 기기 연동(3단계)은 나중에 붙는 **입력 경로 하나**일 뿐이다. 그래야 웹 사용자가 기능에서 밀리지 않는다.
+> 연동은 "웹에 없는 기능"이 아니라 "네이티브에서 입력이 자동으로 채워지는 편의"다.
+
+식단(`meal_logs`)과 같은 성격의 **날마다 쌓이는 기록**으로 만든다. 하루 여러 건, soft delete, UTC 자정 경계 —
+끼니 기록의 관례를 그대로 따라 두 도메인이 같은 방식으로 동작하게 한다.
+
+**테이블 `exercise_logs`** (신규)
+
+| 컬럼 | 타입 | 설명 |
+|---|---|---|
+| `id` | PK | |
+| `user_id` | FK users.id, index | |
+| `performed_at` | timestamptz NOT NULL, index | 끼니 `logged_at`과 같은 규약 — 하루 경계는 **UTC 자정**, 과거 날짜 기록은 그 날의 **UTC 정오**로 앵커 |
+| `exercise_type` | varchar(30) NOT NULL | `walking`·`running`·`cycling`·`strength`·`other` 등. MET 값과 함께 `fitness_rules`에 둔다 |
+| `duration_minutes` | int NOT NULL | 1~1440 |
+| `intensity` | varchar(10) NOT NULL | `light`·`moderate`·`vigorous` — **지침의 강도 축과 일치**시켜 주간 집계가 바로 되게 한다 |
+| `kcal` | int NULL | 서버가 MET로 산출하고, 사용자가 주면 그 값을 쓴다(`target_kcal`과 같은 규약) |
+| `source` | varchar(20) NOT NULL default `'manual'` | `manual`·`healthkit`·`health_connect`. **지금부터 컬럼을 확보**해 3단계에서 스키마를 안 바꾼다 |
+| `memo` | varchar(200) NULL | |
+| `deleted_at` | timestamptz NULL | `meal_logs`와 같은 soft delete |
+| `created_at`·`updated_at` | timestamptz | |
+
+⚠️ **`users`를 참조하므로** `account_service.delete_account` 삭제 연쇄와 `tests/test_account_service.py`의
+`handled` 집합에 **반드시** 추가한다 (2026-07-16 payments 누락으로 탈퇴 500이 났던 사고 재발 방지).
+
+**API** (전부 Bearer. 웹·네이티브 동일)
+
+| 메서드 | 경로 | 역할 |
+|---|---|---|
+| `POST` | `/api/exercises` | 기록 생성. `kcal` 생략 시 서버가 MET로 산출 |
+| `GET` | `/api/exercises?date=` | 그날 목록 (끼니 조회와 같은 규약) |
+| `PUT` | `/api/exercises/{id}` | **전체 교체** (끼니 수정과 같은 방식) |
+| `DELETE` | `/api/exercises/{id}` | soft delete. 남의 것·없는 것은 **404 존재 은닉** |
+| `GET` | `/api/me/exercise-summary?start_date&end_date` | 기간 집계 + **권장 대비 달성률** |
+
+**주간 요약이 이 기능의 핵심이다.** 지침이 "주 150~300분"이므로, 사용자가 실제로 알고 싶은 건
+"이번 주에 얼마나 했고 얼마나 남았나"다. 응답은 강도별 합계와 함께 **지침 환산값**을 준다 —
+고강도 1분 = 중강도 2분(KPAG)이므로 `equivalent_moderate_minutes = moderate + vigorous × 2`로 합산하고,
+권장 하한(150분)까지 남은 분을 함께 내려보낸다. 근력 일수는 `exercise_type='strength'`인 **날짜 수**로 센다.
+
+**kcal 산출**: `MET × 체중(kg) × 시간(h)` (§1-3). 체중은 프로필 최신값을 쓴다. 프로필이 없으면 `null`로 두고
+사용자 입력을 기다린다 — 추정할 수 없는 값을 지어내지 않는다.
+
+### 3-3. 3단계 — 기기 연동 (네이티브에서 입력을 자동으로 채운다)
+
+2단계의 데이터 모델·API를 **그대로 쓴다**. 달라지는 건 `source`가 `healthkit`/`health_connect`로 들어오고,
+앱이 그 값을 대신 채워 넣는다는 것뿐이다. 웹은 수동 입력으로 같은 기능을 계속 쓴다.
 
 | 플랫폼 | 소스 | 라이브러리 | 제약 |
 |---|---|---|---|
-| iOS | Apple 건강(HealthKit) | `react-native-health` (Expo config plugin 지원) | Expo Go 불가 · prebuild/dev client 필요 |
+| iOS | Apple 건강(HealthKit) | `react-native-health` (Expo config plugin 지원) | Expo Go 불가 · prebuild 필요 |
 | Android | Health Connect | `react-native-health-connect` + `expo-health-connect` plugin | 〃 · Android 14 미만은 Health Connect 앱 별도 설치 |
-| Web | — | **없음** | 웹 빌드에서는 기능 자체를 숨긴다 |
+| Web | — | **없음** | 연동 카드만 숨긴다. **기능은 수동 입력으로 동일하게 쓴다** |
 
-- 웹 분기는 기존 선례를 따른다 — 토스 SDK를 웹에서만 로드하는 `services/toss-sdk.ts:39`(`isBillingSupported`)의
-  역방향으로 `isActivitySyncSupported()`를 두고, false면 연동 카드를 **비활성 + 이유 표시**로 그린다
-  (선행 기획 `HEALTHCARE_EXPANSION.md:256~266`이 정한 방침 그대로).
-- **빌드 체계 전환이 전제다.** 지금은 `eas.json`도 `expo-dev-client`도 없고 실기기 테스트를 **Expo Go**로 한다
-  (`docs/DEVICE_TESTING.md:3`). 연동 라이브러리는 Expo Go에서 동작하지 않으므로 `expo prebuild` +
-  `expo run:*`(현재 `docs/LOCAL_BUILD.md`가 쓰는 CNG 방식) 또는 EAS dev build로 옮겨야 하고, 그 시점에
-  DEVICE_TESTING의 "dev build 불필요" 서술이 **거짓이 된다** — 같은 작업 단위에서 고친다.
-- 읽을 데이터는 **최소**로: 걸음 수, 활동 소비 칼로리, (선택) 운동 시간. 심박·수면·혈압은 받지 않는다 —
-  권한 심사에서 정당화 부담만 커지고 우리 기능에 필요 없다.
-
-**저장 정책 (결정 필요 — §5)**: 기본안은 **서버에 일별 집계만** 저장하는 것이다(원본 시계열 미저장).
-`activity_logs(user_id, activity_date, steps, active_kcal, source)` 1행/일. 원본을 받아 두면 개인정보 범위가
-급격히 넓어지고 파기 의무도 커진다. 이 테이블을 만들면 **`account_service.delete_account` 삭제 연쇄와
-`tests/test_account_service.py`의 `handled` 집합에 반드시 추가**한다(2026-07-16 payments 누락 사고 재발 방지).
+- **Expo Go는 포기한다 (2026-07-21 결정).** `expo prebuild` + `expo run:*`(현재 `docs/LOCAL_BUILD.md`의 CNG 방식)
+  또는 EAS dev build로 옮기고, 그 시점에 앱 `docs/DEVICE_TESTING.md`의 "dev build 불필요" 서술을 함께 고친다.
+- 웹 분기는 `services/toss-sdk.ts:39`(`isBillingSupported`) 선례를 따라 `isActivitySyncSupported()`를 둔다.
+  false면 **연동 버튼만** 숨기고 기록 화면은 그대로 보인다.
+- 읽을 데이터는 **최소**로: 걸음 수, 활동 소비 칼로리, 운동 세션. 심박·수면·혈압은 받지 않는다 —
+  권한 심사 부담만 커지고 우리 기능에 필요 없다.
+- **걸음 수는 운동 세션이 아니다.** `exercise_logs`에 섞지 말고 일별 집계 테이블(`activity_daily`)을 따로 둔다.
+  성격이 다르고(세션 vs 하루 누적) 중복 계산의 원인이 된다.
+- **중복 방지**: 기기에서 가져온 세션은 `source` + 기기 고유 id로 멱등 upsert 해야 한다. 사용자가 수동으로
+  적은 같은 운동과 겹칠 수 있다는 점도 UX에서 다뤄야 한다(구현 시 결정).
 
 **출시 요건 (착수 전 확인)**
 
@@ -186,7 +229,14 @@ BMI = 체중(kg) ÷ 신장(m)². 분류는 **한국(아시아-태평양) 기준*
 - Apple: HealthKit 사용 목적 문자열(Info.plist)과 개인정보 처리방침 필요. **건강 데이터를 광고·마케팅에 쓸 수 없다.**
 - 우리 상태: iOS 프라이버시 매니페스트가 아직 없다(앱 `docs/`의 미완 항목). 연동보다 **먼저** 정리해야 한다.
 
-### 3-3. 3단계 — 제안·조언
+### 3-4. 4단계 — 목표·챌린지 (구상)
+
+기록이 쌓이면 그 위에 목표를 얹을 수 있다. 주간 목표(예: "주 150분")는 이미 지침 권장량이 기본값이 되고,
+사용자가 스스로 정한 목표나 기간제 챌린지는 그 위의 레이어다. 데이터 모델은 기록과 분리하고
+(`exercise_goals` 또는 기존 `user_goals` 확장), **기록이 목표를 모르게** 둔다 — 목표가 바뀌어도 기록은 불변이다.
+설계는 기록 기능이 안정된 뒤에 연다.
+
+### 3-5. 제안·조언 (기록·연동 이후)
 
 **규칙 기반으로 만든다. LLM으로 문장을 생성하지 않는다.** `estimate`에 LLM을 넣지 않는 것과 같은 이유다 —
 같은 상황에 매번 다른 조언이 나오면 신뢰할 수 없고, 건강 조언은 재현성이 특히 중요하다.

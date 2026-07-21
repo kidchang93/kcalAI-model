@@ -69,17 +69,68 @@ ACTIVITY_NOTICE = (
     "질환이 있으면 운동 종류와 강도를 의료진과 상의해 정하세요."
 )
 
-# ── MET (대사당량) — 2단계(기기 연동)에서 활동 시간을 kcal 로 환산할 때 쓴다 ──
-# 소비 kcal ≈ MET × 체중(kg) × 시간(h). 중강도 3.0~5.9, 고강도 6.0 이상.
+# ── MET (대사당량) — 운동 시간을 kcal 로 환산한다 ────────────────────────────
+# 소비 kcal ≈ MET × 체중(kg) × 시간(h). 강도 구분은 중강도 3.0~5.9, 고강도 6.0 이상.
 MODERATE_MET_MIN = 3.0
 VIGOROUS_MET_MIN = 6.0
-ACTIVITY_METS: dict[str, float] = {
-    "walking": 3.5,
-    "brisk_walking": 4.3,
-    "cycling": 6.8,
-    "stairs": 8.0,
-    "running_8kmh": 8.3,
+
+# 운동 종류 → (표시명, MET, 기본 강도). 사용자가 고르는 목록이자 kcal 산출의 계수다.
+# 값은 Compendium of Physical Activities 의 대표값 범위를 따른다.
+# ⚠️ intensity 는 kcal 산출에 **곱하지 않는다** — 종류별 MET 가 이미 강도를 내포하고 있어
+# 다시 곱하면 이중 적용이 된다. intensity 는 지침 대비 주간 집계(중강도/고강도 분)에만 쓴다.
+EXERCISE_TYPES: dict[str, tuple[str, float, str]] = {
+    "walking": ("걷기", 3.5, "moderate"),
+    "brisk_walking": ("빠르게 걷기", 4.3, "moderate"),
+    "running": ("달리기", 8.3, "vigorous"),
+    "cycling": ("자전거", 6.8, "vigorous"),
+    "swimming": ("수영", 5.8, "moderate"),
+    "hiking": ("등산", 6.0, "vigorous"),
+    "strength": ("근력운동", 5.0, "moderate"),
+    "yoga": ("요가·스트레칭", 2.5, "light"),
+    "other": ("기타", 4.0, "moderate"),
 }
+
+# 지침의 강도 축 (보건복지부 2023). 권장 활동량 집계는 중강도·고강도만 센다 —
+# 저강도(가벼운 스트레칭 등)는 권장량에 포함되지 않는다.
+INTENSITIES: tuple[str, ...] = ("light", "moderate", "vigorous")
+INTENSITY_LABELS: dict[str, str] = {
+    "light": "저강도",
+    "moderate": "중강도",
+    "vigorous": "고강도",
+}
+
+# 근력운동은 '분'이 아니라 '주 몇 일'로 센다 (지침이 그렇게 권고한다).
+STRENGTH_EXERCISE_TYPE = "strength"
+
+# 고강도 1분 = 중강도 2분 (KPAG). 주간 달성률을 하나의 축으로 합칠 때 쓴다.
+VIGOROUS_TO_MODERATE_FACTOR = 2
+
+
+def exercise_type_label(exercise_type: str) -> str | None:
+    entry = EXERCISE_TYPES.get(exercise_type)
+    return entry[0] if entry is not None else None
+
+
+def default_intensity(exercise_type: str) -> str | None:
+    entry = EXERCISE_TYPES.get(exercise_type)
+    return entry[2] if entry is not None else None
+
+
+def estimate_exercise_kcal(
+    exercise_type: str,
+    duration_minutes: int,
+    weight_kg: float | None,
+) -> int | None:
+    """MET × 체중(kg) × 시간(h). 체중을 모르면 **None** — 지어내지 않는다.
+
+    체중은 프로필 최신값을 쓴다. 프로필이 없는 사용자는 값이 비고, 앱이 직접 입력을 받는다.
+    """
+    entry = EXERCISE_TYPES.get(exercise_type)
+    if entry is None or weight_kg is None or weight_kg <= 0 or duration_minutes <= 0:
+        return None
+
+    met = entry[1]
+    return round(met * weight_kg * duration_minutes / 60)
 
 
 def calculate_bmi(height_cm: float | None, weight_kg: float | None) -> float | None:

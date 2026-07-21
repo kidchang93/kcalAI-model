@@ -129,3 +129,35 @@ class FoodNutrition(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class ExerciseLog(Base):
+    """운동 기록 — 식단(MealLog)과 같은 성격의 날마다 쌓이는 기록 (리비전 0020).
+
+    하루 여러 건, soft delete, 하루 경계는 UTC 자정 — 끼니 기록의 관례를 그대로 따른다.
+    `source` 는 지금 전부 'manual' 이지만, 기기 연동(3단계)이 같은 테이블에 들어오도록 미리 둔다
+    (docs/ACTIVITY_GUIDANCE.md 3-2·3-3).
+    """
+
+    __tablename__ = "exercise_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    # 끼니 logged_at 과 같은 규약 — 과거 날짜 기록은 그 날의 UTC 정오로 앵커한다.
+    performed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    exercise_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 보건복지부 지침의 강도 축과 일치 — light / moderate / vigorous.
+    intensity: Mapped[str] = mapped_column(String(10), nullable=False)
+    # MET 산출값 또는 사용자 입력. 체중을 모르면 산출할 수 없어 nullable.
+    kcal: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # manual / healthkit / health_connect.
+    source: Mapped[str] = mapped_column(String(20), nullable=False, server_default="manual")
+    memo: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )

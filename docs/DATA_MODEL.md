@@ -1043,6 +1043,47 @@ mfds(실측) > curated(감수) > mfds_processed > mfds_raw > llm(추정)
 
 ---
 
+## 25. 운동 기록 (2026-07-21 확정 — 리비전 0020)
+
+> 근거·설계는 **`docs/ACTIVITY_GUIDANCE.md` 3-2**가 정본이다. 여기에는 계약만 적는다.
+
+**원칙: 앱과 웹은 같은 레벨의 서비스다.** 기록·조회·집계 API 는 전부 플랫폼 중립이고, 기기 연동(3단계)은
+`source` 가 하나 느는 **입력 경로**일 뿐이다. 웹 사용자는 수동 입력으로 같은 기능을 계속 쓴다.
+
+### `exercise_logs` (신규 테이블)
+
+식단(`meal_logs`)과 같은 규약 — 하루 여러 건, 하루 경계는 **UTC 자정**, **soft delete**, 남의 것은 **404 존재 은닉**.
+
+| 컬럼 | 타입 | 비고 |
+|---|---|---|
+| `user_id` | FK users.id, index | ⚠️ **`account_service.delete_account` 삭제 연쇄와 `tests/test_account_service.py`의 `handled` 집합에 이미 추가함** |
+| `performed_at` | timestamptz, index | 끼니 `logged_at`과 같은 규약(과거 날짜는 UTC 정오 앵커) |
+| `exercise_type` | varchar(30) | `fitness_rules.EXERCISE_TYPES`의 키. 참조 테이블이 아니다 — MET 값이 코드에 있어야 해서 목록도 같은 곳에 둔다 |
+| `duration_minutes` | int | 1~1440 |
+| `intensity` | varchar(10) | `light`·`moderate`·`vigorous` — 보건복지부 지침의 강도 축과 일치 |
+| `kcal` | int NULL | MET×체중×시간 산출값 또는 사용자 입력. **체중을 모르면 NULL**(지어내지 않는다) |
+| `source` | varchar(20) default `'manual'` | `manual`·`healthkit`·`health_connect`. 3단계에서 스키마를 안 바꾸려고 미리 뒀다 |
+| `memo` · `deleted_at` · `created_at` · `updated_at` | | |
+
+복합 인덱스 `(user_id, performed_at)` — 날짜별 조회와 기간 집계가 주 질의다.
+
+### API (전부 Bearer)
+
+| 메서드 | 경로 | 비고 |
+|---|---|---|
+| `GET` | `/api/exercise-types` | 선택지(코드·라벨·기본 강도). 앱이 목록을 하드코딩하지 않게 서버가 준다 |
+| `POST` | `/api/exercises` | **201**. `intensity` 생략 시 종류별 기본값, `kcal` 생략 시 서버 산출. 없는 종류는 400 |
+| `GET` | `/api/exercises?date=` | 그날 목록(오름차순). 생략 시 오늘(UTC) |
+| `PUT` | `/api/exercises/{id}` | **전체 교체**. `performed_at` 생략 시 기존 시각 유지(끼니 PUT과 같은 예외) |
+| `DELETE` | `/api/exercises/{id}` | **204**, soft delete |
+| `GET` | `/api/me/exercise-summary?start_date&end_date` | 기간 집계 + 권장 대비 |
+
+**요약 응답의 핵심**: `equivalent_moderate_minutes = moderate + vigorous × 2` (**고강도 1분 = 중강도 2분**, KPAG).
+이 값을 권장 하한(150분)과 대조해 `remaining_minutes`·`achieved`를 준다. 저강도는 **권장량 집계에 넣지 않는다**
+(지침 기준). 근력운동은 분이 아니라 **날짜 수**로 센다(`strength_days` — 같은 날 두 번 해도 1일).
+
+---
+
 ## 20. 요금제·일일 쿼터 · 가입 강화 (2026-07-14 확정 — 리비전 0014)
 
 > 구현 범위: `plans`(참조 테이블) · `user_subscriptions`(회원 1:1) · `vision_usage_daily`(비전 카운터) 3테이블, `GET /api/plans` · `GET·PUT /api/me/subscription`, 그룹·펫·predict 한도 강제, 가입 시 약관 동의 필수화, SMS 실발송 연동. **결제(인앱결제) 연동은 이 범위 밖이다.**

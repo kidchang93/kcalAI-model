@@ -2,6 +2,7 @@ from .auth_model import AuthSession, KakaoLinkCode, User
 from .consent_model import UserAllergy, UserCondition, UserConsent, UserHealthProfile
 from .group_model import Group, GroupMember, GroupPet
 from .health_model import (
+    ExerciseLog,
     FoodNutrition,
     MealItem,
     MealLog,
@@ -15,6 +16,7 @@ __all__ = [
     "AuthSession",
     "KakaoLinkCode",
     "User",
+    "ExerciseLog",
     "FoodNutrition",
     "MealItem",
     "MealLog",
