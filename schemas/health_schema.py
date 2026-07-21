@@ -18,6 +18,23 @@ class ProfileUpsertRequest(BaseModel):
     activity_level: ActivityLevel
 
 
+class ActivityGuide(BaseModel):
+    """주당 권장 신체활동량 (보건복지부 2023). 개인 처방이 아니라 연령대별 일반 권고다."""
+
+    moderate_min_minutes: int
+    moderate_max_minutes: int
+    vigorous_min_minutes: int
+    # 노인은 고강도 상한이 성인보다 낮다 (150 → 100분).
+    vigorous_max_minutes: int
+    strength_days: int
+    # 평형성 운동은 65세 이상에만 있는 축이다 — 성인은 None.
+    balance_days: int | None
+    is_senior: bool
+    tips: list[str]
+    source: str
+    notice: str
+
+
 class ProfileResponse(BaseModel):
     id: int
     user_id: int
@@ -28,6 +45,15 @@ class ProfileResponse(BaseModel):
     activity_level: str
     created_at: datetime
     updated_at: datetime
+    # 아래 네 필드는 **저장하지 않고 응답 시 계산**한다 (docs/ACTIVITY_GUIDANCE.md 3-1).
+    # 키·체중이 바뀌면 즉시 따라와야 하고, 저장하면 두 값이 어긋난다 (펫 recommended_kcal 선례).
+    # 대한비만학회 2022 기준(한국인)이라 WHO 국제 기준과 다르다.
+    bmi: float | None = None
+    bmi_category: str | None = None
+    bmi_category_label: str | None = None
+    # BMI 가 근육량을 구분하지 못한다는 한계 고지. 앱은 이 문구를 그대로 쓴다(하드코딩 금지).
+    bmi_notice: str | None = None
+    activity_guide: ActivityGuide | None = None
 
     model_config = {"from_attributes": True}
 

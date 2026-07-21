@@ -44,9 +44,12 @@ def read_profile(
     db: Session = Depends(get_db),
 ):
     try:
-        return health_service.get_profile(db, current_user.id)
+        profile = health_service.get_profile(db, current_user.id)
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    # BMI·활동 권고는 저장하지 않고 여기서 계산해 싣는다 (docs/ACTIVITY_GUIDANCE.md 3-1).
+    return health_service.build_profile_response(profile)
 
 
 @router.put(
@@ -59,7 +62,7 @@ def update_profile(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return health_service.upsert_profile(
+    profile = health_service.upsert_profile(
         db,
         current_user.id,
         sex=request.sex,
@@ -68,6 +71,8 @@ def update_profile(
         weight_kg=request.weight_kg,
         activity_level=request.activity_level,
     )
+    # 수정 직후에도 갱신된 BMI 를 함께 준다 — 앱이 다시 조회하지 않아도 되게.
+    return health_service.build_profile_response(profile)
 
 
 # ---- 목표 ----

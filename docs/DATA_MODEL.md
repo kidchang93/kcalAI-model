@@ -134,7 +134,7 @@
 | 메서드 | 경로 | 역할 | 선행 조건 |
 |---|---|---|---|
 | `POST` | `/api/auth/logout` | `auth_sessions.revoked_at` 갱신 | `get_current_user` |
-| `GET` `PUT` | `/api/me/profile` | 신체 정보 조회·수정 | `user_profiles` |
+| `GET` `PUT` | `/api/me/profile` | 신체 정보 조회·수정 (+ **BMI·권장 활동량 파생 계산**, 아래) | `user_profiles` |
 | `GET` `PUT` | `/api/me/goal` | 목표 조회·수정 (Mifflin-St Jeor 자동 산출) | `user_goals` |
 | `GET` | `/api/me/summary?date=` | 홈 진행률 — 섭취/목표/끼니별 합계 | `meal_logs` 집계 |
 | `POST` | `/api/nutrition/estimate` | 음식 라벨 → 구조화 kcal. **캐시 우선** | `food_nutrition` |
@@ -150,6 +150,39 @@
 - `meal_items`는 기존 행을 지우고 다시 넣는다. `total_kcal`은 서버가 항목 합계로 **재계산**한다 (생성 로직 재사용 — 합계의 단일 진실은 `meal_items`).
 - **예외 1개**: `logged_at`을 생략(null)하면 기존 기록 시각을 **유지**한다. DB not-null 컬럼이라 null 교체가 불가능하고, 앱의 주 사용처가 "항목·끼니 종류만 고치기"이기 때문이다. `photo_s3_key`는 nullable이므로 생략 시 null로 교체된다 (전체 교체 원칙).
 - 남의 끼니·soft delete된 끼니·없는 끼니는 전부 **404** — `DELETE /api/meals/{id}`와 같은 존재 은닉 규칙.
+
+### `/api/me/profile` — BMI·권장 활동량 (2026-07-21 추가, `docs/ACTIVITY_GUIDANCE.md`)
+
+`GET`·`PUT` 두 응답 모두에 아래 필드가 **추가**됐다(전부 nullable·기본값 있음 → 하위호환, 앱과 같은 작업 단위 배포).
+
+```jsonc
+{
+  // ... 기존 프로필 필드 ...
+  "bmi": 22.9,                       // 체중 ÷ 신장(m)², 소수 1자리. 키·체중이 없거나 0 이하면 null
+  "bmi_category": "normal",          // underweight|normal|pre_obese|obese_1|obese_2|obese_3
+  "bmi_category_label": "정상",
+  "bmi_notice": "BMI는 대한비만학회 …",  // 근육량 미반영 한계 고지. 앱은 이 문구를 그대로 쓴다
+  "activity_guide": {                 // 나이를 모르면 null
+    "moderate_min_minutes": 150, "moderate_max_minutes": 300,
+    "vigorous_min_minutes": 75, "vigorous_max_minutes": 150,   // 65세 이상은 100
+    "strength_days": 2,
+    "balance_days": null,             // 65세 이상만 3, 성인은 null
+    "is_senior": false,
+    "tips": ["..."], "source": "보건복지부 「한국인을 위한 신체활동 지침서」(2023)",
+    "notice": "… 의료기기가 아니며 질병을 진단·치료·예방하지 않습니다. …"
+  }
+}
+```
+
+- **저장하지 않는다.** `health_service.build_profile_response`가 응답 시 계산한다 — 키·체중이 바뀌면 즉시
+  따라와야 하고, 저장하면 두 값이 어긋난다(펫 `recommended_kcal`과 같은 패턴).
+- 판정 기준은 `services/fitness_rules.py` 한 곳에만 둔다. **BMI는 한국(대한비만학회) 기준**이라 WHO 기준
+  (25 과체중·30 비만)과 다르다 — 23·25가 경계다.
+- **질병을 읽지 않는다.** 이 라우트는 `sensitive_health` 동의 없이 접근하므로, 고지 문구를 질병 유무로
+  분기하려고 질병을 조회하면 동의 요건이 바뀐다(estimate에 등급을 싣지 않은 것과 같은 판단, 19장 개정 노트).
+  그래서 모든 사용자에게 같은 문구(의료진 상담 안내 포함)를 준다.
+- ⚠️ 앱이 **BMI를 재계산하지 않는다.** 목표 칼로리 산식은 이미 서버·앱 양쪽에 있어(앱 `onboarding/goal.tsx`)
+  갈릴 위험을 안고 있다. BMI는 서버가 단일 진실이다.
 
 ### `GET /api/me/summary` 응답 스키마 (확정)
 

@@ -223,6 +223,8 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 | 작업 | 먼저 읽을 문서 |
 |------|----------------|
 | **헬스케어 확장 · 신규 테이블/API** | **`docs/DATA_MODEL.md`** (확정 사양서) |
+| 신장병(CKD) 식이 규칙·근거 | `docs/CKD_NUTRITION.md` |
+| BMI·활동량·헬스 앱 연동 | `docs/ACTIVITY_GUIDANCE.md` (기획·근거. 착수 전 §0-1 결정 필요) |
 | 모듈 구조·의존성 파악 | `docs/ARCHITECTURE.md` |
 | 새 엔드포인트/스키마 추가 | `docs/DESIGN.md` → `docs/ARCHITECTURE.md` |
 | 코드 작성 직전 | `docs/CODE_STYLE.md` |

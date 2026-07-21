@@ -7,6 +7,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from models.health_model import MealItem, MealLog, UserGoal, UserProfile, WeightLog
+from services import fitness_rules
 
 ACTIVITY_FACTORS: dict[str, float] = {
     "sedentary": 1.2,
@@ -42,6 +43,35 @@ def calculate_target_kcal(profile: UserProfile, goal_type: str) -> int:
 
     tdee = bmr * ACTIVITY_FACTORS[profile.activity_level]
     return round(tdee + GOAL_ADJUSTMENTS[goal_type])
+
+
+def build_profile_response(profile: UserProfile) -> dict:
+    """프로필 + 응답 시 계산하는 파생 지표(BMI·활동 권고).
+
+    저장하지 않는 이유는 펫 `recommended_kcal`과 같다 — 키·체중이 바뀌면 즉시 따라와야 하고,
+    저장하면 두 값이 어긋난다 (docs/ACTIVITY_GUIDANCE.md 3-1).
+    앱이 같은 산식을 재구현하지 않도록 **서버가 단일 진실**이다.
+    """
+    bmi = fitness_rules.calculate_bmi(float(profile.height_cm), float(profile.weight_kg))
+    category = fitness_rules.bmi_category(bmi)
+    age = datetime.now(UTC).year - profile.birth_year
+
+    return {
+        "id": profile.id,
+        "user_id": profile.user_id,
+        "sex": profile.sex,
+        "birth_year": profile.birth_year,
+        "height_cm": float(profile.height_cm),
+        "weight_kg": float(profile.weight_kg),
+        "activity_level": profile.activity_level,
+        "created_at": profile.created_at,
+        "updated_at": profile.updated_at,
+        "bmi": bmi,
+        "bmi_category": category,
+        "bmi_category_label": fitness_rules.bmi_category_label(category),
+        "bmi_notice": fitness_rules.BMI_NOTICE if bmi is not None else None,
+        "activity_guide": fitness_rules.activity_guide(age),
+    }
 
 
 # ---- 프로필 ----
