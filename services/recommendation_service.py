@@ -1,6 +1,7 @@
 import random
 from datetime import date
 from math import ceil
+from typing import NamedTuple
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -67,12 +68,23 @@ TAG_REASON_PHRASES = {
 }
 
 
+class RecommendationResult(NamedTuple):
+    recommendation: DietRecommendation
+    cached: bool
+    tips: list[str]
+    # 응답용 items — 저장된 items 에 상대 등급을 매 요청 얹은 것이다. 등급을 저장하지 않는 이유는
+    # 사용자가 질병을 추가·삭제하면 캐시된 등급이 어긋나기 때문이다 (tips 와 같은 정책).
+    items: list[dict]
+    # 등급을 실제로 얹었을 때만 채워지는 고지. 등급 없는 사용자에겐 None.
+    tier_notice: str | None
+
+
 def get_recommendation(
     db: Session,
     user_id: int,
     rec_date: date,
     meal_type: str,
-) -> tuple[DietRecommendation, bool, list[str]]:
+) -> RecommendationResult:
     # tips 는 현재 질병 기준으로 매 요청 계산한다 (저장 안 함) — 캐시된 추천에도 최신 안내가 붙는다.
     conditions = meta_service.list_user_condition_types(db, user_id)
     tips = _condition_tips(conditions)
@@ -85,7 +97,13 @@ def get_recommendation(
         )
     )
     if cached is not None:
-        return cached, True, tips
+        return RecommendationResult(
+            cached,
+            True,
+            tips,
+            _annotate_tiers(cached.items, conditions),
+            _tier_notice(conditions),
+        )
 
     # 남은 칼로리는 summary 와 동일 산식 (target_kcal - consumed, 목표 미설정이면 None).
     remaining_kcal = health_service.get_summary(db, user_id, rec_date)["remaining_kcal"]
@@ -113,7 +131,53 @@ def get_recommendation(
     db.add(recommendation)
     db.commit()
     db.refresh(recommendation)
-    return recommendation, False, tips
+    return RecommendationResult(
+        recommendation,
+        False,
+        tips,
+        _annotate_tiers(recommendation.items, conditions),
+        _tier_notice(conditions),
+    )
+
+
+def _tier_axes(conditions: list[ConditionType]) -> tuple[bool, bool]:
+    """(칼륨 등급 노출, 인 등급 노출). 제한 태그를 가진 사용자에게만 등급을 보인다."""
+    tags = {tag for condition in conditions for tag in condition.dietary_tags}
+    return "low_potassium" in tags, "low_phosphorus" in tags
+
+
+def _tier_notice(conditions: list[ConditionType]) -> str | None:
+    """등급을 하나라도 노출하면 그 해석 고지를 함께 내려보낸다 (CKD_NUTRITION.md 3-4)."""
+    return ckd_food_rules.TIER_NOTICE if any(_tier_axes(conditions)) else None
+
+
+def _annotate_tiers(items: list[dict], conditions: list[ConditionType]) -> list[dict]:
+    """실측 수치에 상대 등급(저/중/고)을 얹는다 (docs/CKD_NUTRITION.md 3-4).
+
+    칼륨·인 제한 대상(신장병 등)에게만 채운다 — 그 외 사용자에게 칼륨 등급은 노이즈다.
+    저장된 items 를 변형하지 않고 복사본을 만든다(캐시 행은 JSONB 원본 그대로 둔다).
+    병기 정보가 없으므로 칼륨은 투석 기준(엄격)으로 판정한다.
+    """
+    show_potassium, show_phosphorus = _tier_axes(conditions)
+
+    if not show_potassium and not show_phosphorus:
+        return list(items)
+
+    annotated: list[dict] = []
+    for item in items:
+        entry = dict(item)
+        # 구버전 캐시 행에는 영양 키가 아예 없다 — get 으로 읽어 None 으로 눕힌다.
+        name = entry.get("name", "")
+        if show_potassium:
+            entry["potassium_tier"] = ckd_food_rules.potassium_display_tier(
+                name, entry.get("potassium_mg")
+            )
+        if show_phosphorus:
+            entry["phosphorus_tier"] = ckd_food_rules.phosphorus_display_tier(
+                name, entry.get("phosphorus_mg")
+            )
+        annotated.append(entry)
+    return annotated
 
 
 def _condition_tips(conditions: list[ConditionType]) -> list[str]:

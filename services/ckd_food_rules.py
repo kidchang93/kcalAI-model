@@ -162,6 +162,31 @@ POTASSIUM_SERVING_HIGH_MG = 600
 # ⚠️ 정책값 — 조정 가능. 추천을 인이 낮은 단백질원으로 유도하되 단백질 자체를 막지 않는 선.
 PHOSPHORUS_SERVING_HIGH_MG = 400
 
+# ── 1인분 실측값 → 상대 등급 (표시 전용) ────────────────────────────────────
+#
+# 추천 카드에 "칼륨 320 mg"만 띄우면 환자는 그게 높은지 낮은지 알 수 없다. 아래 경계로
+# 저/중/고를 붙여 **상대 위치**만 보여준다 — 목표량 제시(처방)가 아니다.
+# ⚠️ 지침에 1인분 절대 컷오프는 없다. 아래는 근거를 밝힌 우리 정책값이다 (docs/CKD_NUTRITION.md §4).
+#
+# 칼륨: 신장질환 식품교환표의 고칼륨 기준 >200 mg/교환단위를 그대로 1교환(=mid 시작)으로 두고,
+#       2교환(400)부터 high. 600 초과는 애초에 추천에서 배제된다(POTASSIUM_SERVING_HIGH_MG).
+POTASSIUM_TIER_MID_MG = 200
+POTASSIUM_TIER_HIGH_MG = 400
+
+# 인: 하루 800~1,000 mg(KSN2)을 3끼로 나눈 몫 ≈ 270~330 을 high 경계로, 그 절반을 mid 경계로.
+PHOSPHORUS_TIER_MID_MG = 150
+PHOSPHORUS_TIER_HIGH_MG = 300
+
+# 등급 강도 — 두 근거(지침 이름 분류 · 실측 수치)가 엇갈리면 더 엄격한 쪽을 취한다.
+TIER_ORDER: dict[str, int] = {"low": 0, "mid": 1, "high": 2}
+
+# 등급을 노출할 때 함께 내려보내는 고지. 등급이 절대 기준이 아니라는 것과, 목표량은 병기·검사에
+# 달렸다는 것을 반드시 같이 알린다 (docs/CKD_NUTRITION.md 3-4 노출 원칙). 앱은 이 문구를 그대로 쓴다.
+TIER_NOTICE = (
+    "낮음·보통·높음은 대한신장학회 지침 분류와 1인분 실측값을 기준으로 한 상대 안내예요. "
+    "제한 여부와 목표량은 병기·검사 결과에 따라 다르니 의료진·영양사와 상담하세요."
+)
+
 # 경고 판정 축 — dietary_tag → (영양소 코드, 표시명). 경고 항목의 nutrient 필드에 실린다.
 WARNING_AXES: tuple[tuple[str, str, str], ...] = (
     ("low_sodium", "sodium", "나트륨"),
@@ -218,6 +243,54 @@ def phosphorus_caution(label: str) -> str | None:
 def sodium_caution(label: str) -> str | None:
     """제한 대상 고나트륨 식품이면 매칭 키워드를 반환한다."""
     return _matches(label, HIGH_SODIUM_KEYWORDS)
+
+
+def _tier_by_mg(mg: float | None, mid_mg: float, high_mg: float) -> str | None:
+    """1인분 실측 mg 을 저/중/고로 나눈다. 미측정(None)은 등급 없음."""
+    if mg is None:
+        return None
+    if mg >= high_mg:
+        return "high"
+    if mg >= mid_mg:
+        return "mid"
+    return "low"
+
+
+def _stricter(left: str | None, right: str | None) -> str | None:
+    """두 등급 중 더 엄격한(높은) 쪽. 한쪽이 없으면 있는 쪽."""
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return left if TIER_ORDER[left] >= TIER_ORDER[right] else right
+
+
+def potassium_display_tier(
+    label: str,
+    potassium_mg: float | None,
+    on_dialysis: bool = True,
+) -> str | None:
+    """추천 카드에 띄울 칼륨 등급. 지침 이름 분류와 실측 등급 중 엄격한 쪽을 쓴다.
+
+    근거가 하나도 없으면(분류표에 없고 미측정) None — 앱은 등급 배지를 숨긴다.
+    """
+    return _stricter(
+        potassium_tier(label, on_dialysis),
+        _tier_by_mg(potassium_mg, POTASSIUM_TIER_MID_MG, POTASSIUM_TIER_HIGH_MG),
+    )
+
+
+def phosphorus_display_tier(label: str, phosphorus_mg: float | None) -> str | None:
+    """추천 카드에 띄울 인 등급. 고인 식품 이름에 걸리면 실측이 낮아도 high 로 본다.
+
+    가공식품·유제품의 인은 흡수율이 높은 무기인(첨가물)이라 같은 mg 이라도 부담이 크다
+    (KSN2 p141). 그래서 이름 근거를 실측보다 약하게 두지 않는다.
+    """
+    name_tier = "high" if phosphorus_caution(label) is not None else None
+    return _stricter(
+        name_tier,
+        _tier_by_mg(phosphorus_mg, PHOSPHORUS_TIER_MID_MG, PHOSPHORUS_TIER_HIGH_MG),
+    )
 
 
 def stage_targets(stage: str) -> dict | None:

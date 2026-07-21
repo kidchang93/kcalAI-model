@@ -33,15 +33,15 @@ def read_recommendation(
     resolved_date = target_date if target_date is not None else datetime.now(UTC).date()
 
     # 추천은 식약처 DB 규칙 기반으로 항상 생성된다 — LLM·502 없음 (13장).
-    recommendation, cached, tips = get_recommendation(
-        db, current_user.id, resolved_date, meal_type
-    )
+    result = get_recommendation(db, current_user.id, resolved_date, meal_type)
 
     return {
-        "meal_type": recommendation.meal_type,
-        "rec_date": recommendation.rec_date,
-        "items": recommendation.items,
-        "excluded": recommendation.excluded,
-        "tips": tips,
-        "cached": cached,
+        "meal_type": result.recommendation.meal_type,
+        "rec_date": result.recommendation.rec_date,
+        # 저장된 items 가 아니라 등급을 얹은 응답용 items 다 (CKD_NUTRITION.md 3-4).
+        "items": result.items,
+        "excluded": result.recommendation.excluded,
+        "tips": result.tips,
+        "tier_notice": result.tier_notice,
+        "cached": result.cached,
     }

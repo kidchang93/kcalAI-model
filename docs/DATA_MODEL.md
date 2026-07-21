@@ -573,6 +573,15 @@ UNIQUE(`user_id`, `rec_date`, `meal_type`).
 
 > **개정 (12장):** 식약처 음식 DB 도입으로 후보 생성 방식과 폴백이 12장 기준으로 바뀐다. 응답 계약은 동일.
 
+> **개정 (신장병 강화, `docs/CKD_NUTRITION.md`):** 위 예시에 아래 필드가 **추가**됐다 (전부 nullable·기본값 있음 → 하위호환이지만 앱과 같은 작업 단위에서 배포한다).
+>
+> - `items[].sodium_mg`·`potassium_mg`·`phosphorus_mg`·`protein_g` — 1인분 실측값, 미측정은 `null` (2026-07-20, CKD_NUTRITION 3-1).
+> - `items[].potassium_tier`·`phosphorus_tier` — `"low"|"mid"|"high"|null`. **칼륨·인 제한 태그를 가진 사용자에게만** 채운다 (2026-07-21, CKD_NUTRITION 3-4).
+> - `tips: string[]` — 질병 기반 식이 안내. 비해당은 `[]`.
+> - `tier_notice: string|null` — 등급을 노출할 때만 채우는 고지.
+>
+> `tips`·`tier_notice`·두 `*_tier`는 **저장하지 않고 매 요청 계산**한다. 질병을 추가·삭제하면 캐시된 값이 거짓이 되기 때문이다. 그래서 `recommendation_service.get_recommendation`은 저장 행이 아니라 `RecommendationResult(recommendation, cached, tips, items, tier_notice)`를 반환하고, 라우터는 **`result.items`**(등급을 얹은 응답용)를 내보낸다 — `recommendation.items`(저장 원본)가 아니다.
+
 ---
 
 ## 12. 식약처 음식 DB 도입 — 추천 grounding (v2 5차 — 확정)

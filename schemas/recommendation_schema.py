@@ -18,6 +18,11 @@ class RecommendationItem(BaseModel):
     potassium_mg: float | None = None
     phosphorus_mg: float | None = None
     protein_g: float | None = None
+    # 수치의 상대 위치(저/중/고). 칼륨·인 제한 대상 사용자에게만 채워지고, 그 외에는 None 이다
+    # — 비CKD 사용자에게 칼륨 등급은 의미 없는 노이즈다 (docs/CKD_NUTRITION.md 3-4).
+    # 지침 이름 분류와 실측 mg 등급 중 엄격한 쪽이다. 목표량이 아니라 상대 안내다.
+    potassium_tier: Literal["low", "mid", "high"] | None = None
+    phosphorus_tier: Literal["low", "mid", "high"] | None = None
 
 
 class ExcludedCriterion(BaseModel):
@@ -42,6 +47,9 @@ class RecommendationResponse(BaseModel):
     # 사용자 질병 기반 식이 안내 문구. 신장병이면 칼륨 저감 조리법 등 (docs/CKD_NUTRITION.md 3-1).
     # 비해당 사용자는 빈 배열. 지침 근거의 상대 안내이며 처방이 아니다.
     tips: list[str] = []
+    # 등급(저/중/고)을 노출할 때만 채워지는 고지. 등급이 절대 기준이 아니라는 안내다
+    # (docs/CKD_NUTRITION.md 3-4). 등급이 없는 사용자에겐 None.
+    tier_notice: str | None = None
     # 캐시에서 나왔는지 여부. false 면 이번 요청에서 새로 생성한 것이다 (규칙 기반, 13장).
     cached: bool
     # 서버가 내려보낸다 — 앱 하드코딩 문구가 화면마다 어긋나는 것을 막는다.

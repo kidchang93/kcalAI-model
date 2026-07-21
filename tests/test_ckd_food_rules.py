@@ -56,6 +56,39 @@ class TestPhosphorusAndSodium:
         assert r.sodium_caution("장아찌") == "장아찌"
 
 
+class TestDisplayTiers:
+    def test_potassium_tier_by_measured_mg(self):
+        # 교환표 200 mg/교환단위 기준 — 200 미만 저, 200~400 중, 400 이상 고.
+        assert r.potassium_display_tier("김치볶음밥", 120.0) == "low"
+        assert r.potassium_display_tier("김치볶음밥", 250.0) == "mid"
+        assert r.potassium_display_tier("김치볶음밥", 480.0) == "high"
+
+    def test_guideline_name_wins_over_low_measurement(self):
+        # 지침이 고칼륨으로 분류한 식품은 실측이 낮아도 high — 더 엄격한 쪽을 취한다.
+        assert r.potassium_display_tier("시금치나물", 50.0) == "high"
+
+    def test_measurement_wins_over_low_guideline_class(self):
+        # 반대로 지침 저칼륨 채소라도 실측이 높으면 등급을 올린다.
+        assert r.potassium_display_tier("양배추찜", 450.0) == "high"
+
+    def test_no_basis_means_no_tier(self):
+        # 분류표에도 없고 미측정이면 등급 없음 — 앱이 배지를 숨긴다.
+        assert r.potassium_display_tier("정체불명요리", None) is None
+        assert r.phosphorus_display_tier("정체불명요리", None) is None
+
+    def test_phosphorus_tier(self):
+        assert r.phosphorus_display_tier("배추국", 90.0) == "low"
+        assert r.phosphorus_display_tier("배추국", 200.0) == "mid"
+        assert r.phosphorus_display_tier("배추국", 350.0) == "high"
+        # 가공식품·유제품은 흡수율 높은 무기인이라 실측이 낮아도 high 로 본다 (KSN2 p141).
+        assert r.phosphorus_display_tier("치즈샐러드", 60.0) == "high"
+
+    def test_nondialysis_relaxes_potassium(self):
+        # 비투석은 귤·포도가 저칼륨 (KSN1). 실측이 없을 때만 이름 분류가 그대로 드러난다.
+        assert r.potassium_display_tier("귤", None, on_dialysis=False) == "low"
+        assert r.potassium_display_tier("귤", None) == "mid"
+
+
 class TestStageTargets:
     def test_protein_direction_reverses(self):
         # 비투석은 제한(0.6-0.8), 투석은 증량(1.2) — 방향이 반대다.
