@@ -54,6 +54,20 @@ def is_configured() -> bool:
     return bool(KAKAO_REST_API_KEY and KAKAO_CLIENT_SECRET)
 
 
+def _error_code(response: requests.Response) -> str:
+    """카카오 에러 응답에서 식별 코드만 뽑는다.
+
+    상태코드만으로는 원인이 갈린다 — 401 하나에 토큰 만료(-401)와 앱 정보 불일치(KOE101)가
+    섞여 있어 대응이 완전히 다르다. 본문 전체·토큰은 로그에 남기지 않고 코드만 남긴다.
+    """
+    try:
+        payload = response.json()
+    except ValueError:
+        return "unparsable"
+    code = payload.get("error_code") or payload.get("code") or payload.get("error")
+    return str(code) if code is not None else "unknown"
+
+
 def ensure_production_kakao_config() -> None:
     # APP_ENV=production 기동 시 main.py 가 호출한다. 카카오가 유일한 인증 수단이라,
     # 설정이 없으면 아무도 로그인하지 못한다.
@@ -122,7 +136,10 @@ def exchange_code(code: str) -> str:
 
     if response.status_code == 400:
         # 만료·재사용된 코드, redirect_uri 불일치 등. 사용자가 다시 시도하면 풀린다.
-        error_logger.error(f"kakao token exchange rejected status={response.status_code}")
+        error_logger.error(
+            f"kakao token exchange rejected status={response.status_code} "
+            f"code={_error_code(response)}"
+        )
         raise KakaoAuthCodeError("카카오 로그인이 만료되었습니다. 다시 시도해주세요.")
 
     if response.status_code >= 400:
@@ -154,7 +171,9 @@ def fetch_profile(access_token: str) -> tuple[str, str]:
         raise KakaoError("카카오 사용자 정보를 가져오지 못했습니다.") from error
 
     if response.status_code >= 400:
-        error_logger.error(f"kakao user fetch fail status={response.status_code}")
+        error_logger.error(
+            f"kakao user fetch fail status={response.status_code} code={_error_code(response)}"
+        )
         raise KakaoError("카카오 사용자 정보를 가져오지 못했습니다.")
 
     payload = response.json()
