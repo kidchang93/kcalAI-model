@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from models.auth_model import AuthSession, KakaoLinkCode, User
 from models.consent_model import UserAllergy, UserCondition, UserConsent, UserHealthProfile
-from models.group_model import Group, GroupMember, GroupPet
+from models.group_model import Group, GroupChallenge, GroupMember, GroupPet
 from models.health_model import ExerciseGoal, ExerciseLog, MealItem, MealLog, UserGoal, UserProfile, WeightLog
 from models.pet_model import Pet, PetFeedingLog
 from models.recommendation_model import DietRecommendation
@@ -72,6 +72,15 @@ def delete_account(db: Session, user: User) -> None:
     # 5) 소유 그룹은 그룹째 삭제 — 17장 그룹 삭제와 같은 연쇄. 타인 펫 연결·타인 멤버십을 먼저 지운다.
     db.execute(delete(GroupPet).where(GroupPet.group_id.in_(owned_group_ids)))
     db.execute(delete(GroupMember).where(GroupMember.group_id.in_(owned_group_ids)))
+    # 소유 그룹의 챌린지도 그룹과 함께 사라진다.
+    db.execute(delete(GroupChallenge).where(GroupChallenge.group_id.in_(owned_group_ids)))
+    # 남의 그룹에 내가 만든 챌린지는 **남긴다** — 그룹의 것이라 나 때문에 사라지면 안 된다.
+    # 작성자 링크만 끊는다(payments 익명화와 같은 판단).
+    db.execute(
+        update(GroupChallenge)
+        .where(GroupChallenge.created_by == user_id)
+        .values(created_by=None)
+    )
 
     # 6) 남의 그룹에 남은 내 멤버십 — 그룹 자체는 보존된다.
     db.execute(delete(GroupMember).where(GroupMember.user_id == user_id))

@@ -138,6 +138,7 @@ open http://127.0.0.1:8000/docs
 | Meta | `GET /api/meta/options` | `api/meta_api.py` |
 | Account | `DELETE /api/me` (회원 탈퇴 — 개인 데이터 전부 물리 삭제, 소유 그룹은 그룹째 삭제. `docs/DATA_MODEL.md` 18장) | `api/account_api.py` |
 | Exercises | `GET /api/exercise-types` · `POST·GET /api/exercises` · `PUT·DELETE /api/exercises/{id}` · `GET /api/me/exercise-summary` · `GET·PUT /api/me/exercise-goal` (운동 기록·주간 목표 — 식단과 같은 규약: UTC 자정 경계·soft delete·404 존재 은닉. **플랫폼 중립** — 앱·웹 동일, 기기 연동은 `source`가 느는 입력 경로일 뿐. DATA_MODEL 25장, `docs/ACTIVITY_GUIDANCE.md`) | `api/exercise_api.py` |
+| Challenges | `POST·GET /api/groups/{id}/challenges` · `GET·DELETE /api/groups/{id}/challenges/{cid}` (그룹 운동 챌린지. ⚠️ **순위는 제3자 노출**이라 `group_activity_share` 동의자만 담긴다 — DATA_MODEL 26장) | `api/challenge_api.py` |
 | Recommendations | `GET /api/recommendations` (Bearer + `sensitive_health` 동의 필수, 캐시 우선) | `api/recommendation_api.py` |
 
 Auth의 카카오 4종(`kakao/start`, `kakao/callback`, `kakao/login`, `kakao/signup`)과 `GET /api/plans`를 제외한 **전 라우트**가 Bearer 인증(`api/dependencies.py`의 `get_current_user`)을 요구합니다 (`/api/auth/logout`도 Bearer 필요). `/api/predict`는 2026-07-12에 Bearer 필수로 전환했습니다. 같은 날 `/api/s3/*` 8개 라우트(NCP Object Storage 중단)와 레거시 `/api/gpt-predict`(HF LLM 서술 생성 — 앱 미사용, HF_TOKEN 하드의존)를 제거했습니다.
@@ -201,7 +202,7 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 - **네이티브 카카오 SDK를 도입하지 않는다.** 얻는 건 카톡 앱-투-앱 UX뿐인데 iOS/Android 네이티브 설정·키해시가 붙고 **웹 빌드가 깨집니다**(웹은 FastAPI가 서빙합니다). REST 방식으로 앱·웹을 통일합니다 (21장).
 - **카카오 `client_secret`·어드민 키를 앱에 넣지 않는다.** `EXPO_PUBLIC_*`는 번들에 평문 노출됩니다. 토큰 교환은 **서버에서만** 합니다.
 - **회원 탈퇴에서 카카오 unlink를 빼먹지 않는다.** 카카오 로그인 서비스의 의무입니다. 단 **파기를 커밋한 뒤** 호출하고, unlink 실패가 개인정보 파기를 막지 않게 합니다.
-- **동의 문서를 개정하면 서버 상수(`consent_service`의 `TERMS_VERSION`·`PRIVACY_VERSION`·`SENSITIVE_HEALTH_VERSION`)와 앱 문서(`k-calAI-RN`의 `constants/legal.ts`·`constants/consent.ts`)를 같은 작업 단위에서 올린다.** 서버만 올리면 기존 앱 사용자의 가입·동의가 전부 400이 됩니다(`ensure_current_version`). 앱이 보낸 버전을 대조해 기록하는 이유는 증빙 때문입니다 — 앱이 v1.0을 띄워 놓고 서버가 "2.0에 동의함"으로 기록하면 그 이력은 거짓입니다 (18장 아래 절).
+- **동의 문서를 개정하면 서버 상수(`consent_service`의 `TERMS_VERSION`·`PRIVACY_VERSION`·`SENSITIVE_HEALTH_VERSION`·`GROUP_ACTIVITY_SHARE_VERSION`)와 앱 문서(`k-calAI-RN`의 `constants/legal.ts`·`constants/consent.ts`)를 같은 작업 단위에서 올린다.** 서버만 올리면 기존 앱 사용자의 가입·동의가 전부 400이 됩니다(`ensure_current_version`). 앱이 보낸 버전을 대조해 기록하는 이유는 증빙 때문입니다 — 앱이 v1.0을 띄워 놓고 서버가 "2.0에 동의함"으로 기록하면 그 이력은 거짓입니다 (18장 아래 절).
 - **`users`를 참조하는 테이블을 추가하면 `account_service.delete_account`에 반드시 반영한다.** FK가 전부 `ON DELETE NO ACTION`이라, 빠뜨리면 그 데이터를 가진 회원은 `ForeignKeyViolation` → **500으로 영구히 탈퇴할 수 없습니다**(= 개인정보 파기 의무 위반). 2026-07-16에 `payments`·`billing_keys` 누락으로 실제 발생했습니다 — 리비전 0017이 테이블을 추가했는데 2026-07-11에 작성된 삭제 연쇄가 그대로였습니다. `tests/test_account_service.py`가 FK 전수와 삭제 목록을 대조하니, 새 테이블은 그 테스트의 `handled` 집합에도 추가하세요.
 - **결제 원장(`payments`)을 탈퇴 시 삭제하지 않는다.** 개인정보는 파기하되(제21조) 대금결제 기록은 보존해야 해서(전자상거래법 제6조), `user_id`만 NULL로 끊어 **익명화**합니다 (18장). 반대로 **`billing_keys`는 반드시 파기**합니다 — 거래 기록이 아니라 카드 재청구 자격증명입니다.
 - **결제 검증 없이 유료 플랜을 부여하지 않는다.** 유료 부여 경로는 **`POST /api/billing/confirm`(실제 청구 성공) 하나뿐**입니다. `PUT /api/me/subscription`은 2026-07-16부터 **무료(lite)로만** 바꿀 수 있고(유료 전환은 400), 가입(`POST /api/auth/kakao/signup`)의 `plan_code`도 **유료를 고르면 무료로 시작**합니다(의사표시로만 받음 — 가입을 400으로 막으면 서비스 진입 자체가 실패하므로). 새 부여 경로를 만들 때도 이 원칙을 지키세요.

@@ -11,6 +11,10 @@ from services import meta_service
 SENSITIVE_HEALTH = "sensitive_health"
 TERMS = "terms"
 PRIVACY = "privacy"
+# 그룹 챌린지에서 내 활동량·순위를 **같은 그룹 멤버에게** 보이는 것에 대한 동의.
+# sensitive_health(우리가 건강정보를 수집·이용)와 별개다 — 이건 **제3자 노출**이라 따로 받아야 한다.
+# 이 동의가 없으면 챌린지 순위에 나타나지 않는다(챌린지 자체는 볼 수 있다).
+GROUP_ACTIVITY_SHARE = "group_activity_share"
 
 # 각 동의의 **현재 버전**. 문서 문구를 고치면 여기를 올린다 — 기존 회원의 동의 행은 옛 버전으로
 # 남아, 누가 무엇에 동의했는지가 증빙된다.
@@ -24,11 +28,13 @@ PRIVACY = "privacy"
 TERMS_VERSION = "1.0"
 PRIVACY_VERSION = "1.0"
 SENSITIVE_HEALTH_VERSION = "v1.0"
+GROUP_ACTIVITY_SHARE_VERSION = "v1.0"
 
 _CURRENT_VERSIONS = {
     TERMS: TERMS_VERSION,
     PRIVACY: PRIVACY_VERSION,
     SENSITIVE_HEALTH: SENSITIVE_HEALTH_VERSION,
+    GROUP_ACTIVITY_SHARE: GROUP_ACTIVITY_SHARE_VERSION,
 }
 
 # 앱이 옛 문서를 보여주고 있을 때의 사용자 메시지. 앱을 최신으로 올리면 해소된다.

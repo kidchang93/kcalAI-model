@@ -207,8 +207,11 @@ def delete_exercise(db: Session, user_id: int, exercise_id: int) -> None:
     db.commit()
 
 
-def _equivalent_minutes(row: ExerciseLog) -> int:
-    """지침 환산 — 고강도 1분 = 중강도 2분. 저강도는 권장량에 들어가지 않는다."""
+def equivalent_minutes(row: ExerciseLog) -> int:
+    """지침 환산 — 고강도 1분 = 중강도 2분. 저강도는 권장량에 들어가지 않는다.
+
+    그룹 챌린지 집계(challenge_service)도 같은 규칙을 써야 해서 공개 함수다.
+    """
     if row.intensity == "vigorous":
         return row.duration_minutes * fitness_rules.VIGOROUS_TO_MODERATE_FACTOR
     if row.intensity == "moderate":
@@ -241,7 +244,7 @@ def calculate_streak(db: Session, user_id: int, today: date, weekly_target: int)
     per_week: dict[date, int] = {}
     for row in rows:
         week_start, _ = week_bounds(row.performed_at.astimezone(UTC).date())
-        per_week[week_start] = per_week.get(week_start, 0) + _equivalent_minutes(row)
+        per_week[week_start] = per_week.get(week_start, 0) + equivalent_minutes(row)
 
     streak = 0
     cursor = this_week_start

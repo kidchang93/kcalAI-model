@@ -21,6 +21,7 @@ from api.nutrition_api import router as nutrition_router
 from api.payment_api import router as payment_router
 from api.pet_api import router as pet_router
 from api.predict_api import router as predict_router
+from api.challenge_api import router as challenge_router
 from api.exercise_api import router as exercise_router
 from api.recommendation_api import router as recommendation_router
 from api.subscription_api import router as subscription_router
@@ -125,6 +126,7 @@ app.include_router(exercise_router, prefix="/api", tags=["Exercises"])
 app.include_router(nutrition_router, prefix="/api", tags=["Nutrition"])
 app.include_router(consent_router, prefix="/api", tags=["Consent"])
 app.include_router(group_router, prefix="/api", tags=["Groups"])
+app.include_router(challenge_router, prefix="/api", tags=["Challenges"])
 app.include_router(pet_router, prefix="/api", tags=["Pets"])
 app.include_router(meta_router, prefix="/api", tags=["Meta"])
 app.include_router(recommendation_router, prefix="/api", tags=["Recommendations"])

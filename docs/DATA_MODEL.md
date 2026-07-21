@@ -1098,6 +1098,46 @@ mfds(실측) > curated(감수) > mfds_processed > mfds_raw > llm(추정)
 
 ---
 
+## 26. 그룹 운동 챌린지 (2026-07-21 확정 — 리비전 0022)
+
+> 근거·설계는 `docs/ACTIVITY_GUIDANCE.md` 3-4가 정본이다.
+
+### ⚠️ 동의 신설 — `group_activity_share`
+
+순위는 **제3자 노출**이라 `sensitive_health`(우리가 수집·이용)로 커버되지 않는다. `consent_service`에
+`GROUP_ACTIVITY_SHARE`(버전 `v1.0`)를 신설했고 앱 `constants/consent.ts`의
+`GROUP_ACTIVITY_SHARE_VERSION`과 **같은 값이어야** 한다(`ensure_current_version`).
+
+- **동의한 멤버만 순위에 담긴다.** 참여자 테이블이 없는 이유다 — 동의가 곧 참여 의사다.
+- 철회하면 **즉시 순위에서 빠진다**.
+- 미동의 멤버는 `entries`에 아예 없다. `participant_count < member_count`로 그 차이만 알린다.
+
+### `group_challenges`
+
+| 컬럼 | 비고 |
+|---|---|
+| `group_id` | FK groups.id |
+| `created_by` | FK users.id **nullable** — 만든 사람이 탈퇴해도 챌린지는 그룹의 것이라 남는다(삭제 시 NULL로 끊음) |
+| `title` · `target_minutes` | 1인당 목표(중강도 환산 분) |
+| `start_date` · `end_date` · `deleted_at` | soft delete |
+
+⚠️ `users`·`groups` 참조 — `delete_account`가 소유 그룹의 챌린지는 삭제하고, **남의 그룹에 내가 만든
+챌린지는 `created_by`만 NULL로 끊는다**(payments 익명화와 같은 판단). `test_account_service`의 `handled`에 포함.
+
+### API (전부 Bearer · 그룹 멤버만, 비멤버는 404 은닉)
+
+| 메서드 | 경로 |
+|---|---|
+| `POST` | `/api/groups/{id}/challenges` (201) |
+| `GET` | `/api/groups/{id}/challenges` |
+| `GET` | `/api/groups/{id}/challenges/{cid}` — 순위 포함 |
+| `DELETE` | `/api/groups/{id}/challenges/{cid}` (204, 만든 사람 또는 그룹 소유자만 — 아니면 403) |
+
+순위 항목은 `user_id`·`nickname`·`minutes`·`achieved`·`rank`·`is_me`**뿐**이다. 환산은 개인 요약과 동일
+(고강도 ×2, 저강도 제외).
+
+---
+
 ## 20. 요금제·일일 쿼터 · 가입 강화 (2026-07-14 확정 — 리비전 0014)
 
 > 구현 범위: `plans`(참조 테이블) · `user_subscriptions`(회원 1:1) · `vision_usage_daily`(비전 카운터) 3테이블, `GET /api/plans` · `GET·PUT /api/me/subscription`, 그룹·펫·predict 한도 강제, 가입 시 약관 동의 필수화, SMS 실발송 연동. **결제(인앱결제) 연동은 이 범위 밖이다.**
