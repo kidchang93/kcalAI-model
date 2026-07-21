@@ -82,6 +82,7 @@ open http://127.0.0.1:8000/docs
 | 포맷 | 없음 |
 
 테스트는 Postgres에 붙습니다 (인증 로직의 tz-aware datetime 충실도). 각 테스트는 외부 트랜잭션 + SAVEPOINT 롤백으로 격리되어 대상 DB를 오염시키지 않습니다. 공유 DB의 기존 데이터와 번호가 겹칠 수 있으니, 깔끔한 격리가 필요하면 `TEST_DATABASE_URL`로 전용 DB를 지정하세요. 현재 **116건**이며 커버리지는 `test_auth_service.py`·`test_auth_api.py`(카카오 로그인, 21장), `test_subscription_service.py`(요금제·쿼터, 20장), `test_billing_service.py`(자동결제, 24장), `test_toss_client.py`(**토스 어댑터의 비밀값 미유출**, 2026-07-16), `test_payment_service.py`(결제 내역, 23장), `test_crypto.py`, `test_upload_validation.py`, `test_web_spa.py`입니다.
+| 카카오 설정 진단 | `venv/bin/python scripts/check_kakao_config.py` (읽기 전용. 로그인 실패 시 **원인 판정** — 허용 IP 미등록/키 종류 혼동) |
 | 수동 검증 | `uvicorn main:app` 기동 + `/docs` 200 + `http/*.http` 요청 |
 
 ---
@@ -177,6 +178,7 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 | 9 | ~~DB 마이그레이션 도구가 없습니다.~~ **해결됨** (2026-07-09). Alembic 도입 — `alembic/versions/0001_initial_auth.py`, `0002_health_tables.py`. 스키마 변경은 이제 `alembic revision`으로 합니다. `create_all`은 남아 있으나 신규 테이블 생성용입니다. | `alembic.ini`, `database.py:32` |
 | 10 | ~~`runs/`에 학습 산출물 74개(약 70MB)가 커밋되어 있습니다.~~ **해소** (2026-07-12): YOLO 제거와 함께 `runs/`를 삭제했습니다. | — |
 | 11 | ~~`.env.example`에 `CORS_ALLOW_ORIGINS`가 누락되어 있습니다.~~ **해결됨** (2026-07-12). `APP_ENV`·`CORS_ALLOW_ORIGINS` 추가. (S3 자격증명 5종은 S3 제거로 더 이상 필요 없습니다) | `.env.example` |
+| 12 | **카카오 앱에 허용 IP 제한이 걸려 있어 로컬에서 로그인이 안 됩니다** (2026-07-21 확인). 콘솔에 등록된 IP(운영 서버)가 아닌 곳에서 호출하면 `kapi.kakao.com`이 `-401 "ip mismatched"`를 줍니다. **토큰 교환은 `kauth`라 성공**하고 `/v2/user/me`만 실패해 로그인 직전에 `kakao_unavailable`로 끝나므로 원인을 오해하기 쉽습니다. 로컬 개발 머신 IP를 콘솔(앱 설정 > 보안 > 허용 IP)에 추가하거나 **개발용 앱을 따로** 두세요 — 공인 IP는 재할당으로 바뀝니다. 진단: `scripts/check_kakao_config.py` | `services/kakao_client.py` |
 
 ---
 

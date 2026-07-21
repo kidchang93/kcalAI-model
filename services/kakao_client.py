@@ -55,17 +55,20 @@ def is_configured() -> bool:
 
 
 def _error_code(response: requests.Response) -> str:
-    """카카오 에러 응답에서 식별 코드만 뽑는다.
+    """카카오 에러 응답에서 식별 코드와 사유를 뽑는다.
 
-    상태코드만으로는 원인이 갈린다 — 401 하나에 토큰 만료(-401)와 앱 정보 불일치(KOE101)가
-    섞여 있어 대응이 완전히 다르다. 본문 전체·토큰은 로그에 남기지 않고 코드만 남긴다.
+    상태코드만으로는 원인이 갈린다 — 401 하나에 토큰 만료, 앱 정보 불일치(KOE101),
+    **허용 IP 미등록**(`ip mismatched`)이 전부 `code=-401` 로 섞여 온다. 코드만으로도
+    부족해서 카카오가 준 `msg` 를 함께 남긴다(원인이 여기에만 있다). 우리 토큰·키는
+    이 본문에 실리지 않으므로 로그에 남겨도 비밀이 새지 않는다.
     """
     try:
         payload = response.json()
     except ValueError:
         return "unparsable"
     code = payload.get("error_code") or payload.get("code") or payload.get("error")
-    return str(code) if code is not None else "unknown"
+    msg = payload.get("msg") or payload.get("error_description") or ""
+    return f"{code if code is not None else 'unknown'} msg={msg[:120]!r}"
 
 
 def ensure_production_kakao_config() -> None:
