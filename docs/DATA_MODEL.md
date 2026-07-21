@@ -799,6 +799,10 @@ UNIQUE(`user_id`, `rec_date`, `meal_type`).
 }
 ```
 
+> **개정 (2026-07-21, `docs/CKD_NUTRITION.md` 3-5):** 항목에 `nutrient_mg: float|None`·`tier: "low"|"mid"|"high"|None`이 **추가**됐다(하위호환). 그 축의 1인분 실측값과 상대 등급이며, 앱이 "칼륨이 높은 편이에요 (1인분 681mg · 높음)"처럼 근거를 함께 보인다.
+>
+> 판정 축도 늘었다 — **이름 키워드에 걸리거나 실측 등급이 `high`면** 경고한다. 이름 목록은 원물 중심이라 요리명(안동찜닭 칼륨 3,120mg)이 통째로 새고 있었다. 실측만으로 발동한 경고는 `matched_keyword`가 **빈 문자열**이다. 실측 조회는 유사도 매칭을 쓰지 않는다(틀린 경고 방지).
+
 > **2026-07-20 강화 (신장병·고혈압, `docs/CKD_NUTRITION.md` 3-3):** 영양 제한 태그(low_sodium/low_potassium/low_phosphorus)가 있는 질병은 exclude_keywords 대신 대한신장학회 지침 분류(`services/ckd_food_rules.py`)로 판정하고, `nutrient`(어느 영양소가 높은지)를 담아 "칼륨이 높은 편"으로 안내한다. 그 외 질병·알러지는 아래 규칙 그대로(nutrient=null). `nutrient`는 **추가·nullable → 하위호환**(앱·구버전 서버 모두 안전). dedupe 단위에 `nutrient`가 추가돼, 한 음식이 칼륨·인 두 축에 걸리면 각각 보고한다.
 
 ### 판정 규칙 (영양 축이 없는 질병·알러지 — 기존)
@@ -996,6 +1000,8 @@ mfds(실측) > curated(감수) > mfds_processed > mfds_raw > llm(추정)
 - 부수 효과: 사용자가 **어느 음식을 기록하든 estimate가 캐시 히트**한다(첫 선택도 즉시 응답).
 
 > **실측 (2026-07-13):** 사모사 사진 → 후보 `사모사`·`튀김만두`. 응답 8.5초(백그라운드는 응답을 막지 않음). 적재 결과 — `사모사`는 미등록이라 **llm 301kcal 신규 적재**, `튀김만두`는 이미 mfds에 있어 **LLM 미호출 스킵**.
+
+> **개정 (2026-07-21, `docs/CKD_NUTRITION.md` 3-5):** 응답에 `sodium_mg`·`potassium_mg`·`phosphorus_mg`(nullable, DB 실측 그대로)가 **추가**됐다. 신장병 사용자가 **먹은 음식**의 수치를 확인하는 근거다. 등급(tier)은 **싣지 않는다** — 등급 판정은 질병 태그를 읽어야 해서 이 라우트의 동의 요건(Bearer만)이 `sensitive_health` 필수로 바뀌고, 미동의 사용자의 칼로리 조회까지 403이 되기 때문이다. 등급은 경고 API(16장)가 담당한다.
 
 ### 남은 과제
 

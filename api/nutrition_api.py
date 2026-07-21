@@ -61,6 +61,14 @@ def estimate(
         "carbs_g": float(nutrition.carbs_g) if nutrition.carbs_g is not None else None,
         "protein_g": float(nutrition.protein_g) if nutrition.protein_g is not None else None,
         "fat_g": float(nutrition.fat_g) if nutrition.fat_g is not None else None,
+        # 신장병 사용자가 먹은 음식의 나트륨·칼륨·인을 확인한다 (CKD_NUTRITION.md 3-5).
+        "sodium_mg": float(nutrition.sodium_mg) if nutrition.sodium_mg is not None else None,
+        "potassium_mg": float(nutrition.potassium_mg)
+        if nutrition.potassium_mg is not None
+        else None,
+        "phosphorus_mg": float(nutrition.phosphorus_mg)
+        if nutrition.phosphorus_mg is not None
+        else None,
         "source": nutrition.source,
         "created_at": nutrition.created_at,
         "cached": cached,

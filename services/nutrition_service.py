@@ -269,11 +269,23 @@ def get_record_warnings(db: Session, user_id: int, food_labels: list[str]) -> li
     # 입력 순서를 보존하며 중복 라벨을 제거한다 (16장 — 서버 dedupe).
     labels = list(dict.fromkeys(food_labels))
 
+    # 라벨별 실측 행을 한 번만 조회해 재사용한다 (라벨은 최대 10개).
+    measured = {label: _measured_for_warning(db, label) for label in labels}
+
     warnings: list[dict] = []
     # 축(nutrient)까지 포함해 dedupe — 같은 음식이 칼륨·인 두 축에 걸리면 각각 알린다.
     seen: set[tuple[str, str, str, str | None]] = set()
 
-    def add(source: str, code: str, label_ko: str, matched: str, label: str, nutrient: str | None):
+    def add(
+        source: str,
+        code: str,
+        label_ko: str,
+        matched: str,
+        label: str,
+        nutrient: str | None,
+        nutrient_mg: float | None = None,
+        tier: str | None = None,
+    ):
         key = (source, code, label, nutrient)
         if key in seen:
             return
@@ -286,6 +298,8 @@ def get_record_warnings(db: Session, user_id: int, food_labels: list[str]) -> li
                 "matched_keyword": matched,
                 "matched_label": label,
                 "nutrient": nutrient,
+                "nutrient_mg": nutrient_mg,
+                "tier": tier,
             }
         )
 
@@ -303,8 +317,26 @@ def get_record_warnings(db: Session, user_id: int, food_labels: list[str]) -> li
             for label in labels:
                 for _tag, nutrient, _display in nutrient_axes:
                     matched = _ckd_axis_match(nutrient, label)
-                    if matched is not None:
-                        add("condition", condition.code, condition.label_ko, matched, label, nutrient)
+                    nutrient_mg = _axis_measured_mg(measured[label], nutrient)
+                    tier = _axis_tier(nutrient, label, nutrient_mg)
+
+                    # 이름에 안 걸려도 **실측이 높으면** 알린다 — 지침 키워드 목록은 원물 중심이라
+                    # 요리명(예: 감자탕이 아닌 '알감자조림')이 새어 나간다. 추천의 이름+실측
+                    # 이중 방어(3-2)를 경고에도 대칭으로 적용한다 (3-5).
+                    if matched is None and tier != "high":
+                        continue
+
+                    add(
+                        "condition",
+                        condition.code,
+                        condition.label_ko,
+                        # 실측만으로 발동하면 걸린 키워드가 없다 — 빈 문자열로 구분한다.
+                        matched if matched is not None else "",
+                        label,
+                        nutrient,
+                        nutrient_mg,
+                        tier,
+                    )
         else:
             # 그 외 질병 — 기존 키워드 매칭 (nutrient 없음).
             for label in labels:
@@ -312,6 +344,64 @@ def get_record_warnings(db: Session, user_id: int, food_labels: list[str]) -> li
                 if matched is not None:
                     add("condition", condition.code, condition.label_ko, matched, label, None)
     return warnings
+
+
+def _measured_for_warning(db: Session, food_label: str) -> FoodNutrition | None:
+    """경고 판정용 실측 행 조회 — **정확·공백무시 일치만** 쓴다.
+
+    estimate(`_find_in_dataset`)와 달리 유사도(trgm) 매칭을 쓰지 않는다. 이름이 비슷한 다른
+    음식의 칼륨으로 "높다"고 알리면 틀린 경고가 되고, 경고는 한 번 틀리면 전부 무시된다.
+    못 찾으면 None — 그때 판정은 지침 이름 분류만으로 한다.
+    """
+    variants = expand_variants(food_label)
+
+    for variant in variants:
+        exact = db.scalar(
+            select(FoodNutrition)
+            .where(
+                FoodNutrition.food_label == variant,
+                FoodNutrition.source.in_(DATASET_SOURCES),
+            )
+            .order_by(FoodNutrition.id.asc())
+            .limit(1)
+        )
+        if exact is not None:
+            return exact
+
+    for variant in variants:
+        normalized = db.scalar(
+            select(FoodNutrition)
+            .where(
+                func.replace(FoodNutrition.food_label, " ", "") == variant.replace(" ", ""),
+                FoodNutrition.source.in_(DATASET_SOURCES),
+            )
+            .order_by(FoodNutrition.id.asc())
+            .limit(1)
+        )
+        if normalized is not None:
+            return normalized
+
+    return None
+
+
+def _axis_measured_mg(row: FoodNutrition | None, nutrient: str) -> float | None:
+    if row is None:
+        return None
+    value = {
+        "sodium": row.sodium_mg,
+        "potassium": row.potassium_mg,
+        "phosphorus": row.phosphorus_mg,
+    }.get(nutrient)
+    return float(value) if value is not None else None
+
+
+def _axis_tier(nutrient: str, label: str, nutrient_mg: float | None) -> str | None:
+    # 나트륨은 1인분 등급 기준이 병기마다 갈려(비투석 2,000 · 투석 3,000) 매기지 않는다 (3-4).
+    if nutrient == "potassium":
+        return ckd_food_rules.potassium_display_tier(label, nutrient_mg)
+    if nutrient == "phosphorus":
+        return ckd_food_rules.phosphorus_display_tier(label, nutrient_mg)
+    return None
 
 
 def _ckd_axis_match(nutrient: str, label: str) -> str | None:
