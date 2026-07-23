@@ -15,6 +15,17 @@ MAX_ITEMS = 3
 # 12장 확정 범위(30~50) 안에서 고정.
 CANDIDATE_POOL_SIZE = 40
 
+# 추천 후보의 최소 열량. **정책값이다** (지침 근거가 아니다).
+#
+# 추천이 답하는 질문은 "이번 끼니에 뭘 먹을까"인데, 열량이 사실상 없는 항목(아메리카노 9 kcal·
+# 허브차 0 kcal)은 그 답이 되지 못한다. 게다가 나트륨·칼륨 정렬에서 0 mg 인 무열량 음료가
+# 구조적으로 최상단을 차지해, 신장병·고혈압 사용자일수록 "차 목록"만 보게 된다(실측: 간식
+# 추천 3건 중 2건이 0~7 kcal 음료).
+#
+# 30 kcal 은 "한 입이라도 먹은 것으로 칠 수 있는 최소치"로 잡은 값이다. 후보 풀에서만 빼는
+# 것이라 사용자가 차를 직접 기록하는 데는 아무 영향이 없다.
+MIN_RECOMMENDABLE_KCAL = 30
+
 # breakfast/lunch/dinner 는 가능하면 이 계열 1개를 포함한다 (13장 구성 다양성).
 STAPLE_GROUPS = ("밥류", "죽 및 스프류")
 
@@ -216,6 +227,8 @@ def _candidate_pool(
     filters = [
         FoodNutrition.source == "mfds",
         FoodNutrition.food_group.in_(groups),
+        # 무열량 음료 배제 (MIN_RECOMMENDABLE_KCAL 주석 참고).
+        FoodNutrition.kcal_per_serving >= MIN_RECOMMENDABLE_KCAL,
     ]
 
     if remaining_kcal is not None:

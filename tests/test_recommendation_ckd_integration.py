@@ -13,6 +13,7 @@ import pytest
 from models.auth_model import User
 from models.consent_model import UserCondition
 from services import ckd_food_rules
+from services import recommendation_service as svc
 from services.recommendation_service import get_recommendation
 
 REC_DATE = date(2026, 7, 20)
@@ -100,6 +101,18 @@ class TestCkdRecommendationIntegration:
                 assert p is None or p <= ckd_food_rules.PHOSPHORUS_SERVING_HIGH_MG, (
                     f"{meal}: 고인 누수 {item['name']} P={p}"
                 )
+
+    def test_snack_pool_has_no_zero_calorie_drinks(self, db, ckd_user):
+        """무열량 음료가 간식 추천에 오르지 않는다.
+
+        나트륨·칼륨 정렬에서 0 mg 인 차·아메리카노가 구조적으로 최상단을 차지해, 질병이 있는
+        사용자일수록 "차 목록"만 보게 됐다(실측: 간식 3건 중 2건이 0~7 kcal). 추천이 답해야
+        하는 질문은 "뭘 먹을까"다.
+        """
+        result = get_recommendation(db, ckd_user.id, REC_DATE, "snack")
+        assert len(result.items) > 0, "간식 후보가 비어서는 안 된다"
+        for item in result.items:
+            assert item["kcal"] >= svc.MIN_RECOMMENDABLE_KCAL, item["name"]
 
     def test_excluded_reflects_ckd_condition(self, db, ckd_user):
         result = get_recommendation(db, ckd_user.id, REC_DATE, "dinner")
