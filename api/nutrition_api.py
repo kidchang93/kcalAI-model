@@ -16,7 +16,7 @@ from services.nutrition_service import (
     FoodNotFoundError,
     NutritionUnavailableError,
     estimate_nutrition,
-    get_record_warnings,
+    get_record_warnings_response,
 )
 
 router = APIRouter()
@@ -86,4 +86,4 @@ def read_record_warnings(
     current_user: User = Depends(require_sensitive_consent),
     db: Session = Depends(get_db),
 ):
-    return {"warnings": get_record_warnings(db, current_user.id, request.food_labels)}
+    return get_record_warnings_response(db, current_user.id, request.food_labels)

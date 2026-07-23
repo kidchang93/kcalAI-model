@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from database import SessionLocal
 from log_utils import setup_level_logger
 from models.health_model import FoodNutrition
-from services import ckd_food_rules, meta_service
+from services import chronic_food_rules, ckd_food_rules, meta_service
 from services.food_synonyms import expand_variants
 from services.serving_size import parse_serving_size_g
 from services.gemini_nutrition_service import (
@@ -318,7 +318,7 @@ def get_record_warnings(db: Session, user_id: int, food_labels: list[str]) -> li
                 for _tag, nutrient, _display in nutrient_axes:
                     matched = _ckd_axis_match(nutrient, label)
                     nutrient_mg = _axis_measured_mg(measured[label], nutrient)
-                    tier = _axis_tier(nutrient, label, nutrient_mg)
+                    tier = _axis_tier(nutrient, label, nutrient_mg, condition.code, matched)
 
                     # 이름에 안 걸려도 **실측이 높으면** 알린다 — 지침 키워드 목록은 원물 중심이라
                     # 요리명(예: 감자탕이 아닌 '알감자조림')이 새어 나간다. 추천의 이름+실측
@@ -344,6 +344,22 @@ def get_record_warnings(db: Session, user_id: int, food_labels: list[str]) -> li
                 if matched is not None:
                     add("condition", condition.code, condition.label_ko, matched, label, None)
     return warnings
+
+
+def get_record_warnings_response(db: Session, user_id: int, food_labels: list[str]) -> dict:
+    """경고 + 고지문. 등급을 노출하면 고지문을 반드시 함께 내린다 (노출 원칙 — 전 질환 공통).
+
+    나트륨 등급의 1인분 경계(높음 600 mg)는 **지침 컷오프가 아니라** 1일 상한을 끼니로 나눈
+    정책값이다. "1일 상한 ÷ 끼니 수"를 지지하는 지침 문장은 확인되지 않았으므로
+    (`CHRONIC_NUTRITION_SOURCES.md` §5-6), 그 사실을 고지 없이 등급만 보여주지 않는다.
+    """
+    warnings = get_record_warnings(db, user_id, food_labels)
+    has_sodium_tier = any(w["nutrient"] == "sodium" and w["tier"] is not None for w in warnings)
+
+    return {
+        "warnings": warnings,
+        "notice": chronic_food_rules.SODIUM_TIER_NOTICE if has_sodium_tier else None,
+    }
 
 
 def _measured_for_warning(db: Session, food_label: str) -> FoodNutrition | None:
@@ -395,12 +411,27 @@ def _axis_measured_mg(row: FoodNutrition | None, nutrient: str) -> float | None:
     return float(value) if value is not None else None
 
 
-def _axis_tier(nutrient: str, label: str, nutrient_mg: float | None) -> str | None:
-    # 나트륨은 1인분 등급 기준이 병기마다 갈려(비투석 2,000 · 투석 3,000) 매기지 않는다 (3-4).
+def _axis_tier(
+    nutrient: str,
+    label: str,
+    nutrient_mg: float | None,
+    condition_code: str | None = None,
+    name_matched: str | None = None,
+) -> str | None:
     if nutrient == "potassium":
         return ckd_food_rules.potassium_display_tier(label, nutrient_mg)
     if nutrient == "phosphorus":
         return ckd_food_rules.phosphorus_display_tier(label, nutrient_mg)
+    if nutrient == "sodium":
+        # **나트륨 등급은 질환에 따라 갈린다.**
+        # - CKD: 1인분 경계가 병기마다 달라(비투석 2,000 · 투석 3,000) 등급을 매기지 않는다
+        #   (CKD_NUTRITION.md 3-4). 여기서 단일 등급을 매기면 투석 환자에게 과잉 경고가 된다.
+        # - 고혈압·당뇨: 병기 구분이 없어 단일 기준이 성립한다 (KSH2026 권고 21 · KDA2025 권고 9,
+        #   CHRONIC_NUTRITION_SOURCES.md §1-1·§4-2).
+        if condition_code in chronic_food_rules.SODIUM_TIER_CONDITIONS:
+            name_tier = "high" if name_matched is not None else None
+            return chronic_food_rules.sodium_display_tier(label, nutrient_mg, name_tier)
+        return None
     return None
 
 
