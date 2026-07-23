@@ -7,7 +7,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from models.health_model import MealItem, MealLog, UserGoal, UserProfile, WeightLog
-from services import fitness_rules
+from services import day_nutrition, fitness_rules
 
 ACTIVITY_FACTORS: dict[str, float] = {
     "sedentary": 1.2,
@@ -200,6 +200,9 @@ def get_summary(db: Session, user_id: int, target_date: date) -> dict:
         "consumed_kcal": consumed,
         "remaining_kcal": remaining,
         "meals": breakdown,
+        # 질환 축(나트륨·칼륨·인) 하루 누적. 해당 질환이 없으면 None — 그때 홈은 지금까지처럼
+        # 칼로리만 보여준다. 만성질환자에게는 kcal 보다 이 숫자가 중요하다(PRODUCT_STRATEGY §1).
+        "nutrients": day_nutrition.get_day_nutrient_axes(db, user_id, target_date),
     }
 
 

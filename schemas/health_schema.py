@@ -84,6 +84,28 @@ class MealBreakdown(BaseModel):
     snack: int
 
 
+class DayNutrientAxis(BaseModel):
+    # sodium / potassium / phosphorus
+    nutrient: str
+    label: str
+    consumed_mg: float
+    # 1일 상한. **나트륨에만 있다** — 칼륨·인은 지침이 혈청 수치 기반 개인화라 상한이 없다
+    # (KDOQI 2020). null 이면 앱은 게이지 없이 수치만 그린다.
+    limit_mg: int | None
+    # 상한이 아니라 투석 환자에게 흔히 쓰이는 실무 참고치. **게이지로 쓰지 않는다.**
+    reference_mg: int | None
+    # 이 기준이 어디서 왔는지(질환·병기). 기준이 없으면 병기 입력 안내가 들어온다.
+    basis: str | None
+    # 이 축의 실측을 찾은 항목 수. total_items 보다 작으면 합계가 과소평가다 — 앱이 밝힌다.
+    measured_items: int
+
+
+class DayNutrients(BaseModel):
+    axes: list[DayNutrientAxis]
+    total_items: int
+    notice: str
+
+
 class SummaryResponse(BaseModel):
     date: str
     # 열린 목표가 없으면 null. 0 이 아니다 (0 이면 앱이 "목표 설정" CTA 를 못 띄우고 진행률이 0 으로 나뉜다).
@@ -91,6 +113,8 @@ class SummaryResponse(BaseModel):
     consumed_kcal: int
     remaining_kcal: int | None
     meals: MealBreakdown
+    # 질환 축 하루 누적. 해당 질환이 없으면 null (2026-07-23, DATA_MODEL 28장).
+    nutrients: DayNutrients | None = None
 
 
 class TrendDay(BaseModel):

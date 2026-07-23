@@ -362,6 +362,14 @@ def get_record_warnings_response(db: Session, user_id: int, food_labels: list[st
     }
 
 
+def measured_nutrition_for(db: Session, food_label: str) -> FoodNutrition | None:
+    """실측 행 조회의 **공개 진입점** — 경고와 하루 누적(day_nutrition)이 같은 규약을 쓴다.
+
+    두 곳이 다른 방식으로 찾으면 "경고는 떴는데 합계에는 안 잡히는" 음식이 생긴다.
+    """
+    return _measured_for_warning(db, food_label)
+
+
 def _measured_for_warning(db: Session, food_label: str) -> FoodNutrition | None:
     """경고 판정용 실측 행 조회 — **정확·공백무시 일치만** 쓴다.
 
