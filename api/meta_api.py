@@ -5,7 +5,7 @@ from api.dependencies import get_current_user
 from database import get_db
 from models.auth_model import User
 from schemas.meta_schema import MetaError, MetaOptionsResponse
-from services import meta_service
+from services import ckd_food_rules, meta_service
 
 router = APIRouter()
 
@@ -30,5 +30,10 @@ def read_options(
         "allergens": [
             {"code": row.code, "label": row.label_ko}
             for row in meta_service.list_allergen_options(db)
+        ],
+        # 표시 순서는 지침서 순서(투석 전 → 혈액투석 → 복막투석)를 따른다.
+        "ckd_stages": [
+            {"code": code, "label": label}
+            for code, label in ckd_food_rules.CKD_STAGE_LABELS.items()
         ],
     }

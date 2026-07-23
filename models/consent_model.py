@@ -32,6 +32,10 @@ class UserHealthProfile(Base):
     blood_type: Mapped[str | None] = mapped_column(EncryptedString(255), nullable=True)
     # + / -. 민감정보라 암호화 저장.
     rh: Mapped[str | None] = mapped_column(EncryptedString(255), nullable=True)
+    # nondialysis / hemodialysis / peritoneal. 미입력(모름)은 NULL.
+    # **암호화하지 않는다** — 조회 시 나트륨 기준선을 고르는 기능 키라, condition·allergen 을
+    # 평문으로 둔 판단과 같다 (리비전 0013·0023).
+    ckd_stage: Mapped[str | None] = mapped_column(String(20), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

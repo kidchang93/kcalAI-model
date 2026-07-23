@@ -118,6 +118,7 @@ def update_health_profile(
         current_user.id,
         blood_type=request.blood_type,
         rh=request.rh,
+        ckd_stage=request.ckd_stage,
     )
 
 

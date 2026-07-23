@@ -160,6 +160,7 @@ def upsert_health_profile(
     user_id: int,
     blood_type: str | None,
     rh: str | None,
+    ckd_stage: str | None = None,
 ) -> UserHealthProfile:
     profile = db.scalar(select(UserHealthProfile).where(UserHealthProfile.user_id == user_id))
 
@@ -169,6 +170,7 @@ def upsert_health_profile(
 
     profile.blood_type = blood_type
     profile.rh = rh
+    profile.ckd_stage = ckd_stage
 
     db.commit()
     db.refresh(profile)
