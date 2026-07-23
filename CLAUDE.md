@@ -65,6 +65,8 @@ open http://127.0.0.1:8000/docs
 
 **자주 먹는 음식 1인분 보정** (식약처 식품중량이 비현실적으로 작아 과소평가되던 요리·원물의 1인분을 현실화 — "칼로리가 너무 작게 나온다" 해소, `docs/DATA_MODEL.md` 14장): `venv/bin/python scripts/correct_common_foods.py` — 데이터 인라인, **source 제한 없이 덮어써** mfds/raw 행도 보정하고 `source='curated'`로 바꿔 재적재에도 유지합니다. 계산 **모델(1인분×serving_ratio)은 불변**이고 값만 보정합니다(제육볶음 202→430·떡볶이 193→360·사과 52→95 등 31건). 항목·값은 `CORRECTIONS`에서 조정합니다.
 
+**curated 결측 영양소 되채우기** (`correct_common_foods.py` 실행 후 **반드시 이어서** 실행 — `docs/PRODUCT_STRATEGY.md` §5-2): `venv/bin/python scripts/backfill_curated_nutrients.py` (`--dry-run` 으로 먼저 확인, `--emit-sql <경로>` 로 운영 적용용 SQL 생성). 보정 스크립트가 비운 나트륨·칼륨·인을 원본 공공 CSV에서 **무게 비율로** 되채운다(칼로리 비율이 아니다). 정확 일치만 쓰고 '생것' 행을 우선한다 — 이 규칙이 없으면 바나나에 말린것이 섞여 칼륨이 2배로 부풀려진다. 멱등.
+
 **자동결제 갱신 배치** (청구 예정일이 지난 구독을 청구 — `docs/DATA_MODEL.md` 24장): `venv/bin/python scripts/charge_due_subscriptions.py` — 저장소 루트에서 실행, **멱등**(성공 건은 `next_billing_at`이 한 달 뒤로 밀려 재실행 시 대상에서 빠짐). 하루 1회 cron 권장. 한 건의 실패가 배치를 멈추지 않으며 실패 건은 `past_due`로 다음날 재시도합니다. `TOSS_SECRET_KEY` 미설정 시 실행을 거부합니다(exit 1). **실행하면 실제 결제가 일어납니다.**
 
 **만료 인증 데이터 정리 배치** (`kakao_link_codes`·`auth_sessions` 무한 누적 방지): `venv/bin/python scripts/purge_expired_auth.py` — 만료 코드(발급 1일 뒤)·만료·폐기 세션(7일 뒤)을 물리 삭제, 멱등. 정기 실행(cron/systemd)을 권장. 보존창은 `services/auth_service.py`의 `CODE_RETENTION_DAYS`·`SESSION_RETENTION_DAYS`.
@@ -130,7 +132,7 @@ open http://127.0.0.1:8000/docs
 | Payments | `GET /api/payments` (내 결제 내역, 최신순) · `GET /api/payments/{id}` (본인 것만, 없거나 남의 것이면 **404** 존재 은닉) — **읽기 전용 조회**. 원장은 빌링 흐름(24장)이 쓴다 (DATA_MODEL 23장) | `api/payment_api.py` |
 | Billing | `POST /api/billing/checkout` (결제창 값 발급) · `POST /api/billing/confirm` (카드 등록 + 최초 청구 → 구독 활성화) · `POST /api/billing/cancel` (자동갱신 해지, 기간까지는 유료) — 전부 Bearer. **금액은 서버가 `plans.price_krw`에서 정한다**(요청에 금액 필드 없음). 실패: 400 · **502**(결제사 오류) · 503(키 미설정) (DATA_MODEL 24장) | `api/billing_api.py` |
 | Predict | `POST /api/predict` (Bearer 필수, `sensitive_health` 동의 불필요, 업로드 검증 413/415/400. 사진 1장에서 **서로 다른 음식들**을 각각 인식해 `foods`(label·score·portion_g, 최대 10)로 반환 — 한 음식의 후보 나열이 아니다, 22장. **요금제 일일 쿼터 선차감 → 초과 시 402**(쿼터는 사진당 1건, 음식 개수 무관), 인식 실패 시 환불. 응답 후 **백그라운드로 인식된 전 음식 라벨을 영양 DB에 적재** — `prewarm_labels`, 19장) | `api/predict_api.py` |
-| Nutrition | `POST /api/nutrition/estimate` (Bearer만 — 질병·알러지 미사용이라 동의 불필요. 미등록 라벨은 LLM 1회 추정 후 `source='llm'`로 동결 적재, 실패 404 / 추정 백엔드 장애 503 — `docs/DATA_MODEL.md` 19장. **응답에 `serving_size_g: float\|None`**(1인분이 몇 g, ml은 밀도≈1로 g 취급, 미상 NULL)이 있어 앱이 사용자 입력 g으로 kcal을 재환산한다 — 리비전 0019, 앱 계약 변경) · `POST /api/nutrition/warnings` (Bearer + `sensitive_health` 동의 필수) | `api/nutrition_api.py` |
+| Nutrition | `POST /api/nutrition/estimate` (Bearer만 — 질병·알러지 미사용이라 동의 불필요. 미등록 라벨은 LLM 1회 추정 후 `source='llm'`로 동결 적재, 실패 404 / 추정 백엔드 장애 503 — `docs/DATA_MODEL.md` 19장. **응답에 `serving_size_g: float\|None`**(1인분이 몇 g, ml은 밀도≈1로 g 취급, 미상 NULL)이 있어 앱이 사용자 입력 g으로 kcal을 재환산한다 — 리비전 0019, 앱 계약 변경) · `POST /api/nutrition/warnings` (Bearer + `sensitive_health` 동의 필수. **2026-07-22: 응답에 `notice: string|null` 추가**(`warnings` 배열 불변) + **고혈압 나트륨 등급** — 나트륨 `tier`는 고혈압·당뇨에만 매긴다(CKD는 병기별로 상한이 갈려 등급 없음). 1인분 경계는 지침 컷오프가 아닌 정책값이라 `notice` 고지가 필수다 — `docs/CHRONIC_NUTRITION_SOURCES.md` §6) | `api/nutrition_api.py` |
 | Health | `GET·PUT /api/me/profile` · `GET·PUT /api/me/goal` · `GET /api/me/summary` · `GET /api/me/trends` · `POST·GET /api/meals` · `PUT·DELETE /api/meals/{meal_id}` · `POST·GET /api/weights` | `api/health_api.py` |
 | Consent | `GET·POST /api/me/consents` · `POST /api/me/consents/revoke` · `GET·PUT /api/me/health-profile` · `GET·PUT /api/me/conditions` · `GET·PUT /api/me/allergies` | `api/consent_api.py` |
 | Groups | `POST·GET /api/groups` · `POST /api/groups/join` · `GET·DELETE /api/groups/{group_id}` · `DELETE /api/groups/{group_id}/members/me` · `DELETE /api/groups/{group_id}/members/{user_id}` · `POST /api/groups/{group_id}/pets` · `DELETE /api/groups/{group_id}/pets/{pet_id}` | `api/group_api.py` |
@@ -227,12 +229,14 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 |------|----------------|
 | **헬스케어 확장 · 신규 테이블/API** | **`docs/DATA_MODEL.md`** (확정 사양서) |
 | 신장병(CKD) 식이 규칙·근거 | `docs/CKD_NUTRITION.md` |
+| 고혈압·당뇨 식이 규칙·근거 (병존 포함) | `docs/CHRONIC_NUTRITION_SOURCES.md` (2026-07-22 조사. 구현 전 §4·§5 필독 — 쓸 수 있는 수치와 **쓰면 안 되는 항목**이 나뉘어 있다) |
 | BMI·활동량·헬스 앱 연동 | `docs/ACTIVITY_GUIDANCE.md` (기획·근거. 착수 전 §0-1 결정 필요) |
 | 모듈 구조·의존성 파악 | `docs/ARCHITECTURE.md` |
 | 새 엔드포인트/스키마 추가 | `docs/DESIGN.md` → `docs/ARCHITECTURE.md` |
 | 코드 작성 직전 | `docs/CODE_STYLE.md` |
 | 리뷰·머지 전 | `docs/REVIEW.md` |
 | 서브에이전트 실행 | `docs/SUBAGENTS.md` |
+| **누구를 위한 앱인가 · 방향 결정** | **`docs/PRODUCT_STRATEGY.md`** (2026-07-22 결정: 식이요법이 필요한 만성질환군. 신규 질환·기능을 붙이기 전에 읽는다) |
 | 제품 맥락·API 책임 범위 | `docs/PROJECT_PLANNING.md`, `docs/SERVICE_POSITIONING.md` |
 | 세션 운영·변경 관리 규칙 | `docs/PROJECT_CONVENTIONS.md` |
 
