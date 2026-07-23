@@ -25,6 +25,7 @@
 import sys
 from pathlib import Path
 
+from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert
 
 # 스크립트를 scripts/ 밖의 로컬 모듈(database, models)과 연결한다.
@@ -41,6 +42,11 @@ SOURCE_CURATED = "curated"
 # 쌀밥 300·짜장면 683 등)은 건드리지 않는다.
 CORRECTIONS: list[tuple[str, int, str]] = [
     # --- 요리(mfds): 1인분 무게가 비현실적으로 작아 과소평가된 것 ---
+    # 라면은 '작아서'가 아니라 **동명 행을 잘못 골라서** 틀렸다. 원본 CSV 에 '라면'이 5행
+    # 있는데(업체별) 임포트가 226.6 ml·169 kcal/100g 행을 집어 383 kcal 이 됐다. 같은 CSV 의
+    # 550 g 행(82 kcal/100g)이 봉지라면 한 그릇에 맞다 → 451 kcal. 나트륨도 함께 교정한다
+    # (아래 NUTRIENT_OVERRIDES) — 290 mg 은 라면_국물 100g(380 mg)보다도 낮아 명백히 틀렸다.
+    ("라면", 451, "1인분 (약 550g)"),
     ("제육볶음", 430, "1인분 (약 200g)"),
     ("떡볶이", 360, "1인분 (약 250g)"),
     ("돈가스", 560, "1인분 (약 200g)"),
@@ -98,6 +104,18 @@ _NULLED = (
 )
 
 
+# 비운 뒤 backfill 로도 못 고치는 값의 **수동 교정**. backfill 은 원본 CSV 의 동명 행 중앙값을
+# 쓰는데, 동명 행 자체가 그 음식을 대표하지 못하면 결과도 틀린 채로 남는다.
+#
+# 여기 값은 **같은 식약처 CSV 안의 다른 행**에서 가져온다 — 밖에서 주워온 숫자를 넣지 않는다.
+# 지정한 영양소는 backfill 대상(`sodium_mg IS NULL`)에서 빠지므로 덮어써지지 않는다.
+NUTRIENT_OVERRIDES: dict[str, dict[str, int]] = {
+    # 라면 550 g 행의 나트륨 283 mg/100g × 5.5 = 1,557 mg. 실측 경고가 이름 매칭에만 기대던
+    # 것을 수치로도 서게 한다(1인분 600 mg 이 '높음' 경계).
+    "라면": {"sodium_mg": 1557},
+}
+
+
 def correct() -> None:
     rows = [
         {
@@ -128,8 +146,16 @@ def correct() -> None:
             set_=set_,
         )
         session.execute(statement)
+
+        # 비운 직후에 덮어쓴다 — 순서가 바뀌면 _NULLED 가 이 값을 지운다.
+        for label, overrides in NUTRIENT_OVERRIDES.items():
+            session.execute(
+                update(FoodNutrition).where(FoodNutrition.food_label == label).values(**overrides)
+            )
+
         session.commit()
         print(f"1인분 보정 {len(rows)}건 upsert 완료 (source={SOURCE_CURATED}).")
+        print(f"영양소 수동 교정 {len(NUTRIENT_OVERRIDES)}건 적용.")
     finally:
         session.close()
 
