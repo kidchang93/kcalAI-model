@@ -65,6 +65,8 @@ open http://127.0.0.1:8000/docs
 
 **자주 먹는 음식 1인분 보정** (식약처 식품중량이 비현실적으로 작아 과소평가되던 요리·원물의 1인분을 현실화 — "칼로리가 너무 작게 나온다" 해소, `docs/DATA_MODEL.md` 14장): `venv/bin/python scripts/correct_common_foods.py` — 데이터 인라인, **source 제한 없이 덮어써** mfds/raw 행도 보정하고 `source='curated'`로 바꿔 재적재에도 유지합니다. 계산 **모델(1인분×serving_ratio)은 불변**이고 값만 보정합니다(제육볶음 202→430·떡볶이 193→360·사과 52→95 등 31건). 항목·값은 `CORRECTIONS`에서 조정합니다. **`NUTRIENT_OVERRIDES`**(2026-07-23)는 backfill 로도 못 고치는 영양소의 수동 교정입니다 — 원본 CSV 의 동명 행 자체가 그 음식을 대표하지 못할 때 **같은 CSV 안의 다른 행**에서 값을 가져옵니다(라면: 226.6ml 행이 임포트돼 383kcal·Na 290mg 이던 것을 550g 행 기준 451kcal·Na 1,557mg 으로 교정).
 
+**다인분 제품의 1인분 정상화** (홀케이크·피자 한 판이 "1인분"으로 들어온 행을 「식품등의 표시기준」[별표 3] 1회 섭취참고량으로 되돌린다 — 빵류 70 g·피자 150 g): `venv/bin/python scripts/normalize_serving_size.py` (`--dry-run` 먼저). 멱등이며 `source='curated'`는 제외합니다. ⚠️ **식품군 단위로 캡을 씌우지 마세요** — 같은 '빵 및 과자류' 안에 햄버거(1인분이 맞다)와 홀케이크(다인분)가 함께 있고, 음료 473 ml는 카페 그란데 한 잔입니다. 제품명이 스스로 다인분임을 밝히는 것만 고칩니다 (`docs/CHRONIC_NUTRITION_SOURCES.md` §2-5).
+
 **curated 결측 영양소 되채우기** (`correct_common_foods.py` 실행 후 **반드시 이어서** 실행 — `docs/PRODUCT_STRATEGY.md` §5-2): `venv/bin/python scripts/backfill_curated_nutrients.py` (`--dry-run` 으로 먼저 확인, `--emit-sql <경로>` 로 운영 적용용 SQL 생성). 보정 스크립트가 비운 나트륨·칼륨·인을 원본 공공 CSV에서 **무게 비율로** 되채운다(칼로리 비율이 아니다). 정확 일치만 쓰고 '생것' 행을 우선한다 — 이 규칙이 없으면 바나나에 말린것이 섞여 칼륨이 2배로 부풀려진다. 멱등.
 
 **자동결제 갱신 배치** (청구 예정일이 지난 구독을 청구 — `docs/DATA_MODEL.md` 24장): `venv/bin/python scripts/charge_due_subscriptions.py` — 저장소 루트에서 실행, **멱등**(성공 건은 `next_billing_at`이 한 달 뒤로 밀려 재실행 시 대상에서 빠짐). 하루 1회 cron 권장. 한 건의 실패가 배치를 멈추지 않으며 실패 건은 `past_due`로 다음날 재시도합니다. `TOSS_SECRET_KEY` 미설정 시 실행을 거부합니다(exit 1). **실행하면 실제 결제가 일어납니다.**
