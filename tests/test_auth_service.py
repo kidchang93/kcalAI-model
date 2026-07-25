@@ -33,9 +33,13 @@ def test_tampered_state_is_rejected():
     with pytest.raises(auth_service.StateError):
         auth_service.verify_state(f"{payload}x.{signature}")
 
-    # 서명 위조.
+    # 서명 위조. **원래 글자와 다른 값으로** 바꾼다 — 예전에는 마지막 글자를 무조건 '0'으로
+    # 바꿨는데, 서명이 hex(sha256 hexdigest)라 마지막이 이미 '0'이면(1/16 ≈ 6%) 원본과
+    # 같아져 검증을 통과했다. 2026-07-25에 전체 실행에서 한 번 빨간불이 켜져 찾은 결함이고,
+    # 프로덕션이 아니라 **테스트가 틀린** 경우였다.
+    tampered_last = "1" if signature[-1] == "0" else "0"
     with pytest.raises(auth_service.StateError):
-        auth_service.verify_state(f"{payload}.{signature[:-1]}0")
+        auth_service.verify_state(f"{payload}.{signature[:-1]}{tampered_last}")
 
     # 서명 누락 — 우리가 시작시키지 않은 콜백이다.
     with pytest.raises(auth_service.StateError):

@@ -137,6 +137,7 @@ curl -X POST http://127.0.0.1:8000/api/auth/signup/request-code \
 | `/api/predict`, `/api/gpt-predict`가 무인증 공개라고 가정 | 2026-07-12부터 Bearer 필수입니다. `/api/s3/*`는 같은 날 제거됐습니다 |
 | `transformers`가 추론에 쓰인다고 가정 | 전부 주석 처리된 잔재입니다. 실제 분류는 ultralytics YOLO |
 | 함수명 `answerByGptOss20B`를 보고 20B 모델이라 가정 | 실제 호출 모델은 `openai/gpt-oss-120b` (provider `groq`) |
+| 위조 테스트에서 **한 글자를 고정값으로** 바꾼다 | 원래 글자와 같으면 위조가 아니게 되어 테스트가 조용히 통과합니다. hex 서명이면 1/16 확률로 그렇습니다 — 2026-07-25에 실제로 flaky 였습니다. **원래 값과 다른 것**으로 바꾸세요 |
 | `master`에 push하면 배포된다고 가정 | 배포 트리거는 **`dev` 브랜치 push**입니다 |
 | `dev`에 실험 커밋 push | **즉시 NCP 서버로 배포됩니다** |
 
