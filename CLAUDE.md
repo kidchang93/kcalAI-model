@@ -75,7 +75,7 @@ open http://127.0.0.1:8000/docs
 
 **curated 결측 영양소 되채우기** (`correct_common_foods.py` 실행 후 **반드시 이어서** 실행 — `docs/PRODUCT_STRATEGY.md` §5-2): `venv/bin/python scripts/backfill_curated_nutrients.py` (`--dry-run` 으로 먼저 확인, `--emit-sql <경로>` 로 운영 적용용 SQL 생성). 보정 스크립트가 비운 나트륨·칼륨·인을 원본 공공 CSV에서 **무게 비율로** 되채운다(칼로리 비율이 아니다). 정확 일치만 쓰고 '생것' 행을 우선한다 — 이 규칙이 없으면 바나나에 말린것이 섞여 칼륨이 2배로 부풀려진다. 멱등.
 
-**결제 환불** (약관의 환불 규정을 **이행하는 수단** — `docs/LEGAL_COMPLIANCE.md` §2): `venv/bin/python scripts/refund_payment.py` (인자 없이 실행하면 환불 가능한 결제 목록, `--payment-id`·`--reason` 지정 후 `--yes` 로 실행). **실행하면 실제로 돈이 나갑니다.** 상점관리자에서 직접 취소하면 원장에 반영되지 않으므로(웹훅 미구현) 반드시 이 스크립트를 씁니다.
+**결제 환불** (약관의 환불 규정을 **이행하는 수단** — `docs/LEGAL_COMPLIANCE.md` §2): `venv/bin/python scripts/refund_payment.py` (인자 없이 실행하면 환불 가능한 결제 목록, `--payment-id`·`--reason` 지정 후 `--yes` 로 실행). **실행하면 실제로 돈이 나갑니다.** 상점관리자에서 직접 취소해도 이제 웹훅이 원장에 반영하지만(29장), 그건 **토스 상점관리자에 웹훅 URL을 등록한 뒤**의 이야기입니다. 등록 전에는 이 스크립트가 원장을 맞추는 유일한 경로입니다.
 
 **자동결제 갱신 배치** (청구 예정일이 지난 구독을 청구 — `docs/DATA_MODEL.md` 24장): `venv/bin/python scripts/charge_due_subscriptions.py` — 저장소 루트에서 실행, **멱등**(성공 건은 `next_billing_at`이 한 달 뒤로 밀려 재실행 시 대상에서 빠짐). 하루 1회 cron 권장. 한 건의 실패가 배치를 멈추지 않으며 실패 건은 `past_due`로 다음날 재시도합니다. `TOSS_SECRET_KEY` 미설정 시 실행을 거부합니다(exit 1). **실행하면 실제 결제가 일어납니다.**
 
@@ -95,7 +95,7 @@ open http://127.0.0.1:8000/docs
 | 린트 | 없음 |
 | 포맷 | 없음 |
 
-테스트는 Postgres에 붙습니다 (인증 로직의 tz-aware datetime 충실도). 각 테스트는 외부 트랜잭션 + SAVEPOINT 롤백으로 격리되어 대상 DB를 오염시키지 않습니다. 공유 DB의 기존 데이터와 번호가 겹칠 수 있으니, 깔끔한 격리가 필요하면 `TEST_DATABASE_URL`로 전용 DB를 지정하세요. 현재 **312건**이며 커버리지는 `test_diabetes_food_rules.py`(당뇨 — 첨가당 이름 축·등급 부재·단위, 16장), `test_meal_ordering.py`(하루 끼니 목록 순서 — 같은 시각이면 만든 순, 4장), `test_auth_service.py`·`test_auth_api.py`(카카오 로그인, 21장), `test_subscription_service.py`(요금제·쿼터, 20장), `test_billing_service.py`(자동결제, 24장), `test_toss_client.py`(**토스 어댑터의 비밀값 미유출**, 2026-07-16), `test_payment_service.py`(결제 내역, 23장), `test_crypto.py`, `test_upload_validation.py`, `test_web_spa.py`, `test_day_nutrition.py`(하루 질환 축 — 병기별 기준선, 28장)입니다.
+테스트는 Postgres에 붙습니다 (인증 로직의 tz-aware datetime 충실도). 각 테스트는 외부 트랜잭션 + SAVEPOINT 롤백으로 격리되어 대상 DB를 오염시키지 않습니다. 공유 DB의 기존 데이터와 번호가 겹칠 수 있으니, 깔끔한 격리가 필요하면 `TEST_DATABASE_URL`로 전용 DB를 지정하세요. 현재 **333건**이며 커버리지는 `test_diabetes_food_rules.py`(당뇨 — 첨가당 이름 축·등급 부재·단위, 16장), `test_meal_ordering.py`(하루 끼니 목록 순서 — 같은 시각이면 만든 순, 4장), `test_auth_service.py`·`test_auth_api.py`(카카오 로그인, 21장), `test_subscription_service.py`(요금제·쿼터, 20장), `test_billing_service.py`(자동결제, 24장), `test_billing_webhook.py`(**웹훅 본문으로는 원장을 바꿀 수 없다**, 29장), `test_toss_client.py`(**토스 어댑터의 비밀값 미유출**, 2026-07-16), `test_payment_service.py`(결제 내역, 23장), `test_crypto.py`, `test_upload_validation.py`, `test_web_spa.py`, `test_day_nutrition.py`(하루 질환 축 — 병기별 기준선, 28장)입니다.
 | 카카오 설정 진단 | `venv/bin/python scripts/check_kakao_config.py` (읽기 전용. 로그인 실패 시 **원인 판정** — 허용 IP 미등록/키 종류 혼동) |
 | 수동 검증 | `uvicorn main:app` 기동 + `/docs` 200 + `http/*.http` 요청 |
 
@@ -131,16 +131,16 @@ open http://127.0.0.1:8000/docs
 
 ---
 
-## API 목록 (openapi.json 실측, 2026-07-16 기준 **55개**)
+## API 목록 (openapi.json 실측, 2026-07-26 기준 **50개**)
 
-계약 상세는 `docs/DATA_MODEL.md`가 정본입니다 (4장 CRUD, 7장 사용자 층, 9장 그룹·반려동물, 10장 메타, 11장 식단 추천, 15장 추이 집계, 16장 기록 경고 판정, 17장 그룹 라이프사이클, 18장 회원 탈퇴·펫 권장 칼로리, 23장 결제 내역, **24장 자동결제**).
+계약 상세는 `docs/DATA_MODEL.md`가 정본입니다 (4장 CRUD, 7장 사용자 층, 9장 그룹·반려동물, 10장 메타, 11장 식단 추천, 15장 추이 집계, 16장 기록 경고 판정, 17장 그룹 라이프사이클, 18장 회원 탈퇴·펫 권장 칼로리, 23장 결제 내역, **24장 자동결제**, **29장 결제 웹훅**).
 
 | 도메인 | 라우트 | 정의 파일 |
 |--------|--------|-----------|
 | Auth | `GET /api/auth/kakao/start` · `GET /api/auth/kakao/callback` · `POST /api/auth/kakao/login` · `POST /api/auth/kakao/signup` · `POST /api/auth/logout` | `api/auth_api.py` |
 | Subscription | `GET /api/plans` (**무인증** — 가입 화면이 로그인 전에 그린다) · `GET·PUT /api/me/subscription` (**PUT은 무료(lite) 다운그레이드만** — 유료 전환은 400, 결제를 거쳐야 한다. 24장) | `api/subscription_api.py` |
 | Payments | `GET /api/payments` (내 결제 내역, 최신순) · `GET /api/payments/{id}` (본인 것만, 없거나 남의 것이면 **404** 존재 은닉) — **읽기 전용 조회**. 원장은 빌링 흐름(24장)이 쓴다 (DATA_MODEL 23장) | `api/payment_api.py` |
-| Billing | `POST /api/billing/checkout` (결제창 값 발급) · `POST /api/billing/confirm` (카드 등록 + 최초 청구 → 구독 활성화) · `POST /api/billing/cancel` (자동갱신 해지, 기간까지는 유료) — 전부 Bearer. **금액은 서버가 `plans.price_krw`에서 정한다**(요청에 금액 필드 없음). 실패: 400 · **502**(결제사 오류) · 503(키 미설정) (DATA_MODEL 24장) | `api/billing_api.py` |
+| Billing | `POST /api/billing/checkout` (결제창 값 발급) · `POST /api/billing/confirm` (카드 등록 + 최초 청구 → 구독 활성화) · `POST /api/billing/cancel` (자동갱신 해지, 기간까지는 유료) — 셋 다 Bearer. **금액은 서버가 `plans.price_krw`에서 정한다**(요청에 금액 필드 없음). 실패: 400 · **502**(결제사 오류) · 503(키 미설정) (DATA_MODEL 24장) · `POST /api/billing/webhook` (**무인증** — 토스가 부른다. 본문에서 `orderId`만 읽고 상태는 서버가 토스에 다시 조회해 확인한다. 200=처리·재전송 불필요 / 502·503=판단 못 함·재전송 유도. DATA_MODEL **29장**) | `api/billing_api.py` |
 | Predict | `POST /api/predict` (Bearer 필수, `sensitive_health` 동의 불필요, 업로드 검증 413/415/400. 사진 1장에서 **서로 다른 음식들**을 각각 인식해 `foods`(label·score·portion_g, 최대 10)로 반환 — 한 음식의 후보 나열이 아니다, 22장. **요금제 일일 쿼터 선차감 → 초과 시 402**(쿼터는 사진당 1건, 음식 개수 무관), 인식 실패 시 환불. 응답 후 **백그라운드로 인식된 전 음식 라벨을 영양 DB에 적재** — `prewarm_labels`, 19장) | `api/predict_api.py` |
 | Nutrition | `POST /api/nutrition/estimate` (Bearer만 — 질병·알러지 미사용이라 동의 불필요. 미등록 라벨은 LLM 1회 추정 후 `source='llm'`로 동결 적재, 실패 404 / 추정 백엔드 장애 503 — `docs/DATA_MODEL.md` 19장. **응답에 `serving_size_g: float\|None`**(1인분이 몇 g, ml은 밀도≈1로 g 취급, 미상 NULL)이 있어 앱이 사용자 입력 g으로 kcal을 재환산한다 — 리비전 0019, 앱 계약 변경) · `POST /api/nutrition/warnings` (Bearer + `sensitive_health` 동의 필수. **2026-07-22: 응답에 `notice: string|null` 추가**(`warnings` 배열 불변) + **고혈압 나트륨 등급** — 나트륨 `tier`는 고혈압·당뇨에만 매긴다(CKD는 병기별로 상한이 갈려 등급 없음). 1인분 경계는 지침 컷오프가 아닌 정책값이라 `notice` 고지가 필수다 — `docs/CHRONIC_NUTRITION_SOURCES.md` §6) | `api/nutrition_api.py` |
 | Health | `GET·PUT /api/me/profile` · `GET·PUT /api/me/goal` · `GET /api/me/summary` (**2026-07-23: `nutrients` 추가** — 질환 축 하루 누적. 나트륨만 `limit_mg`(상한 대비 게이지), 칼륨·인은 수치와 투석 참고치만. 해당 질환 없으면 null. `docs/DATA_MODEL.md` 28장) · `GET /api/me/trends`(**2026-07-25: `nutrients` 추가** — 질환 축 기간 추이) · `GET /api/me/report`(**진료 지참용 기간 리포트** — 질환·병기·축 요약·끼니 상세, 웹에서 인쇄/PDF) · `POST·GET /api/meals` · `PUT·DELETE /api/meals/{meal_id}` · `POST·GET /api/weights` | `api/health_api.py` |
@@ -222,6 +222,8 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 - **`TOSS_SECRET_KEY`·`billingKey`를 로그·응답·에러 메시지에 남기지 않는다.** 시크릿 키는 이 값만으로 임의 청구가 가능하고, 빌링키는 그 회원 카드의 재청구 자격증명입니다. 로그에는 결제사 **코드**만 남깁니다(`code=REJECT_CARD_COMPANY`). 앱에 내려가는 키는 `client_key`(공개값)뿐입니다.
 - **클라이언트가 보낸 결제 금액을 신뢰하지 않는다.** 금액은 언제나 서버가 `plans.price_krw`에서 정합니다 — 요청 스키마에 금액 필드 자체를 두지 않습니다 (`BillingConfirmRequest`). 받으면 100원짜리 Premium이 팔립니다.
 - **토스 API를 테스트에서 실제로 호출하지 않는다.** 테스트 키라도 결제사 트래픽입니다. `toss_client`를 monkeypatch로 대체합니다 (`tests/test_billing_service.py`).
+- **웹훅 본문을 신뢰하지 않는다.** 결제 웹훅에는 서명이 없습니다(`tosspayments-webhook-signature`는 지급대행·셀러 이벤트 전용). 본문에서 읽는 것은 `orderId` 하나이고, 상태·금액은 **우리 시크릿 키로 인증한 조회**(`get_payment_by_order_id`)가 말하는 것만 씁니다. 본문의 `status`를 그대로 반영하는 순간, 누구나 남의 결제를 "취소됨"으로 만들 수 있습니다 (29장).
+- **모르는 주문번호로 토스를 조회하지 않는다.** 원장에 없는 `order_id`는 조회 전에 버립니다 — 임의의 주문번호를 던지는 것만으로 우리가 결제사 API를 대신 두드리게 되면 증폭 통로가 됩니다. 웹훅 응답에 처리 결과를 싣지 않는 것도 같은 이유입니다(주문의 존재 여부를 알려 주지 않는다).
 - **결제 실패 시 구독을 활성화하지 않는다.** 청구 예외가 나면 구독 행을 건드리지 않습니다 — 결제 안 된 Pro가 생기면 안 됩니다.
 - **`confirm`의 중복 방어를 `order_id`·`_mark_payment_done`에 기대지 않는다.** 그 둘은 **주문번호가 같아야** 걸리는 갱신 배치의 방어선인데, `confirm`은 호출마다 새 `order_id`를 만듭니다. 중복은 **구독 상태**로 판정합니다 (`_is_duplicate_confirm` — 같은 플랜 + `active` + 기간 남음이면 청구 없이 200). 이 게이트를 지우면 새로고침·502 후 재시도·결제창 2회 완주가 그대로 이중 결제가 됩니다(방어 전 실측: 5,000원 2회 청구). 단 `past_due`·`canceled`·다른 플랜은 **통과시켜야** 합니다 — 카드를 바꿔 복구하거나 업그레이드하는 정당한 경로입니다 (24장).
 - **만료 강등에서 `plan_code`를 덮어쓰지 않는다.** 만료는 **읽을 때 해석**합니다 (`get_effective_plan`). 행을 lite로 쓰면 갱신 배치가 청구 대상을 잃고 이력이 사라집니다 (24장).

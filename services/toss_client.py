@@ -34,6 +34,21 @@ ISSUE_BILLING_KEY_URL = "https://api.tosspayments.com/v1/billing/authorizations/
 CHARGE_BILLING_URL = "https://api.tosspayments.com/v1/billing"
 # 결제 취소. paymentKey 를 경로에 싣는다 (토스 공식 문서 「결제 취소하기」).
 CANCEL_PAYMENT_URL = "https://api.tosspayments.com/v1/payments"
+# 결제 조회. **주문번호로** 조회한다 (토스 공식 문서 「결제 조회하기」).
+# paymentKey 가 아니라 orderId 를 쓰는 이유는 웹훅 검증 때문이다 — orderId 는 우리가 만들어
+# 원장(`payments.order_id`)에 갖고 있는 값이라, 외부에서 준 식별자를 믿지 않고 조회할 수 있다.
+GET_PAYMENT_BY_ORDER_URL = "https://api.tosspayments.com/v1/payments/orders"
+
+# 조회했는데 토스가 그 주문을 모를 때의 코드 (실측 2026-07-26: 404 NOT_FOUND_PAYMENT).
+# 재시도해도 답이 달라지지 않는 종류라, 웹훅 동기화가 재전송을 요청하지 않고 닫는 데 쓴다.
+ERROR_NOT_FOUND_PAYMENT = "NOT_FOUND_PAYMENT"
+
+# 토스 결제 상태 (공식 문서 「결제 객체」의 status).
+STATUS_DONE = "DONE"
+STATUS_CANCELED = "CANCELED"
+STATUS_PARTIAL_CANCELED = "PARTIAL_CANCELED"
+STATUS_ABORTED = "ABORTED"
+STATUS_EXPIRED = "EXPIRED"
 
 # 토스 결제 실패 코드 → 사용자용 한국어 메시지. 토스 원문 메시지를 그대로 쓰지 않는 이유는,
 # 결제사 문구가 내부 사정(가맹점 설정·API 규격)을 담을 수 있고 우리가 통제할 수 없기 때문이다.
@@ -149,6 +164,30 @@ def _post(url: str, payload: dict, *, action: str, idempotency_key: str | None =
         # 순간(logger.exception, 미처리 예외) 같은 URL 이 그 경로로 다시 샌다.
         raise TossError("결제 서버와 통신하지 못했습니다. 잠시 후 다시 시도해주세요.") from None
 
+    return _read_json(response, action=action)
+
+
+def _get(url: str, *, action: str) -> dict:
+    """토스 GET 공통. 실패 규약은 `_post` 와 같다 — URL·예외 원문을 로그에 남기지 않는다.
+
+    조회 계열(결제 조회)에만 쓴다. 상태를 바꾸지 않으므로 멱등키가 필요 없다.
+    """
+    try:
+        response = requests.get(
+            url,
+            headers={"Authorization": _auth_header()},
+            timeout=TOSS_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as error:
+        # `_post` 와 같은 이유로 타입 이름만 남기고 원인 체인을 끊는다 (URL 유출 방지).
+        error_logger.error(f"toss {action} request fail: {type(error).__name__}")
+        raise TossError("결제 서버와 통신하지 못했습니다. 잠시 후 다시 시도해주세요.") from None
+
+    return _read_json(response, action=action)
+
+
+def _read_json(response: requests.Response, *, action: str) -> dict:
+    """응답 → dict. 4xx·5xx 와 비-JSON 을 전부 `TossError` 로 바꾼다."""
     if response.status_code >= 400:
         code, raw_message = _read_error(response)
         # 원문은 서버에만 남긴다. 사용자에게는 우리가 통제하는 메시지를 준다.
@@ -296,6 +335,80 @@ def cancel_payment(
         canceled_amount=int(latest.get("cancelAmount") or amount or 0),
         canceled_at=_parse_approved_at(latest.get("canceledAt")),
     )
+
+
+@dataclass(frozen=True)
+class PaymentSnapshot:
+    """토스가 말하는 **지금** 이 결제의 상태. 웹훅 동기화의 유일한 근거다 (29장).
+
+    `canceled_amount` 는 `cancels` 배열을 더하지 않고 **`totalAmount - balanceAmount`** 로 얻는다.
+    잔액은 토스가 관리하는 값이라 부분 취소가 여러 번이어도 누계가 어긋나지 않는다.
+    """
+
+    order_id: str
+    payment_key: str | None
+    status: str
+    total_amount: int
+    balance_amount: int
+    method: str | None
+    approved_at: datetime | None
+    canceled_amount: int
+    canceled_at: datetime | None
+    cancel_reason: str | None
+
+    @property
+    def is_canceled(self) -> bool:
+        return self.status in (STATUS_CANCELED, STATUS_PARTIAL_CANCELED)
+
+    @property
+    def is_done(self) -> bool:
+        return self.status == STATUS_DONE
+
+    @property
+    def is_dead(self) -> bool:
+        """승인되지 못하고 끝난 결제 — 다시 살아나지 않는다."""
+        return self.status in (STATUS_ABORTED, STATUS_EXPIRED)
+
+
+def get_payment_by_order_id(order_id: str) -> PaymentSnapshot:
+    """주문번호로 결제를 조회한다 (`GET /v1/payments/orders/{orderId}`).
+
+    **웹훅을 신뢰하지 않기 위한 함수다.** 결제 웹훅에는 서명 헤더가 붙지 않으므로
+    (`tosspayments-webhook-signature` 는 지급대행·셀러 이벤트 전용), 본문만 보고 원장을 고치면
+    누구나 "취소됐다"고 우리 서버에 알릴 수 있다. 그래서 웹훅은 알림으로만 쓰고, 실제 상태는
+    **우리 시크릿 키로 인증한 이 조회**로 확인한다 — 위조할 수 없는 경로다.
+    """
+    ensure_configured()
+    payload = _get(f"{GET_PAYMENT_BY_ORDER_URL}/{order_id}", action="get payment")
+
+    total_amount = _as_int(payload.get("totalAmount"))
+    balance_amount = _as_int(payload.get("balanceAmount"))
+    cancels = payload.get("cancels") or []
+    latest_cancel = cancels[-1] if isinstance(cancels, list) and cancels else {}
+
+    return PaymentSnapshot(
+        # 응답의 orderId 를 그대로 쓰지 않고 우리가 조회에 쓴 값을 남긴다 — 이 스냅샷이 어느
+        # 원장 행의 것인지가 호출자의 입력과 어긋나지 않아야 한다.
+        order_id=order_id,
+        payment_key=_as_text(payload.get("paymentKey")),
+        status=str(payload.get("status", "")),
+        total_amount=total_amount,
+        balance_amount=balance_amount,
+        method=_as_text(payload.get("method")),
+        approved_at=_parse_approved_at(payload.get("approvedAt")),
+        # 음수가 되지 않게 막는다. 잔액이 총액보다 크게 오는 일은 없지만, 그 값이 원장의
+        # refunded_amount 로 들어가면 "마이너스 환불"이라는 읽을 수 없는 기록이 남는다.
+        canceled_amount=max(total_amount - balance_amount, 0),
+        canceled_at=_parse_approved_at(latest_cancel.get("canceledAt")),
+        cancel_reason=_as_text(latest_cancel.get("cancelReason")),
+    )
+
+
+def _as_int(value: object) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
 
 
 def _as_text(value: object) -> str | None:

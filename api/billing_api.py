@@ -1,14 +1,19 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from api.dependencies import get_current_user
 from database import get_db
+from log_utils import setup_level_logger
 from models.auth_model import User
 from schemas.billing_schema import (
     BillingCheckoutRequest,
     BillingCheckoutResponse,
     BillingConfirmRequest,
     BillingError,
+    BillingWebhookAck,
+    TossWebhookEvent,
 )
 from schemas.subscription_schema import MySubscriptionResponse
 from services import billing_service
@@ -16,6 +21,8 @@ from services.subscription_service import my_subscription_view
 from services.toss_client import TossError, TossNotConfiguredError
 
 router = APIRouter()
+
+info_logger = setup_level_logger(logging.INFO)
 
 # 예외 → 상태코드 규약 (내부 예외 원문은 절대 나가지 않는다):
 #   ValueError              → 400  서비스가 만든 한국어 사용자 메시지
@@ -84,6 +91,50 @@ def confirm_billing(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
     return my_subscription_view(db, current_user.id)
+
+
+@router.post(
+    "/billing/webhook",
+    response_model=BillingWebhookAck,
+    responses={502: {"model": BillingError}, 503: {"model": BillingError}},
+)
+def receive_billing_webhook(request: TossWebhookEvent, db: Session = Depends(get_db)):
+    """토스 결제 상태 변경 알림 (DATA_MODEL.md 29장).
+
+    **무인증이다** — 토스가 우리 Bearer 토큰을 가질 수 없다. 대신 본문을 믿지 않는 것으로
+    막는다: 여기서 쓰는 값은 `orderId` 하나뿐이고, 그것도 **우리 원장에 있는 주문**일 때만
+    서비스가 토스에 실제 상태를 다시 물어본다. 위조 본문으로는 원장을 바꿀 수 없다.
+
+    상태코드의 의미가 곧 재전송 정책이다 (토스는 200 이 아니면 최대 7회, 3일 19시간 재전송):
+      200 — 처리했거나, 처리할 것이 없다(모르는 주문·모르는 이벤트). 재전송 불필요.
+      502·503 — 토스 조회에 실패해 **아직 판단하지 못했다.** 재전송받아 다시 시도한다.
+    """
+    if request.event_type not in billing_service.HANDLED_WEBHOOK_EVENTS:
+        info_logger.info(f"webhook ignored event_type={request.event_type}")
+        return BillingWebhookAck()
+
+    order_id = request.resolved_order_id
+
+    if order_id is None:
+        info_logger.info(f"webhook ignored(no orderId) event_type={request.event_type}")
+        return BillingWebhookAck()
+
+    try:
+        result = billing_service.sync_payment_from_toss(db, order_id)
+    except TossNotConfiguredError as error:
+        # 키가 없어 조회 자체를 못 했다. 재전송받는 편이 낫다 — 이 알림을 흘리면 원장이
+        # 영원히 어긋난 채 남는다.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=_NOT_CONFIGURED_DETAIL
+        ) from error
+    except TossError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=error.message
+        ) from error
+
+    info_logger.info(f"webhook handled event_type={request.event_type} result={result}")
+    # 응답에는 결과를 싣지 않는다 — 무인증 호출자에게 주문의 존재 여부를 알려 주지 않는다.
+    return BillingWebhookAck()
 
 
 @router.post(

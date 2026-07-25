@@ -1,4 +1,5 @@
-"""자동결제(토스 빌링) — 카드 등록·최초 청구·해지·갱신 배치 (DATA_MODEL.md 24장).
+"""자동결제(토스 빌링) — 카드 등록·최초 청구·해지·갱신 배치 (DATA_MODEL.md 24장),
+그리고 웹훅으로 받는 **바깥에서 일어난 상태 변화**의 동기화 (29장).
 
 규약 네 가지가 이 모듈의 전부다.
 
@@ -386,6 +387,150 @@ def refund_payment(
         f"amount={payment.refunded_amount} status={result.status}"
     )
     return payment
+
+
+# 우리가 처리하는 웹훅 이벤트. 화이트리스트로 두는 이유는, 토스 상점관리자에서 이벤트를
+# 추가로 켜더라도 서버가 모르는 알림에 반응하지 않게 하기 위해서다.
+#   PAYMENT_STATUS_CHANGED — 결제 상태 변경(승인·취소·만료)
+#   CANCEL_STATUS_CHANGED  — 취소 상태 변경(상점관리자 수동 취소가 여기로 온다)
+# BILLING_DELETED(빌링키 삭제)는 다루지 않는다 — 빌링키를 암호문으로 저장해 역조회가 안 되고,
+# 삭제된 키는 다음 갱신에서 청구 실패 → past_due 로 **스스로 드러난다** (29장).
+HANDLED_WEBHOOK_EVENTS = frozenset({"PAYMENT_STATUS_CHANGED", "CANCEL_STATUS_CHANGED"})
+
+
+def sync_payment_from_toss(db: Session, order_id: str) -> str:
+    """웹훅 알림을 받아 원장을 **토스의 실제 상태**에 맞춘다 (DATA_MODEL.md 29장).
+
+    ## 웹훅 본문을 믿지 않는다
+
+    결제 웹훅에는 서명 헤더가 없다 — `tosspayments-webhook-signature` 는 지급대행·셀러
+    이벤트에만 붙는다(공식 문서 「웹훅 이벤트」). 본문만 보고 원장을 고치면 **누구나 우리
+    서버에 "그 결제 취소됐다"고 알릴 수 있다.** 그래서 본문에서는 `orderId` 하나만 꺼내
+    조회 키로 쓰고, 상태·금액은 전부 **우리 시크릿 키로 인증한 조회**(`get_payment_by_order_id`)
+    가 말하는 것만 쓴다.
+
+    ## 모르는 주문이면 토스를 부르지 않는다
+
+    원장에 없는 `order_id` 는 조회 없이 즉시 무시한다. 이게 없으면 임의의 주문번호를 던지는
+    것만으로 **우리가 결제사 API 를 대신 두드리게** 만들 수 있다(증폭).
+
+    반환값은 처리 결과 라벨이며 호출자가 로그에만 쓴다 — 웹훅 응답 본문으로 나가지 않는다.
+    무엇이 존재하고 무엇이 취소됐는지는 알려 줄 정보가 아니다.
+    """
+    payment = db.scalar(select(Payment).where(Payment.order_id == order_id))
+
+    if payment is None:
+        return "unknown"
+
+    try:
+        snapshot = toss_client.get_payment_by_order_id(order_id)
+    except TossError as error:
+        if error.code != toss_client.ERROR_NOT_FOUND_PAYMENT:
+            # 통신·결제사 장애다. 올려 보내 **재전송을 받는다** — 여기서 삼키면 이 알림은
+            # 영영 사라지고 원장이 어긋난 채 남는다.
+            raise
+
+        # 우리 원장엔 있는데 토스는 모르는 주문이다(청구 호출 전에 끊긴 `ready` 행이 이 모양이다).
+        # 재전송해도 같은 404 라 예외를 삼키고 닫는다. 원장은 건드리지 않는다 — 토스가 모른다는
+        # 것은 "승인된 적 없다"는 뜻이지만, 그 판정을 이 경로에서 확정할 근거는 아니다.
+        error_logger.error(f"webhook order unknown to toss order_id={order_id}")
+        return "not-found"
+
+    if snapshot.total_amount and snapshot.total_amount != payment.amount:
+        # 우리가 만든 주문번호라 일어날 수 없다. 일어났다면 우리 쪽 버그이므로 남긴다.
+        error_logger.error(
+            f"webhook amount mismatch order_id={order_id} "
+            f"ledger={payment.amount} toss={snapshot.total_amount}"
+        )
+
+    if snapshot.is_canceled:
+        return _apply_cancel(db, payment, snapshot)
+
+    if snapshot.is_done:
+        return _apply_done(db, payment, snapshot)
+
+    if snapshot.is_dead:
+        return _apply_dead(db, payment, snapshot)
+
+    # READY · IN_PROGRESS · WAITING_FOR_DEPOSIT — 아직 결론이 아니다. 원장을 건드리지 않는다.
+    return "pending"
+
+
+def _apply_cancel(db: Session, payment: Payment, snapshot: toss_client.PaymentSnapshot) -> str:
+    """토스에서 취소된 결제를 원장에 반영한다 — **상점관리자에서 손으로 취소한 건**이 여기로 온다.
+
+    구독은 건드리지 않는다. 환불과 이용권 회수는 다른 판단이라는 `refund_payment` 의 규약을
+    그대로 따른다 — 필요하면 운영자가 `cancel_billing` 을 따로 부른다.
+    """
+    if (
+        payment.status == PAYMENT_CANCELED
+        and payment.refunded_amount == snapshot.canceled_amount
+    ):
+        # 같은 취소를 다시 받은 것이다 (토스는 최대 7회 재전송한다).
+        return "noop"
+
+    payment.status = PAYMENT_CANCELED
+    payment.canceled_at = snapshot.canceled_at or datetime.now(UTC)
+    payment.refunded_amount = snapshot.canceled_amount
+    # 취소 사유는 토스가 준 원문을 남긴다 — 이건 결제사 내부 사정이 아니라 **취소한 사람이 적은
+    # 사유**이고, 환불 근거로 보존해야 할 기록이다 (LEGAL_COMPLIANCE.md §2).
+    payment.refund_reason = (snapshot.cancel_reason or "결제사 취소")[:200]
+    db.commit()
+    info_logger.info(
+        f"webhook cancel applied order_id={payment.order_id} "
+        f"amount={payment.refunded_amount} status={snapshot.status}"
+    )
+    return "canceled"
+
+
+def _apply_done(db: Session, payment: Payment, snapshot: toss_client.PaymentSnapshot) -> str:
+    """토스는 승인됐다는데 원장이 그렇지 않은 경우 — **돈은 나갔고 기록은 실패**인 상태를 고친다.
+
+    청구 HTTP 응답을 받기 전에 타임아웃·프로세스 종료가 나면 실제로 이 상태가 된다. 원장만
+    고치고 끝내면 사용자는 결제하고도 무료로 남으므로, 아직 반영되지 않았다면 **구독까지
+    활성화**한다. 판정은 confirm 과 같은 게이트(`_is_duplicate_confirm`)를 쓴다 — 같은 플랜의
+    활성 구독이 기간을 남기고 있으면 이미 반영된 것이라 손대지 않는다.
+    """
+    charge = toss_client.ChargeResult(
+        payment_key=snapshot.payment_key or "",
+        status=snapshot.status,
+        method=snapshot.method,
+        approved_at=snapshot.approved_at,
+    )
+
+    if not _mark_payment_done(payment, charge):
+        return "noop"
+
+    now = datetime.now(UTC)
+    # 탈퇴로 익명화된 원장(user_id=NULL)은 붙일 구독이 없다. 기록만 바로잡는다.
+    if payment.user_id is not None:
+        subscription = get_subscription(db, payment.user_id)
+
+        if not _is_duplicate_confirm(subscription, payment.plan_code, now):
+            _activate_subscription(db, payment.user_id, payment.plan_code, now)
+            info_logger.info(
+                f"webhook activate subscription user_id={payment.user_id} "
+                f"plan={payment.plan_code} order_id={payment.order_id}"
+            )
+
+    db.commit()
+    # 우리가 놓친 승인을 웹훅이 주워 온 것이라 error 로 남긴다 — 조용히 지나가면 청구 경로의
+    # 타임아웃이 얼마나 자주 나는지 알 길이 없다.
+    error_logger.error(f"webhook done recovered order_id={payment.order_id}")
+    return "done"
+
+
+def _apply_dead(db: Session, payment: Payment, snapshot: toss_client.PaymentSnapshot) -> str:
+    """승인되지 못하고 끝난 결제(ABORTED·EXPIRED). 원장이 `ready` 로 남아 있던 것을 닫는다."""
+    if payment.status in (PAYMENT_FAILED, PAYMENT_DONE, PAYMENT_CANCELED):
+        return "noop"
+
+    payment.status = PAYMENT_FAILED
+    payment.fail_code = snapshot.status
+    payment.fail_reason = "결제가 완료되지 않았습니다."
+    db.commit()
+    info_logger.info(f"webhook dead applied order_id={payment.order_id} status={snapshot.status}")
+    return "failed"
 
 
 def cancel_billing(db: Session, user_id: int) -> UserSubscription:
