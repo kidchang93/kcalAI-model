@@ -68,7 +68,7 @@ _SODIUM_LIMIT_BY_CONDITION: dict[str, tuple[int, str]] = {
 # 하루 누적을 노출할 때 항상 함께 내리는 고지. 수치가 추정 기반이라는 사실과, 이것이 진료
 # 기준이 아니라는 사실 두 가지를 말한다.
 DAILY_NUTRIENT_NOTICE = (
-    "표시되는 수치는 기록한 음식의 1인분 실측값을 합한 추정치입니다. "
+    "표시되는 수치는 기록한 음식의 실측값을 먹은 양 기준으로 합한 추정치입니다. "
     "목표량은 병기·검사 결과에 따라 다르니 의료진·영양사와 상담하세요."
 )
 
@@ -87,21 +87,16 @@ def get_day_nutrient_axes(db: Session, user_id: int, target_date: date) -> dict 
     totals: dict[str, float] = {nutrient: 0.0 for nutrient in axes}
     measured_counts: dict[str, int] = {nutrient: 0 for nutrient in axes}
 
-    for label, ratio in items:
-        row = nutrition_service.measured_nutrition_for(db, label)
-
-        if row is None:
-            continue
-
+    for item in items:
         for nutrient in axes:
             # 모르는 축은 조용히 0이 되지 않고 여기서 터진다 — 축을 늘리면 컬럼 매핑도 함께
             # 늘리라는 뜻이고, 단위가 mg 가 아닌 축은 애초에 이 합계에 들어올 수 없다.
-            value = getattr(row, _AXIS_COLUMNS[nutrient])
+            value = getattr(item, _AXIS_COLUMNS[nutrient])
 
             if value is None:
                 continue
 
-            totals[nutrient] += float(value) * ratio
+            totals[nutrient] += float(value)
             measured_counts[nutrient] += 1
 
     payloads = [
@@ -157,22 +152,27 @@ def _day_bounds(target_date: date) -> tuple[datetime, datetime]:
     return start, start + timedelta(days=1)
 
 
-def _day_items(db: Session, user_id: int, target_date: date) -> list[tuple[str, float]]:
-    """그날 기록한 (음식명, 섭취 비율)."""
+def _day_items(db: Session, user_id: int, target_date: date) -> list[MealItem]:
+    """그날 기록한 항목들.
+
+    **수치는 항목에 굳어 있는 스냅샷을 쓴다** (리비전 0025) — 예전에는 `food_label`로
+    `food_nutrition`을 매번 다시 조회해 합쳤고, 그래서 DB 값이 바뀌면 과거 기록이 말하는
+    수치도 소급해 바뀌었다. 기록은 기록이어야 한다 (`docs/PRODUCT_STRATEGY.md` §0-1).
+    """
     start, end = _day_bounds(target_date)
 
-    rows = db.execute(
-        select(MealItem.food_label, MealItem.serving_ratio)
-        .join(MealLog, MealLog.id == MealItem.meal_log_id)
-        .where(
-            MealLog.user_id == user_id,
-            MealLog.deleted_at.is_(None),
-            MealLog.logged_at >= start,
-            MealLog.logged_at < end,
-        )
-    ).all()
-
-    return [(label, float(ratio)) for label, ratio in rows]
+    return list(
+        db.scalars(
+            select(MealItem)
+            .join(MealLog, MealLog.id == MealItem.meal_log_id)
+            .where(
+                MealLog.user_id == user_id,
+                MealLog.deleted_at.is_(None),
+                MealLog.logged_at >= start,
+                MealLog.logged_at < end,
+            )
+        ).all()
+    )
 
 
 def _axis_payload(

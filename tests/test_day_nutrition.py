@@ -15,8 +15,8 @@ from timeutil import UTC
 
 from models.auth_model import User
 from models.consent_model import UserCondition, UserHealthProfile
-from models.health_model import FoodNutrition, MealItem, MealLog
-from services import day_nutrition
+from models.health_model import FoodNutrition
+from services import day_nutrition, health_service
 
 TODAY = datetime.now(UTC).date()
 NOON = datetime.combine(TODAY, datetime.min.time(), tzinfo=UTC) + timedelta(hours=12)
@@ -54,20 +54,28 @@ def _add_food(db, label: str, **nutrients) -> None:
 
 
 def _log_meal(db, user, items: list[tuple[str, float]]) -> None:
-    meal = MealLog(user_id=user.id, logged_at=NOON, meal_type="lunch", total_kcal=300)
-    db.add(meal)
-    db.flush()
+    """실제 저장 경로로 기록한다 — 영양 스냅샷이 그때 굳는다 (리비전 0025).
 
-    for label, ratio in items:
-        db.add(
-            MealItem(
-                meal_log_id=meal.id,
-                food_label=label,
-                serving_ratio=ratio,
-                kcal=300,
-                source="manual",
-            )
-        )
+    `MealItem`을 직접 만들면 스냅샷이 비어 합계가 0이 된다. 하루 누적은 이제 그 스냅샷을
+    읽으므로, 테스트도 앱과 같은 경로를 타야 실제 동작을 검증한다.
+    """
+    health_service.create_meal(
+        db,
+        user_id=user.id,
+        meal_type="lunch",
+        logged_at=NOON,
+        photo_s3_key=None,
+        items=[
+            {
+                "food_label": label,
+                "serving_ratio": ratio,
+                "kcal": 300,
+                "source": "manual",
+                "confidence": None,
+            }
+            for label, ratio in items
+        ],
+    )
     db.flush()
 
 
@@ -98,7 +106,7 @@ def test_hypertension_gets_sodium_limit(db, user):
 
 
 def test_serving_ratio_scales_the_total(db, user):
-    """meal_items 에 영양소가 없어 조회 때 곱한다 — 반 인분은 절반이어야 한다."""
+    """스냅샷은 **먹은 양 기준**으로 굳는다 — 반 인분은 절반이어야 한다."""
     _add_condition(db, user, "hypertension")
     _add_food(db, "테스트면ZZ", sodium_mg=1800)
     _log_meal(db, user, [("테스트면ZZ", 0.5)])
@@ -262,3 +270,47 @@ class TestAxisIntegrity:
 
         assert potassium == 2000
         assert phosphorus == 1000
+
+
+class TestSnapshotIsImmutable:
+    """기록은 기록이어야 한다 (리비전 0025).
+
+    예전에는 하루 누적이 `food_label`로 `food_nutrition`을 매번 다시 조회해 합쳤다. 그래서
+    **DB 값이 바뀌면 과거 기록이 말하는 수치도 소급해 바뀌었다.** 2026-07-25에 1인분 기준을
+    4,536행 고치고 동명 행 규칙도 바꿨을 때 실제로 일어난 일이다.
+
+    진료에서 되짚거나 검사 수치 악화의 원인을 찾으려면 그때의 근거가 그대로 있어야 한다
+    (`docs/PRODUCT_STRATEGY.md` §0-1·§0-2).
+    """
+
+    def test_later_db_change_does_not_rewrite_the_past(self, db, user):
+        _add_condition(db, user, "hypertension")
+        _add_food(db, "테스트국ZZ", sodium_mg=800)
+        _log_meal(db, user, [("테스트국ZZ", 1.0)])
+
+        before = _axis(day_nutrition.get_day_nutrient_axes(db, user.id, TODAY), "sodium")
+
+        # 임포트·보정 스크립트가 값을 고치는 상황 (오늘 4,536행에 실제로 일어났다).
+        row = db.query(FoodNutrition).filter(FoodNutrition.food_label == "테스트국ZZ").one()
+        row.sodium_mg = 2500
+        db.flush()
+
+        after = _axis(day_nutrition.get_day_nutrient_axes(db, user.id, TODAY), "sodium")
+
+        assert before["consumed_mg"] == 800.0
+        assert after["consumed_mg"] == 800.0, "이미 기록된 끼니가 나중 DB 값으로 바뀌면 안 된다"
+
+    def test_new_record_uses_the_new_value(self, db, user):
+        """반대로 **새 기록**은 고쳐진 값을 쓴다 — 스냅샷은 동결이지 무시가 아니다."""
+        _add_condition(db, user, "hypertension")
+        _add_food(db, "테스트국ZZ", sodium_mg=800)
+
+        row = db.query(FoodNutrition).filter(FoodNutrition.food_label == "테스트국ZZ").one()
+        row.sodium_mg = 2500
+        db.flush()
+
+        _log_meal(db, user, [("테스트국ZZ", 1.0)])
+
+        result = day_nutrition.get_day_nutrient_axes(db, user.id, TODAY)
+
+        assert _axis(result, "sodium")["consumed_mg"] == 2500.0

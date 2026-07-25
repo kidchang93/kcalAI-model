@@ -82,6 +82,22 @@ class MealItem(Base):
     source: Mapped[str] = mapped_column(String(10), nullable=False)
     # source='ai'일 때 YOLO score. (5,4) — 0.9995 이상이 1.0으로 반올림되지 않게 소수 4자리 보존 (리비전 0009).
     confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 4), nullable=True)
+
+    # ── 기록 시점 영양 스냅샷 (리비전 0025) ─────────────────────────────────
+    # **먹은 양 기준**(1인분 실측 × serving_ratio)이다. 실측이 없는 음식은 NULL.
+    #
+    # 왜 저장하는가: 이 값들이 없던 동안 하루 누적·경고는 매번 `food_label`로 `food_nutrition`을
+    # 다시 조회해 계산했다. 그러면 **DB 값이 바뀔 때 과거 기록의 수치도 소급해 바뀐다** —
+    # 기록이 아니라 추정이 된다. 2026-07-25에 1인분 기준을 4,536행 고쳤고 동명 행 규칙도
+    # 바꿨는데, 그 순간 사용자의 지난 기록이 말하는 나트륨도 조용히 달라졌다.
+    #
+    # "판단에 쓸 근거를 정확하게 남긴다"(`docs/PRODUCT_STRATEGY.md` §0-1)는 목표에서
+    # 근거는 **기록된 시점의 것**이어야 한다. 진료에서 되짚을 수 있으려면 더욱 그렇다.
+    sodium_mg: Mapped[Decimal | None] = mapped_column(Numeric(8, 1), nullable=True)
+    potassium_mg: Mapped[Decimal | None] = mapped_column(Numeric(8, 1), nullable=True)
+    phosphorus_mg: Mapped[Decimal | None] = mapped_column(Numeric(8, 1), nullable=True)
+    sugar_g: Mapped[Decimal | None] = mapped_column(Numeric(6, 1), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

@@ -270,18 +270,55 @@ def _total_kcal(items: list[dict]) -> int:
     return sum(int(item["kcal"]) for item in items)
 
 
+# 스냅샷으로 남길 축 → FoodNutrition 컬럼 (리비전 0025).
+_SNAPSHOT_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("sodium_mg", "sodium_mg"),
+    ("potassium_mg", "potassium_mg"),
+    ("phosphorus_mg", "phosphorus_mg"),
+    ("sugar_g", "sugar_g"),
+)
+
+
+def _nutrient_snapshot(db: Session, food_label: str, serving_ratio: Decimal) -> dict[str, Decimal | None]:
+    """기록 시점의 영양 수치를 **먹은 양 기준**으로 굳힌다 (리비전 0025).
+
+    조회 규약은 경고 판정과 같다 — 정확·공백무시 일치만 쓰고 유사도는 쓰지 않는다. 두 곳이
+    다른 방식으로 찾으면 "경고는 떴는데 합계에는 안 잡히는" 음식이 생긴다.
+
+    import 를 함수 안에서 하는 이유는 `nutrition_service`가 이 모듈을 쓰지 않지만 순환을
+    피하기 위해서다(경고·추천이 health_service 를 참조한다).
+    """
+    from services import nutrition_service
+
+    row = nutrition_service.measured_nutrition_for(db, food_label)
+
+    if row is None:
+        return {name: None for name, _ in _SNAPSHOT_COLUMNS}
+
+    snapshot: dict[str, Decimal | None] = {}
+    for name, source_column in _SNAPSHOT_COLUMNS:
+        value = getattr(row, source_column)
+        snapshot[name] = (
+            None if value is None else (Decimal(value) * serving_ratio).quantize(Decimal("0.1"))
+        )
+
+    return snapshot
+
+
 def _insert_meal_items(db: Session, meal_log_id: int, items: list[dict]) -> None:
     for item in items:
+        serving_ratio = Decimal(str(item["serving_ratio"]))
         db.add(
             MealItem(
                 meal_log_id=meal_log_id,
                 food_label=item["food_label"],
-                serving_ratio=Decimal(str(item["serving_ratio"])),
+                serving_ratio=serving_ratio,
                 kcal=int(item["kcal"]),
                 source=item["source"],
                 confidence=(
                     Decimal(str(item["confidence"])) if item.get("confidence") is not None else None
                 ),
+                **_nutrient_snapshot(db, item["food_label"], serving_ratio),
             )
         )
 
