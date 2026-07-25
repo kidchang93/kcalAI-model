@@ -17,6 +17,7 @@ from schemas.health_schema import (
     MealCreateRequest,
     MealResponse,
     MealUpdateRequest,
+    MedicalReportResponse,
     MessageResponse,
     ProfileResponse,
     ProfileUpsertRequest,
@@ -25,7 +26,7 @@ from schemas.health_schema import (
     WeightCreateRequest,
     WeightResponse,
 )
-from services import health_service
+from services import health_service, medical_report_service
 
 error_logger = setup_level_logger(logging.ERROR)
 
@@ -145,6 +146,30 @@ def read_trends(
 ):
     try:
         return health_service.get_trends(db, current_user.id, start_date, end_date)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+# ---- 진료 지참용 리포트 ----
+
+@router.get(
+    "/me/report",
+    response_model=MedicalReportResponse,
+    responses={400: {"model": HealthError}, 401: {"model": HealthError}},
+)
+def read_medical_report(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """진료·영양상담에 가져갈 기간 기록.
+
+    질환·병기 → 축별 추이 → 끼니 상세 순서다. 수치보다 기준이 먼저 와야 읽는 사람이
+    맥락을 안다 (`services/medical_report_service.py`).
+    """
+    try:
+        return medical_report_service.build_report(db, current_user.id, start_date, end_date)
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 

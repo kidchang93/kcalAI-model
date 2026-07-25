@@ -234,3 +234,51 @@ class WeightResponse(BaseModel):
 
 class HealthError(BaseModel):
     detail: str
+
+
+class ReportMealItem(BaseModel):
+    food_label: str
+    serving_ratio: float
+    kcal: int
+    # 기록 시점에 굳은 스냅샷 (리비전 0025). 실측이 없던 음식은 null 이고, 그 사실이
+    # 진료 문서에도 그대로 드러나야 한다 — 빈 값을 0으로 바꾸면 "안 먹었다"가 된다.
+    sodium_mg: float | None
+    potassium_mg: float | None
+    phosphorus_mg: float | None
+
+
+class ReportMeal(BaseModel):
+    date: str
+    logged_at: str
+    meal_type: str
+    total_kcal: int
+    items: list[ReportMealItem]
+
+
+class ReportKcalSummary(BaseModel):
+    target: int | None
+    # 기록한 날만 나눈 평균. 기록 없는 날은 0이 아니라 '모름'이다.
+    average: int | None
+    recorded_days: int
+    total_days: int
+
+
+class MedicalReportResponse(BaseModel):
+    """진료·영양상담 지참용 기간 리포트 (`services/medical_report_service.py`).
+
+    순서에 의도가 있다 — **질환·병기가 수치보다 먼저** 온다. 읽는 사람(의료진)이 어떤 기준으로
+    보아야 하는지를 먼저 알아야 하기 때문이다.
+    """
+
+    start_date: str
+    end_date: str
+    # 언제 뽑은 문서인지. 진료실에서 최신본인지 판단하는 근거다.
+    generated_at: str
+    conditions: list[str]
+    # 신장병 병기. 미입력이면 null — 나트륨 상한이 여기서 갈리므로 밝힌다.
+    ckd_stage_label: str | None
+    kcal: ReportKcalSummary
+    # 질환 축 추이. 해당 질환이 없으면 null (TrendsResponse 와 같은 구조).
+    nutrients: NutrientTrends | None
+    meals: list[ReportMeal]
+    notice: str

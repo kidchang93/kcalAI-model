@@ -373,3 +373,65 @@ class TestPeriodTrends:
         assert day_nutrition.get_period_nutrient_axes(
             db, user.id, TODAY - timedelta(days=6), TODAY
         ) is None
+
+
+class TestMedicalReport:
+    """진료 지참용 리포트 — 목표 지표의 첫 항목을 측정 가능하게 만드는 기능.
+
+    여기서 고정할 것은 **정직함**이다. 실측이 없던 항목을 0으로 바꾸면 "안 먹었다"가 되고,
+    기록 없는 날을 평균에 넣으면 "적게 먹었다"가 된다.
+    """
+
+    def test_report_leads_with_conditions_and_stage(self, db, user):
+        """질환·병기가 수치보다 먼저다 — 읽는 사람이 어떤 기준으로 볼지 알아야 한다."""
+        from services import medical_report_service
+
+        _add_condition(db, user, "ckd")
+        _set_stage(db, user, "hemodialysis")
+        _add_food(db, "테스트국ZZ", sodium_mg=800)
+        _log_meal(db, user, [("테스트국ZZ", 1.0)])
+
+        report = medical_report_service.build_report(
+            db, user.id, TODAY - timedelta(days=6), TODAY
+        )
+
+        assert "신장 질환" in report["conditions"]
+        assert report["ckd_stage_label"] == "혈액투석"
+        assert report["notice"]
+
+    def test_unmeasured_item_stays_null_not_zero(self, db, user):
+        """실측이 없던 항목은 null 로 남는다 — 0으로 적으면 '안 먹었다'가 된다."""
+        from services import medical_report_service
+
+        _add_condition(db, user, "hypertension")
+        _log_meal(db, user, [("테스트미측정ZZ", 1.0)])
+
+        report = medical_report_service.build_report(
+            db, user.id, TODAY - timedelta(days=6), TODAY
+        )
+        item = report["meals"][0]["items"][0]
+
+        assert item["sodium_mg"] is None
+
+    def test_kcal_average_uses_recorded_days_only(self, db, user):
+        from services import medical_report_service
+
+        _add_condition(db, user, "hypertension")
+        _add_food(db, "테스트국ZZ", sodium_mg=800, kcal=300)
+        _log_meal(db, user, [("테스트국ZZ", 1.0)])
+
+        report = medical_report_service.build_report(
+            db, user.id, TODAY - timedelta(days=6), TODAY
+        )
+
+        assert report["kcal"]["recorded_days"] == 1
+        assert report["kcal"]["total_days"] == 7
+        assert report["kcal"]["average"] == 300
+
+    def test_range_limit_is_enforced(self, db, user):
+        from services import medical_report_service
+
+        with pytest.raises(ValueError):
+            medical_report_service.build_report(
+                db, user.id, TODAY - timedelta(days=200), TODAY
+            )
