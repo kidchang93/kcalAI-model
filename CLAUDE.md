@@ -57,6 +57,10 @@ open http://127.0.0.1:8000/docs
 
 **식약처 음식 DB 적재** (칼로리 측정 `/api/nutrition/estimate`과 식단 추천의 데이터 원천 — 둘 다 LLM 없이 이 DB만 씁니다, `docs/DATA_MODEL.md` 12·13장): `venv/bin/python scripts/import_mfds_food.py <식약처 음식 CSV 경로>` — 저장소 루트에서 실행, idempotent upsert(재실행 안전). 원본 CSV(`../data/`)는 커밋하지 않습니다.
 
+> **동명 다중 행 규칙 (2026-07-25)**: 원본은 같은 식품명이 여러 행이고(고유 15,568건 중 **1,717건**, 식품중량 최대 19.7배 차이), 예전엔 "먼저 나온 행"을 골라 **CSV 순서가 값을 정했다** — 라면이 226.6 ml 행으로 들어와 나트륨 290 mg 이 되면서 고나트륨 경고가 침묵한 사고의 원인이다. 지금은 **완전 중복을 걷어낸 뒤 1인분 kcal 중앙 순위 행을 통째로** 고른다(짝수면 큰 쪽 — 과소평가가 더 위험하다). 값을 영양소별 중앙값으로 섞지 않는 이유는 **존재하지 않는 조합**이 만들어지기 때문이다.
+>
+> ⚠️ **재임포트 후에는 반드시 이 순서로 후속 스크립트를 다시 돌립니다** (임포트가 mfds 행을 덮어씁니다): `import_mfds_food.py` → `normalize_serving_size.py` → `correct_common_foods.py` → `backfill_curated_nutrients.py`
+
 **식약처 가공식품 DB 선별 적재** (음료·주류·과자·조미료 보강, estimate 전용 — 추천 후보에는 안 들어갑니다, `docs/DATA_MODEL.md` 14장): `venv/bin/python scripts/import_mfds_processed.py <가공식품 xlsx 경로>` — 대표식품명 단위 중앙값 집계(249행), 기존 mfds(요리)·curated 행은 덮지 않습니다.
 
 **원재료성식품 DB 적재** (원물 과일·채소·견과·수산물 보강, estimate 전용, `docs/DATA_MODEL.md` 14장): `venv/bin/python scripts/import_mfds_raw.py <농진청 CSV> <해수부 CSV>` — 일반명 중앙값 집계(1,384행), '생것' 우선·차류는 추출만. 요리·가공식품 행은 덮지 않습니다.
