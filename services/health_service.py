@@ -359,7 +359,11 @@ def list_meals(db: Session, user_id: int, target_date: date) -> list[MealLog]:
                 MealLog.logged_at >= start,
                 MealLog.logged_at < end,
             )
-            .order_by(MealLog.logged_at.asc())
+            # id 를 두 번째 키로 둔다 — 같은 날 기록은 `logged_at` 이 **같은 값으로 몰린다**
+            # (앱이 과거 날짜를 UTC 정오로 앵커한다, DATA_MODEL 4장). 시각만으로 정렬하면
+            # 순서가 DB 물리 순서에 맡겨져, 항목을 더한 끼니(UPDATE)가 목록 맨 뒤로 밀린다 —
+            # 사용자에겐 "방금 추가한 게 사라진" 것으로 보인다.
+            .order_by(MealLog.logged_at.asc(), MealLog.id.asc())
         ).all()
     )
 
