@@ -51,7 +51,7 @@ class NutritionWarningItem(BaseModel):
     # 실측 수치만으로 발동한 경고는 걸린 키워드가 없어 **빈 문자열**이다 (3-5).
     matched_keyword: str
     matched_label: str
-    # 영양소 축 경고면 sodium|potassium|phosphorus, 키워드 경고면 None.
+    # 영양소 축 경고면 sodium|potassium|phosphorus|sugar, 키워드 경고면 None.
     # 신장병·고혈압 등 영양 제한 질병은 "칼륨이 높은 편" 식으로 어느 영양소인지 알려준다
     # (docs/CKD_NUTRITION.md 3-3). 처방이 아니라 지침 상대 분류다.
     nutrient: str | None = None
@@ -59,6 +59,12 @@ class NutritionWarningItem(BaseModel):
     # 처럼 근거를 함께 보여준다 — 수치 없이 '높은 편'만 말하면 사용자가 판단할 근거가 없다.
     # 실측이 없는 음식(간식 등 미측정)은 None 이고, 그때 경고는 이름 기반이다.
     nutrient_mg: float | None = None
+    # `nutrient_mg`의 단위. **당류만 g** 이고 나머지 축은 mg 다 (2026-07-25 추가, 하위호환 —
+    # 옛 앱은 이 필드를 무시하고 mg 로 표기한다). 필드명을 nutrient_mg 로 둔 채 단위를 따로
+    # 내리는 이유는 계약을 깨지 않기 위해서다.
+    nutrient_unit: Literal["mg", "g"] | None = None
+    # 당류(sugar) 축에는 **등급이 없다** — 간식·음료 행의 1인분이 제품 한 통·한 판이라
+    # 경계를 대면 거의 전부 '높음'이 된다 (`services/chronic_food_rules.py`의 실측 주석).
     tier: Literal["low", "mid", "high"] | None = None
 
 

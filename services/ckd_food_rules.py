@@ -222,10 +222,15 @@ TIER_NOTICE = (
 )
 
 # 경고 판정 축 — dietary_tag → (영양소 코드, 표시명). 경고 항목의 nutrient 필드에 실린다.
+# 경고 축 = (dietary_tag, nutrient 코드, 표시명). 사용자의 질병에 붙은 태그와 겹치는 축만 돈다.
+# 당류(low_sugar)는 신장학회가 아니라 대한당뇨병학회 근거이고 판정도 `chronic_food_rules`가
+# 하지만, 축 목록은 경고 API 하나가 공유하므로 여기 함께 둔다 — 목록이 갈리면 어느 쪽이 진짜인지
+# 알 수 없게 된다.
 WARNING_AXES: tuple[tuple[str, str, str], ...] = (
     ("low_sodium", "sodium", "나트륨"),
     ("low_potassium", "potassium", "칼륨"),
     ("low_phosphorus", "phosphorus", "인"),
+    ("low_sugar", "sugar", "당류"),
 )
 NUTRIENT_LABELS: dict[str, str] = {code: label for _tag, code, label in WARNING_AXES}
 

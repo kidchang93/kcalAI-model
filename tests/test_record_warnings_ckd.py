@@ -90,11 +90,24 @@ class TestHypertensionWarnings:
 
 
 class TestNonNutrientConditionUnchanged:
-    def test_diabetes_keeps_keyword_warning(self, db):
+    def test_diabetes_keyword_moved_to_sugar_axis(self, db):
+        """당뇨는 2026-07-25부터 영양 축 질환이다 (당류 + 나트륨, 리비전 0024).
+
+        축이 붙으면 판정이 `exclude_keywords` 경로를 더 이상 타지 않으므로, 그 키워드
+        (설탕·초콜릿·케이크…)는 당류 축이 흡수해야 한다 — 흡수를 빠뜨리면 그동안 나가던
+        경고가 조용히 사라진다. 칼륨은 여전히 당뇨와 무관하다.
+        """
         user = _user_with_condition(db, "diabetes", "warn-dm")
         w = get_record_warnings(db, user.id, ["초콜릿케이크", "시금치나물"])
-        # 당뇨는 영양 축이 없어 기존 키워드 경고(nutrient=None), 칼륨은 관여 안 함.
-        assert len(w) == 1
-        assert w[0]["matched_label"] == "초콜릿케이크"
-        assert w[0]["nutrient"] is None
+
+        assert [(x["matched_label"], x["nutrient"]) for x in w] == [("초콜릿케이크", "sugar")]
         assert w[0]["code"] == "diabetes"
+
+    def test_pregnancy_still_uses_keyword_warning(self, db):
+        """영양 축이 없는 질병은 기존 키워드 경고(nutrient=None) 그대로다."""
+        user = _user_with_condition(db, "pregnancy", "warn-preg")
+        w = get_record_warnings(db, user.id, ["소주", "시금치나물"])
+
+        assert len(w) == 1
+        assert w[0]["matched_label"] == "소주"
+        assert w[0]["nutrient"] is None

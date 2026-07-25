@@ -299,6 +299,8 @@ def get_record_warnings(db: Session, user_id: int, food_labels: list[str]) -> li
                 "matched_label": label,
                 "nutrient": nutrient,
                 "nutrient_mg": nutrient_mg,
+                # 수치의 단위. 당류만 g 다 — 앱이 "1인분 27g"처럼 그대로 붙여 쓴다.
+                "nutrient_unit": _axis_unit(nutrient) if nutrient is not None else None,
                 "tier": tier,
             }
         )
@@ -354,11 +356,19 @@ def get_record_warnings_response(db: Session, user_id: int, food_labels: list[st
     (`CHRONIC_NUTRITION_SOURCES.md` §5-6), 그 사실을 고지 없이 등급만 보여주지 않는다.
     """
     warnings = get_record_warnings(db, user_id, food_labels)
-    has_sodium_tier = any(w["nutrient"] == "sodium" and w["tier"] is not None for w in warnings)
+
+    notices: list[str] = []
+    if any(w["nutrient"] == "sodium" and w["tier"] is not None for w in warnings):
+        notices.append(chronic_food_rules.SODIUM_TIER_NOTICE)
+    # 당류 경고에는 등급이 없는 대신 **한계 고지**가 따라간다 (§2-4). 우리는 양만 보고 있고
+    # 혈당 반응을 가르는 GI·식이섬유는 DB 에 없다 — 이 사실을 숨기면 수치가 과신을 부른다.
+    if any(w["nutrient"] == "sugar" for w in warnings):
+        notices.append(chronic_food_rules.DIABETES_LIMIT_NOTICE)
 
     return {
         "warnings": warnings,
-        "notice": chronic_food_rules.SODIUM_TIER_NOTICE if has_sodium_tier else None,
+        # 축이 둘 다 걸리면 이어 붙인다 — 앱 계약은 문자열 하나(`notice`)다.
+        "notice": " ".join(notices) if notices else None,
     }
 
 
@@ -409,14 +419,29 @@ def _measured_for_warning(db: Session, food_label: str) -> FoodNutrition | None:
 
 
 def _axis_measured_mg(row: FoodNutrition | None, nutrient: str) -> float | None:
+    """축의 1인분 실측값. **당류만 단위가 g** 이다 (`_axis_unit`).
+
+    당류는 그 위에 신뢰 필터가 하나 더 붙는다 — 간식·음료 행의 "1인분"이 제품 한 통·한 판이라
+    수치를 그대로 근거로 붙이면 사용자가 먹지도 않은 양이 문장에 실린다
+    (`chronic_food_rules.trustworthy_sugar_g`).
+    """
     if row is None:
         return None
+    if nutrient == "sugar":
+        value = row.sugar_g
+        return chronic_food_rules.trustworthy_sugar_g(float(value)) if value is not None else None
+
     value = {
         "sodium": row.sodium_mg,
         "potassium": row.potassium_mg,
         "phosphorus": row.phosphorus_mg,
     }.get(nutrient)
     return float(value) if value is not None else None
+
+
+def _axis_unit(nutrient: str) -> str:
+    """경고 수치의 단위. 당류만 g 이고 나머지는 mg 다 (앱이 이 값으로 표기한다)."""
+    return "g" if nutrient == "sugar" else "mg"
 
 
 def _axis_tier(
@@ -440,6 +465,10 @@ def _axis_tier(
             name_tier = "high" if name_matched is not None else None
             return chronic_food_rules.sodium_display_tier(label, nutrient_mg, name_tier)
         return None
+    if nutrient == "sugar":
+        # **당류에는 등급이 없다.** 1인분 기준이 무너진 데이터 위에 경계를 대면 간식·음료가
+        # 거의 전부 '높음'이 된다 (`chronic_food_rules.SUGAR_TIER_CONDITIONS` 주석의 실측).
+        return None
     return None
 
 
@@ -451,4 +480,8 @@ def _ckd_axis_match(nutrient: str, label: str) -> str | None:
         return ckd_food_rules.potassium_high_match(label)
     if nutrient == "phosphorus":
         return ckd_food_rules.phosphorus_caution(label)
+    if nutrient == "sugar":
+        # 당류만 이름 축이 **유일한** 근거다 — 총당류 실측으로 발동하면 지침이 유익하다고 명시한
+        # 생과일·흰우유를 경고하게 된다 (CHRONIC_NUTRITION_SOURCES.md §2-2·§5-2).
+        return chronic_food_rules.added_sugar_caution(label)
     return None
