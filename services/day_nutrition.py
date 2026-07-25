@@ -15,14 +15,17 @@
    3개 기준"이라고 밝힐 수 있게 한다. 이걸 감추면 커버리지 구멍이 "적게 먹었다"로 읽힌다
    (`PRODUCT_STRATEGY.md` §5-2 의 curated 결측 사건과 같은 종류의 실수).
 
-영양소는 `meal_items` 에 저장되지 않는다(kcal 만 저장). 그래서 매 조회 시 food_label 로 실측
-행을 찾아 `serving_ratio` 를 곱한다 — 저장을 늘리지 않는 대신, DB 값이 보정되면 과거 합계도
-따라 바뀐다. 기록의 kcal 과 달리 이 수치는 **참고용 안내**라 그 편이 낫다고 판단했다.
+**수치는 `meal_items` 에 굳어 있는 스냅샷을 읽는다** (리비전 0025). 예전에는 매 조회 시
+food_label 로 실측 행을 다시 찾아 `serving_ratio` 를 곱했고, 그래서 DB 값이 보정되면 과거
+합계도 따라 바뀌었다 — 2026-07-25에 1인분 기준 4,536행과 동명 행 규칙을 고치자 지난 기록이
+말하는 나트륨이 실제로 달라졌다. 기록은 기록이어야 한다 (`docs/PRODUCT_STRATEGY.md` §0-1).
+
+같은 스냅샷을 기간 단위로 합치는 것이 `get_period_nutrient_axes` 다 (리포트 탭).
 """
 
 from datetime import date, datetime, time, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from timeutil import UTC
@@ -107,6 +110,107 @@ def get_day_nutrient_axes(db: Session, user_id: int, target_date: date) -> dict 
     return {
         "axes": payloads,
         "total_items": len(items),
+        "notice": _notice(payloads),
+    }
+
+
+def get_period_nutrient_axes(
+    db: Session, user_id: int, start_date: date, end_date: date
+) -> dict | None:
+    """기간(주·월)의 질환 축 추이. 해당 질환이 없으면 None (리포트가 카드를 그리지 않는다).
+
+    하루 누적(`get_day_nutrient_axes`)이 "오늘 얼마나"라면 이쪽은 **"요즘 어떤가"**다.
+    만성질환 관리에서 하루는 흔들리고 추세가 말을 한다 — 검사 수치가 나빠졌을 때 되짚을 수
+    있어야 한다는 목표 지표(`docs/PRODUCT_STRATEGY.md` §0-2)가 이 화면을 요구한다.
+
+    수치는 `meal_items` 스냅샷이라 **과거가 흔들리지 않는다** (리비전 0025).
+
+    평균은 **기록한 날만** 나눈다. 기록 없는 날을 0으로 넣어 평균을 내리면 "적게 먹었다"로
+    읽히는데, 실제로는 기록을 안 한 것이다 (`measured_items` 를 숨기지 않는 것과 같은 이유).
+    """
+    axes = _axes_for_user(db, user_id)
+
+    if not axes:
+        return None
+
+    stage = get_ckd_stage(db, user_id)
+    conditions = {condition.code for condition in meta_service.list_user_condition_types(db, user_id)}
+
+    start, _ = _day_bounds(start_date)
+    _, end = _day_bounds(end_date)
+    day_column = func.date(func.timezone("UTC", MealLog.logged_at))
+
+    columns = [func.sum(getattr(MealItem, _AXIS_COLUMNS[nutrient])) for nutrient in axes]
+    counts = [func.count(getattr(MealItem, _AXIS_COLUMNS[nutrient])) for nutrient in axes]
+
+    rows = db.execute(
+        select(day_column.label("day"), func.count(MealItem.id), *columns, *counts)
+        .join(MealLog, MealLog.id == MealItem.meal_log_id)
+        .where(
+            MealLog.user_id == user_id,
+            MealLog.deleted_at.is_(None),
+            MealLog.logged_at >= start,
+            MealLog.logged_at < end,
+        )
+        .group_by(day_column)
+    ).all()
+
+    by_day = {row[0]: row for row in rows}
+    axis_days: dict[str, list[dict]] = {nutrient: [] for nutrient in axes}
+    total_days = (end_date - start_date).days + 1
+
+    for offset in range(total_days):
+        day = start_date + timedelta(days=offset)
+        row = by_day.get(day)
+
+        for index, nutrient in enumerate(axes):
+            # row = (day, total_items, *sums, *counts)
+            consumed = None if row is None else row[2 + index]
+            measured = 0 if row is None else row[2 + len(axes) + index]
+            axis_days[nutrient].append(
+                {
+                    "date": day.isoformat(),
+                    "consumed_mg": round(float(consumed or 0), 1),
+                    "measured_items": int(measured),
+                    "total_items": 0 if row is None else int(row[1]),
+                }
+            )
+
+    payloads = []
+    for nutrient in axes:
+        days = axis_days[nutrient]
+        recorded = [d for d in days if d["total_items"] > 0]
+        limit_mg, basis = _sodium_limit(conditions, stage) if nutrient == "sodium" else (None, None)
+        reference_mg, reference_note = (
+            _reference(nutrient, stage) if nutrient != "sodium" else (None, None)
+        )
+
+        payloads.append(
+            {
+                "nutrient": nutrient,
+                "label": ckd_food_rules.NUTRIENT_LABELS[nutrient],
+                "days": days,
+                # 기록한 날만 나눈다 (docstring).
+                "average_mg": (
+                    round(sum(d["consumed_mg"] for d in recorded) / len(recorded), 1)
+                    if recorded
+                    else None
+                ),
+                "recorded_days": len(recorded),
+                "limit_mg": limit_mg,
+                # 상한이 있는 축(나트륨)만 셀 수 있다. 기록 없는 날은 넘었는지 알 수 없으므로 뺀다.
+                "days_over_limit": (
+                    len([d for d in recorded if d["consumed_mg"] > limit_mg])
+                    if limit_mg is not None
+                    else None
+                ),
+                "reference_mg": reference_mg,
+                "basis": basis or reference_note,
+            }
+        )
+
+    return {
+        "axes": payloads,
         "notice": _notice(payloads),
     }
 

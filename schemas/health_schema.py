@@ -123,6 +123,36 @@ class TrendDay(BaseModel):
     meal_count: int
 
 
+class NutrientTrendDay(BaseModel):
+    date: str
+    consumed_mg: float
+    # 이 축의 실측을 찾은 항목 수 / 그날 기록한 전체 항목 수. 앞이 작으면 합계가 과소평가다.
+    measured_items: int
+    total_items: int
+
+
+class NutrientTrendAxis(BaseModel):
+    nutrient: str
+    label: str
+    # 범위 내 모든 날짜를 오름차순으로 채운다 (기록 없는 날은 0).
+    days: list[NutrientTrendDay]
+    # **기록한 날만** 나눈 평균. 기록 없는 날을 0으로 넣으면 "적게 먹었다"로 읽힌다.
+    # 기록이 하루도 없으면 null.
+    average_mg: float | None
+    recorded_days: int
+    # 1일 상한 — 나트륨에만 있다 (DayNutrientAxis 와 같은 규칙).
+    limit_mg: int | None
+    # 상한이 있을 때만 셀 수 있다. 기록 없는 날은 넘었는지 알 수 없어 제외한다.
+    days_over_limit: int | None
+    reference_mg: int | None
+    basis: str | None
+
+
+class NutrientTrends(BaseModel):
+    axes: list[NutrientTrendAxis]
+    notice: str
+
+
 class TrendsResponse(BaseModel):
     start_date: str
     end_date: str
@@ -130,6 +160,10 @@ class TrendsResponse(BaseModel):
     target_kcal: int | None
     # 범위 내 모든 날짜를 오름차순으로 채운다. 기록 없는 날도 0 으로 존재한다 (그래프용).
     days: list[TrendDay]
+    # 질환 축 기간 추이. 해당 질환이 없으면 null (2026-07-25, DATA_MODEL 28장).
+    # 만성질환 관리에서 하루는 흔들리고 **추세가 말을 한다** — 리포트가 kcal 만 보여주면
+    # 정작 이 앱의 대상 사용자에게 중요한 숫자가 어디에도 없다.
+    nutrients: NutrientTrends | None = None
 
 
 class MealItemInput(BaseModel):

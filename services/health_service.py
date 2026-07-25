@@ -256,11 +256,15 @@ def get_trends(db: Session, user_id: int, start_date: date, end_date: date) -> d
     goal = get_open_goal(db, user_id)
     target = int(goal.target_kcal) if goal is not None else None
 
+    # 질환 축 추이. import 를 함수 안에 두는 이유는 day_nutrition 이 이 모듈을 참조하기 때문이다.
+    from services import day_nutrition
+
     return {
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
         "target_kcal": target,
         "days": days,
+        "nutrients": day_nutrition.get_period_nutrient_axes(db, user_id, start_date, end_date),
     }
 
 

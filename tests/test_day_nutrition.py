@@ -314,3 +314,62 @@ class TestSnapshotIsImmutable:
         result = day_nutrition.get_day_nutrient_axes(db, user.id, TODAY)
 
         assert _axis(result, "sodium")["consumed_mg"] == 2500.0
+
+
+class TestPeriodTrends:
+    """기간 추이 — "요즘 어떤가"를 답한다 (리포트 탭).
+
+    하루 누적과 기준(상한·참고치)은 같은 함수를 쓰지만, 여기서 따로 고정할 판단이 둘 있다.
+    """
+
+    def test_average_divides_by_recorded_days_only(self, db, user):
+        """기록 없는 날을 0으로 넣어 평균을 내리면 "적게 먹었다"로 읽힌다 — 실제로는 안 적은 것이다."""
+        _add_condition(db, user, "hypertension")
+        _add_food(db, "테스트국ZZ", sodium_mg=1000)
+        _log_meal(db, user, [("테스트국ZZ", 1.0)])
+
+        result = day_nutrition.get_period_nutrient_axes(
+            db, user.id, TODAY - timedelta(days=6), TODAY
+        )
+        sodium = _axis(result, "sodium")
+
+        assert len(sodium["days"]) == 7
+        assert sodium["recorded_days"] == 1
+        # 7,000 ÷ 7 = 1,000 이 아니라 1,000 ÷ 1 이다.
+        assert sodium["average_mg"] == 1000.0
+
+    def test_days_over_limit_counts_only_recorded_days(self, db, user):
+        """기록 없는 날은 넘었는지 알 수 없다 — 세면 안 된다."""
+        _add_condition(db, user, "hypertension")
+        _add_food(db, "테스트짠국ZZ", sodium_mg=2500)
+        _log_meal(db, user, [("테스트짠국ZZ", 1.0)])
+
+        result = day_nutrition.get_period_nutrient_axes(
+            db, user.id, TODAY - timedelta(days=6), TODAY
+        )
+        sodium = _axis(result, "sodium")
+
+        assert sodium["limit_mg"] == 2000
+        assert sodium["days_over_limit"] == 1
+
+    def test_axes_without_limit_have_no_over_count(self, db, user):
+        """칼륨·인은 상한 자체가 없다 — 여기서 임의 기준을 만들면 처방이 된다."""
+        _add_condition(db, user, "ckd")
+        _set_stage(db, user, "hemodialysis")
+        _add_food(db, "테스트과일ZZ", potassium_mg=400, phosphorus_mg=50, sodium_mg=1)
+        _log_meal(db, user, [("테스트과일ZZ", 1.0)])
+
+        result = day_nutrition.get_period_nutrient_axes(
+            db, user.id, TODAY - timedelta(days=6), TODAY
+        )
+
+        assert _axis(result, "potassium")["days_over_limit"] is None
+        assert _axis(result, "phosphorus")["days_over_limit"] is None
+
+    def test_no_condition_returns_none(self, db, user):
+        _add_food(db, "테스트국ZZ", sodium_mg=1000)
+        _log_meal(db, user, [("테스트국ZZ", 1.0)])
+
+        assert day_nutrition.get_period_nutrient_axes(
+            db, user.id, TODAY - timedelta(days=6), TODAY
+        ) is None
