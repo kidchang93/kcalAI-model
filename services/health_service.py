@@ -83,6 +83,32 @@ def get_profile(db: Session, user_id: int) -> UserProfile:
     return profile
 
 
+# 만 14세 미만은 가입을 받지 않는다 (`docs/LEGAL_COMPLIANCE.md` §1).
+#
+# 개인정보 보호법 제22조의2 — 만 14세 미만 아동의 개인정보를 처리하려면 법정대리인의 동의를
+# 받고 **확인**해야 한다. 위반은 5년 이하 징역 또는 5천만원 이하 벌금이다. 우리는 질병·알러지라는
+# **민감정보**까지 다루므로 요건이 더 무겁다.
+#
+# 동의 절차를 만드는 대신 차단을 택한 이유는 **대상이 아니어서**다 — 이 앱의 식이 규칙은 전부
+# 성인 지침(KSN·KDA·KSH)에서 왔고, 소아 신장질환·소아 당뇨는 기준이 다르다. 차단하지 않으면
+# 아이에게 성인 기준을 적용하게 된다.
+#
+# ⚠️ **판정은 연 나이다.** 우리는 생년월일이 아니라 출생연도만 수집하므로(최소수집), 생일이
+# 지나지 않은 만 13세가 통과할 수 있다. 이 한계는 문서와 약관에 적는다.
+MIN_SIGNUP_AGE = 14
+
+AGE_RESTRICTION_MESSAGE = (
+    "만 14세 미만은 가입할 수 없습니다. "
+    "이 서비스는 성인 진료지침을 기준으로 식단을 안내하며, 질병 정보를 다룹니다."
+)
+
+
+def _ensure_minimum_age(birth_year: int) -> None:
+    """연 나이가 기준 미만이면 거부한다 (`MIN_SIGNUP_AGE` 주석의 근거)."""
+    if datetime.now(UTC).year - birth_year < MIN_SIGNUP_AGE:
+        raise ValueError(AGE_RESTRICTION_MESSAGE)
+
+
 def upsert_profile(
     db: Session,
     user_id: int,
@@ -92,6 +118,8 @@ def upsert_profile(
     weight_kg: float,
     activity_level: str,
 ) -> UserProfile:
+    _ensure_minimum_age(birth_year)
+
     profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
 
     if profile is None:

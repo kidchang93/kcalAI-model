@@ -56,22 +56,26 @@ def read_profile(
 @router.put(
     "/me/profile",
     response_model=ProfileResponse,
-    responses={401: {"model": HealthError}},
+    responses={400: {"model": HealthError}, 401: {"model": HealthError}},
 )
 def update_profile(
     request: ProfileUpsertRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    profile = health_service.upsert_profile(
-        db,
-        current_user.id,
-        sex=request.sex,
-        birth_year=request.birth_year,
-        height_cm=request.height_cm,
-        weight_kg=request.weight_kg,
-        activity_level=request.activity_level,
-    )
+    """400 은 **연령 제한**이다 (만 14세 미만, `docs/LEGAL_COMPLIANCE.md` §1)."""
+    try:
+        profile = health_service.upsert_profile(
+            db,
+            current_user.id,
+            sex=request.sex,
+            birth_year=request.birth_year,
+            height_cm=request.height_cm,
+            weight_kg=request.weight_kg,
+            activity_level=request.activity_level,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
     # 수정 직후에도 갱신된 BMI 를 함께 준다 — 앱이 다시 조회하지 않아도 되게.
     return health_service.build_profile_response(profile)
 
