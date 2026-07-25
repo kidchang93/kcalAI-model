@@ -91,12 +91,23 @@ def parse_base_amount(raw: str | None) -> Decimal | None:
 
 
 def load_source_index(data_dir: Path) -> dict[str, list[dict]]:
-    """이름 → 원본 행들. 대표식품명과 식품명 양쪽으로 넣는다(정확 일치용)."""
+    """이름 → 원본 행들. 대표식품명과 식품명 양쪽으로 넣는다(정확 일치용).
+
+    **원본이 하나도 없으면 실패한다.** 예전에는 "없음, 건너뜀"을 찍고 0건을 채운 뒤
+    성공한 것처럼 끝났다 — 2026-07-25에 운영 서버(원본 CSV 를 두지 않는다)에서 재임포트
+    파이프라인을 돌렸을 때 `correct_common_foods`가 비운 영양소를 이 스크립트가 못 채웠고,
+    curated 100행의 나트륨·칼륨이 전부 비어 CKD·고혈압 경고가 다시 침묵했다.
+    (2026-07-22 사건과 같은 구조가 도구 부재로 재발한 것이다.)
+
+    운영에서는 로컬에서 `--emit-sql` 로 뽑은 SQL 을 적용한다.
+    """
     index: dict[str, list[dict]] = {}
+    missing: list[str] = []
 
     for filename in SOURCE_CSVS:
         path = data_dir / filename
         if not path.exists():
+            missing.append(filename)
             print(f"  ! 원본 없음, 건너뜀: {filename}")
             continue
 
@@ -109,6 +120,16 @@ def load_source_index(data_dir: Path) -> dict[str, list[dict]]:
                     name = key.strip()
                     if name:
                         index.setdefault(name, []).append(row)
+
+    if len(missing) == len(SOURCE_CSVS):
+        raise SystemExit(
+            "원본 CSV 를 하나도 찾지 못했습니다 — 채울 것이 없으니 **중단합니다**.\n"
+            f"  찾은 위치: {data_dir}\n"
+            "  운영 서버라면 이 스크립트를 직접 돌리지 말고, 로컬에서\n"
+            "  `--emit-sql <경로>` 로 뽑은 SQL 을 적용하세요 (CLAUDE.md).\n"
+            "  그냥 두면 correct_common_foods 가 비운 나트륨·칼륨·인이 채워지지 않아\n"
+            "  국·탕·찌개·과일에서 CKD·고혈압 경고가 조용히 침묵합니다."
+        )
 
     return index
 
