@@ -134,6 +134,18 @@ class Payment(Base):
     payment_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
     method: Mapped[str | None] = mapped_column(String(30), nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # ── 환불 (리비전 0026) ────────────────────────────────────────────────
+    # 전자상거래법상 환불을 약속하려면 이행 수단과 **기록**이 함께 있어야 한다. 상점관리자에서
+    # 손으로 취소해도 원장에 남지 않으면 "환불했다"를 증명할 수 없다
+    # (`docs/LEGAL_COMPLIANCE.md` §2).
+    #
+    # 행을 새로 만들지 않고 같은 행에 기록하는 이유: 결제 1건과 그 환불은 하나의 거래이고,
+    # `order_id` UNIQUE 가 이미 그 단위를 잡고 있다. 부분 환불이면 amount 는 그대로 두고
+    # refunded_amount 만 채운다 — 원래 얼마를 받았는지가 남아야 한다.
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    refunded_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    refund_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
     fail_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
     fail_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

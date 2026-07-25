@@ -75,6 +75,8 @@ open http://127.0.0.1:8000/docs
 
 **curated 결측 영양소 되채우기** (`correct_common_foods.py` 실행 후 **반드시 이어서** 실행 — `docs/PRODUCT_STRATEGY.md` §5-2): `venv/bin/python scripts/backfill_curated_nutrients.py` (`--dry-run` 으로 먼저 확인, `--emit-sql <경로>` 로 운영 적용용 SQL 생성). 보정 스크립트가 비운 나트륨·칼륨·인을 원본 공공 CSV에서 **무게 비율로** 되채운다(칼로리 비율이 아니다). 정확 일치만 쓰고 '생것' 행을 우선한다 — 이 규칙이 없으면 바나나에 말린것이 섞여 칼륨이 2배로 부풀려진다. 멱등.
 
+**결제 환불** (약관의 환불 규정을 **이행하는 수단** — `docs/LEGAL_COMPLIANCE.md` §2): `venv/bin/python scripts/refund_payment.py` (인자 없이 실행하면 환불 가능한 결제 목록, `--payment-id`·`--reason` 지정 후 `--yes` 로 실행). **실행하면 실제로 돈이 나갑니다.** 상점관리자에서 직접 취소하면 원장에 반영되지 않으므로(웹훅 미구현) 반드시 이 스크립트를 씁니다.
+
 **자동결제 갱신 배치** (청구 예정일이 지난 구독을 청구 — `docs/DATA_MODEL.md` 24장): `venv/bin/python scripts/charge_due_subscriptions.py` — 저장소 루트에서 실행, **멱등**(성공 건은 `next_billing_at`이 한 달 뒤로 밀려 재실행 시 대상에서 빠짐). 하루 1회 cron 권장. 한 건의 실패가 배치를 멈추지 않으며 실패 건은 `past_due`로 다음날 재시도합니다. `TOSS_SECRET_KEY` 미설정 시 실행을 거부합니다(exit 1). **실행하면 실제 결제가 일어납니다.**
 
 **만료 인증 데이터 정리 배치** (`kakao_link_codes`·`auth_sessions` 무한 누적 방지): `venv/bin/python scripts/purge_expired_auth.py` — 만료 코드(발급 1일 뒤)·만료·폐기 세션(7일 뒤)을 물리 삭제, 멱등. 정기 실행(cron/systemd)을 권장. 보존창은 `services/auth_service.py`의 `CODE_RETENTION_DAYS`·`SESSION_RETENTION_DAYS`.
@@ -93,7 +95,7 @@ open http://127.0.0.1:8000/docs
 | 린트 | 없음 |
 | 포맷 | 없음 |
 
-테스트는 Postgres에 붙습니다 (인증 로직의 tz-aware datetime 충실도). 각 테스트는 외부 트랜잭션 + SAVEPOINT 롤백으로 격리되어 대상 DB를 오염시키지 않습니다. 공유 DB의 기존 데이터와 번호가 겹칠 수 있으니, 깔끔한 격리가 필요하면 `TEST_DATABASE_URL`로 전용 DB를 지정하세요. 현재 **303건**이며 커버리지는 `test_diabetes_food_rules.py`(당뇨 — 첨가당 이름 축·등급 부재·단위, 16장), `test_meal_ordering.py`(하루 끼니 목록 순서 — 같은 시각이면 만든 순, 4장), `test_auth_service.py`·`test_auth_api.py`(카카오 로그인, 21장), `test_subscription_service.py`(요금제·쿼터, 20장), `test_billing_service.py`(자동결제, 24장), `test_toss_client.py`(**토스 어댑터의 비밀값 미유출**, 2026-07-16), `test_payment_service.py`(결제 내역, 23장), `test_crypto.py`, `test_upload_validation.py`, `test_web_spa.py`, `test_day_nutrition.py`(하루 질환 축 — 병기별 기준선, 28장)입니다.
+테스트는 Postgres에 붙습니다 (인증 로직의 tz-aware datetime 충실도). 각 테스트는 외부 트랜잭션 + SAVEPOINT 롤백으로 격리되어 대상 DB를 오염시키지 않습니다. 공유 DB의 기존 데이터와 번호가 겹칠 수 있으니, 깔끔한 격리가 필요하면 `TEST_DATABASE_URL`로 전용 DB를 지정하세요. 현재 **312건**이며 커버리지는 `test_diabetes_food_rules.py`(당뇨 — 첨가당 이름 축·등급 부재·단위, 16장), `test_meal_ordering.py`(하루 끼니 목록 순서 — 같은 시각이면 만든 순, 4장), `test_auth_service.py`·`test_auth_api.py`(카카오 로그인, 21장), `test_subscription_service.py`(요금제·쿼터, 20장), `test_billing_service.py`(자동결제, 24장), `test_toss_client.py`(**토스 어댑터의 비밀값 미유출**, 2026-07-16), `test_payment_service.py`(결제 내역, 23장), `test_crypto.py`, `test_upload_validation.py`, `test_web_spa.py`, `test_day_nutrition.py`(하루 질환 축 — 병기별 기준선, 28장)입니다.
 | 카카오 설정 진단 | `venv/bin/python scripts/check_kakao_config.py` (읽기 전용. 로그인 실패 시 **원인 판정** — 허용 IP 미등록/키 종류 혼동) |
 | 수동 검증 | `uvicorn main:app` 기동 + `/docs` 200 + `http/*.http` 요청 |
 

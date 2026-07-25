@@ -45,6 +45,8 @@ error_logger = setup_level_logger(logging.ERROR)
 PAYMENT_READY = "ready"
 PAYMENT_DONE = "done"
 PAYMENT_FAILED = "failed"
+# 환불(전액·부분). 부분이어도 같은 값을 쓰고 금액은 refunded_amount 가 말한다.
+PAYMENT_CANCELED = "canceled"
 
 # 갱신 실패 시 재시도 간격과, 재시도를 포기하는 기준(청구 예정일 = current_period_end 로부터).
 # 무한 재시도를 두지 않는 이유: 만료된 카드는 영원히 실패하는데, 기간이 지나면 이미 lite 로
@@ -320,6 +322,71 @@ def _activate_subscription(
 
 
 # ---- 3) 해지 ----
+
+def refund_payment(
+    db: Session,
+    payment_id: int,
+    reason: str,
+    *,
+    amount: int | None = None,
+) -> Payment:
+    """결제를 환불하고 **원장에 반영**한다. `amount` 를 주면 부분 환불이다.
+
+    ## 왜 필요한가
+
+    약관에 환불 규정을 쓰려면 그것을 **이행할 수단**이 먼저 있어야 한다. 이 함수가 생기기
+    전까지 서버에는 취소 API 를 부르는 경로가 하나도 없었고, 상점관리자에서 손으로 환불해도
+    `payments` 원장에는 아무 흔적이 남지 않았다 — 지킬 수 없는 약속을 적을 뻔한 상태였다
+    (`docs/LEGAL_COMPLIANCE.md` §2).
+
+    ## 안전장치 세 겹
+
+    1. **원장 상태로 먼저 막는다.** `done` 이 아닌 결제는 환불 대상이 아니고, 이미 `canceled`
+       면 다시 부르지 않는다. 돈이 두 번 나가는 실수는 사후에 알아채면 늦다.
+    2. **멱등키**를 결제마다 고정해 보낸다(`refund-{order_id}`). 네트워크 오류로 응답을 못
+       받고 재시도해도 토스가 중복 처리하지 않는다 — 15일간 유효하다.
+    3. **원장은 토스 응답의 실제 취소 금액**으로 갱신한다. 우리가 보낸 값이 아니다.
+
+    구독 상태는 건드리지 않는다 — 환불과 이용권 회수는 다른 판단이라, 필요하면 호출자가
+    `cancel_billing` 을 따로 부른다.
+    """
+    payment = db.scalar(select(Payment).where(Payment.id == payment_id))
+
+    if payment is None:
+        raise ValueError("결제 내역을 찾을 수 없습니다.")
+
+    if payment.status == PAYMENT_CANCELED:
+        raise ValueError("이미 환불된 결제입니다.")
+
+    if payment.status != PAYMENT_DONE or not payment.payment_key:
+        raise ValueError("승인 완료된 결제만 환불할 수 있습니다.")
+
+    if amount is not None and not (0 < amount <= payment.amount):
+        raise ValueError("환불 금액은 결제 금액을 넘을 수 없습니다.")
+
+    result = toss_client.cancel_payment(
+        payment.payment_key,
+        reason,
+        amount=amount,
+        # 결제 1건당 고정 키 — 재시도해도 같은 키라 중복 취소가 되지 않는다.
+        idempotency_key=f"refund-{payment.order_id}",
+    )
+
+    payment.status = PAYMENT_CANCELED
+    payment.canceled_at = result.canceled_at or datetime.now(UTC)
+    payment.refunded_amount = result.canceled_amount
+    payment.refund_reason = reason[:200]
+
+    db.commit()
+    db.refresh(payment)
+
+    # 금액·사유는 남기되 결제키는 로그에 넣지 않는다 (재청구 자격증명이다).
+    info_logger.info(
+        f"refund done payment_id={payment.id} order_id={payment.order_id} "
+        f"amount={payment.refunded_amount} status={result.status}"
+    )
+    return payment
+
 
 def cancel_billing(db: Session, user_id: int) -> UserSubscription:
     """자동갱신 해지. **기간(current_period_end)까지는 유료를 유지한다** — 이미 받은 돈에 대한

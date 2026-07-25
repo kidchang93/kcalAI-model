@@ -32,6 +32,8 @@ TOSS_TIMEOUT_SECONDS = float(os.getenv("TOSS_TIMEOUT_SECONDS", "10"))
 
 ISSUE_BILLING_KEY_URL = "https://api.tosspayments.com/v1/billing/authorizations/issue"
 CHARGE_BILLING_URL = "https://api.tosspayments.com/v1/billing"
+# 결제 취소. paymentKey 를 경로에 싣는다 (토스 공식 문서 「결제 취소하기」).
+CANCEL_PAYMENT_URL = "https://api.tosspayments.com/v1/payments"
 
 # 토스 결제 실패 코드 → 사용자용 한국어 메시지. 토스 원문 메시지를 그대로 쓰지 않는 이유는,
 # 결제사 문구가 내부 사정(가맹점 설정·API 규격)을 담을 수 있고 우리가 통제할 수 없기 때문이다.
@@ -113,13 +115,24 @@ def _auth_header() -> str:
     return f"Basic {token}"
 
 
-def _post(url: str, payload: dict, *, action: str) -> dict:
-    """토스 POST 공통. 실패는 전부 TossError. 요청 본문·키는 로그에 남기지 않는다."""
+def _post(url: str, payload: dict, *, action: str, idempotency_key: str | None = None) -> dict:
+    """토스 POST 공통. 실패는 전부 TossError. 요청 본문·키는 로그에 남기지 않는다.
+
+    `idempotency_key` 를 주면 `Idempotency-Key` 헤더로 보낸다 — 토스는 모든 POST 에서 이를
+    지원하며 **처음 요청일로부터 15일, 최대 300자**다(공식 문서 「인증 및 기타 헤더」).
+    같은 키로 다시 부르면 중복 처리되지 않으므로, **취소처럼 돈이 두 번 나가면 안 되는**
+    호출에 쓴다.
+    """
+    headers = {"Authorization": _auth_header(), "Content-Type": "application/json"}
+
+    if idempotency_key is not None:
+        headers["Idempotency-Key"] = idempotency_key[:300]
+
     try:
         response = requests.post(
             url,
             json=payload,
-            headers={"Authorization": _auth_header(), "Content-Type": "application/json"},
+            headers=headers,
             timeout=TOSS_TIMEOUT_SECONDS,
         )
     except requests.RequestException as error:
@@ -230,6 +243,58 @@ def charge_billing(
         status=str(payload.get("status", "")),
         method=_as_text(payload.get("method")),
         approved_at=_parse_approved_at(payload.get("approvedAt")),
+    )
+
+
+@dataclass(frozen=True)
+class CancelResult:
+    """취소 결과. `status` 는 토스 결제 상태(CANCELED / PARTIAL_CANCELED)다."""
+
+    status: str
+    canceled_amount: int
+    canceled_at: datetime | None
+
+
+def cancel_payment(
+    payment_key: str,
+    reason: str,
+    *,
+    amount: int | None = None,
+    idempotency_key: str | None = None,
+) -> CancelResult:
+    """결제를 취소한다. `amount` 를 주면 부분 취소, 없으면 전액이다.
+
+    토스 규격 (공식 문서 「결제 취소하기」):
+        POST /v1/payments/{paymentKey}/cancel
+        cancelReason 필수 · cancelAmount 선택(미입력 시 전액) · 응답에 cancels 배열
+
+    ⚠️ **호출 전에 우리 원장 상태를 먼저 확인한다** (`billing_service.refund_payment`).
+    이미 취소된 결제를 다시 부르면 토스가 거부하지만, 그 전에 우리가 막는 편이 낫다 —
+    돈이 두 번 나가는 종류의 실수는 사후에 알아채면 늦다. 멱등키는 그 위의 마지막 방어선이다.
+    """
+    ensure_configured()
+
+    payload: dict[str, object] = {"cancelReason": reason}
+
+    if amount is not None:
+        payload["cancelAmount"] = amount
+
+    response = _post(
+        f"{CANCEL_PAYMENT_URL}/{payment_key}/cancel",
+        payload,
+        action="cancel payment",
+        idempotency_key=idempotency_key,
+    )
+
+    cancels = response.get("cancels") or []
+    latest = cancels[-1] if isinstance(cancels, list) and cancels else {}
+
+    return CancelResult(
+        status=str(response.get("status", "")),
+        # 응답의 취소 금액을 그대로 쓴다 — 우리가 보낸 값이 아니라 **실제로 취소된 금액**이
+        # 원장에 남아야 한다.
+        canceled_amount=int(latest.get("cancelAmount") or amount or 0),
+        canceled_at=_parse_approved_at(latest.get("canceledAt")),
     )
 
 
