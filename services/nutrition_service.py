@@ -348,6 +348,46 @@ def get_record_warnings(db: Session, user_id: int, food_labels: list[str]) -> li
     return warnings
 
 
+# 실측이 있어야 판정할 수 있는 축. 당류(sugar)는 이름 축만 쓰므로 여기 없다 — 실측이 없어도
+# 판정 자체는 이뤄진다.
+_MEASURED_AXES: frozenset[str] = frozenset({"sodium", "potassium", "phosphorus"})
+
+
+def unmeasured_labels(db: Session, user_id: int, food_labels: list[str], warnings: list[dict]) -> list[str]:
+    """질환 축을 **판정하지 못한** 음식. 경고가 없는 것과 안전한 것은 다르다.
+
+    실측이 없고 지침 키워드에도 없으면 경고가 한 건도 나가지 않는다. 그런데 화면에서는
+    "경고 없음"과 "안전함"이 똑같이 보인다 — 신장병 환자가 돈까스·보쌈·통닭을 기록하면
+    (셋 다 curated 결측 행이다) 아무 말도 나가지 않아 **괜찮다는 뜻으로 읽힌다.**
+
+    근거가 없다는 사실 자체가 사용자가 알아야 할 근거다 (`PRODUCT_STRATEGY.md` §0-1).
+    """
+    axes = set()
+    for condition in meta_service.list_user_condition_types(db, user_id):
+        axes.update(
+            nutrient
+            for tag, nutrient, _label in ckd_food_rules.WARNING_AXES
+            if tag in condition.dietary_tags and nutrient in _MEASURED_AXES
+        )
+
+    if not axes:
+        return []
+
+    warned = {warning["matched_label"] for warning in warnings}
+    result: list[str] = []
+
+    for label in dict.fromkeys(food_labels):
+        if label in warned:
+            continue
+
+        row = _measured_for_warning(db, label)
+
+        if row is None or all(_axis_measured_mg(row, nutrient) is None for nutrient in axes):
+            result.append(label)
+
+    return result
+
+
 def get_record_warnings_response(db: Session, user_id: int, food_labels: list[str]) -> dict:
     """경고 + 고지문. 등급을 노출하면 고지문을 반드시 함께 내린다 (노출 원칙 — 전 질환 공통).
 
@@ -369,6 +409,8 @@ def get_record_warnings_response(db: Session, user_id: int, food_labels: list[st
         "warnings": warnings,
         # 축이 둘 다 걸리면 이어 붙인다 — 앱 계약은 문자열 하나(`notice`)다.
         "notice": " ".join(notices) if notices else None,
+        # 판정하지 못한 음식. 앱은 "확인하지 못했다"고 밝힌다 — 침묵을 안전으로 읽지 않게.
+        "unmeasured": unmeasured_labels(db, user_id, food_labels, warnings),
     }
 
 

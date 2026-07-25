@@ -185,3 +185,49 @@ def test_no_warning_means_no_notice(db, diabetic):
     response = nutrition_service.get_record_warnings_response(db, diabetic.id, ["현미밥"])
 
     assert response["notice"] is None
+
+
+# ── 6. 판정하지 못한 음식은 침묵하지 않는다 ─────────────────────────────────
+
+
+def test_unmeasured_food_is_reported(db, diabetic):
+    """실측도 없고 키워드에도 없으면 경고가 안 나간다 — 그 사실을 밝혀야 한다.
+
+    이게 없으면 화면에서 "경고 없음"과 "안전함"이 구분되지 않는다.
+    """
+    _add_food(db, "돈까스테스트ZZ", sugar_g=None, sodium_mg=None)
+
+    response = nutrition_service.get_record_warnings_response(db, diabetic.id, ["돈까스테스트ZZ"])
+
+    assert response["warnings"] == []
+    assert "돈까스테스트ZZ" in response["unmeasured"]
+
+
+def test_measured_food_is_not_reported_as_unmeasured(db, diabetic):
+    _add_food(db, "현미밥테스트ZZ", sodium_mg=5)
+
+    response = nutrition_service.get_record_warnings_response(db, diabetic.id, ["현미밥테스트ZZ"])
+
+    assert response["unmeasured"] == []
+
+
+def test_warned_food_is_not_also_unmeasured(db, diabetic):
+    """경고가 나간 음식은 판정된 것이다 — 두 번 말하지 않는다."""
+    _add_food(db, "콜라", sugar_g=27, sodium_mg=10)
+
+    response = nutrition_service.get_record_warnings_response(db, diabetic.id, ["콜라"])
+
+    assert response["warnings"]
+    assert "콜라" not in response["unmeasured"]
+
+
+def test_no_condition_means_no_unmeasured_noise(db):
+    """질환이 없으면 판정할 축도 없다 — 굳이 알릴 것이 없다."""
+    user = User(kakao_id="no-condition-test", nickname="무질환")
+    db.add(user)
+    db.flush()
+    _add_food(db, "돈까스테스트ZZ", sodium_mg=None)
+
+    response = nutrition_service.get_record_warnings_response(db, user.id, ["돈까스테스트ZZ"])
+
+    assert response["unmeasured"] == []

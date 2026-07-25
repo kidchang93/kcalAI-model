@@ -70,6 +70,11 @@ class NutritionWarningItem(BaseModel):
 
 class NutritionWarningsResponse(BaseModel):
     warnings: list[NutritionWarningItem]
+    # **판정하지 못한 음식 이름** (2026-07-25 추가, 하위호환 — 옛 앱은 무시한다).
+    # 경고가 없는 것과 안전한 것은 다르다. 실측이 없고 지침 키워드에도 없으면 경고가 한 건도
+    # 나가지 않는데, 화면에서는 그것이 "괜찮다"로 읽힌다 — 신장병 환자의 돈까스·보쌈·통닭이
+    # 그렇다. 근거가 없다는 사실 자체를 사용자에게 돌려준다 (`PRODUCT_STRATEGY.md` §0-1).
+    unmeasured: list[str] = []
     # 등급(tier)을 노출할 때 함께 내리는 고지문. 해당 경고가 없으면 None (앱은 문구를 숨긴다).
     # **1인분 경계는 지침 컷오프가 아니라 1일 상한을 끼니로 나눈 정책값**이라, 그 사실을 숨기지
     # 않는 것이 노출 원칙이다 (docs/CHRONIC_NUTRITION_SOURCES.md §4-2·§6).
