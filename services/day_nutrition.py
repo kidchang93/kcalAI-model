@@ -30,8 +30,34 @@ from models.consent_model import UserHealthProfile
 from models.health_model import MealItem, MealLog
 from services import chronic_food_rules, ckd_food_rules, meta_service, nutrition_service
 
-# 축 정의는 CKD 모듈의 것을 그대로 쓴다 (tag, nutrient, label).
-_AXES = ckd_food_rules.WARNING_AXES
+# 하루 누적 축 (tag, nutrient, label). **경고 축(`ckd_food_rules.WARNING_AXES`)과 같지 않다.**
+#
+# 2026-07-25에 경고에 당류 축을 추가하면서 이 목록이 그걸 그대로 참조하고 있던 탓에 당류가
+# 하루 누적에도 딸려 들어갔고, 두 가지가 조용히 깨졌다 — 컬럼이 `sugar_g`(g)라 `{nutrient}_mg`
+# 조회가 빗나가 **항상 0**이었고, 참고치 분기가 칼륨이 아니면 인으로 떨어져 **"당류 투석 시
+# 참고치 하루 1,000 mg"**이라는 **존재하지 않는 기준**이 표시됐다.
+#
+# 당류를 여기 넣지 않는 이유는 버그 때문이 아니라 근거가 없어서다:
+#   (1) 우리 DB 는 총당류이고 지침 대상은 첨가당이다 — 하루 총당류를 합하면 지침이 권장하는
+#       사과·우유가 그대로 들어간다 (CHRONIC_NUTRITION_SOURCES.md §2-2).
+#   (2) 간식·음료 행의 1인분이 제품 한 통이라 합계 자체가 틀린다 (§2-5).
+#   (3) 첨가당의 1일 상한은 KDA2025 에 수치가 없다.
+# 셋 중 하나라도 풀리기 전에는 하루 당류 합계를 보여주지 않는다. 경고(무엇을 먹었는지)와
+# 누적(얼마나 먹었는지)은 **요구하는 근거의 수준이 다르다.**
+_AXES: tuple[tuple[str, str, str], ...] = (
+    ("low_sodium", "sodium", "나트륨"),
+    ("low_potassium", "potassium", "칼륨"),
+    ("low_phosphorus", "phosphorus", "인"),
+)
+
+# 축 → FoodNutrition 컬럼. `getattr(row, f"{nutrient}_mg")` 로 이름을 조립하면 축을 늘렸을 때
+# 컬럼이 없어도 예외 없이 None 이 되어 **조용히 0으로 집계된다**(2026-07-25 실측). 명시적으로
+# 적고, 모르는 축은 아래에서 예외로 만든다.
+_AXIS_COLUMNS: dict[str, str] = {
+    "sodium": "sodium_mg",
+    "potassium": "potassium_mg",
+    "phosphorus": "phosphorus_mg",
+}
 
 # 나트륨 1일 상한을 가진 질환 (병기와 무관하게 단일 값). CKD 는 병기별이라 여기 없다.
 _SODIUM_LIMIT_BY_CONDITION: dict[str, tuple[int, str]] = {
@@ -68,7 +94,9 @@ def get_day_nutrient_axes(db: Session, user_id: int, target_date: date) -> dict 
             continue
 
         for nutrient in axes:
-            value = getattr(row, f"{nutrient}_mg", None)
+            # 모르는 축은 조용히 0이 되지 않고 여기서 터진다 — 축을 늘리면 컬럼 매핑도 함께
+            # 늘리라는 뜻이고, 단위가 mg 가 아닌 축은 애초에 이 합계에 들어올 수 없다.
+            value = getattr(row, _AXIS_COLUMNS[nutrient])
 
             if value is None:
                 continue
@@ -212,10 +240,16 @@ def _reference(nutrient: str, stage: str | None) -> tuple[int | None, str | None
     if not on_dialysis:
         return None, None
 
-    reference_mg = (
-        ckd_food_rules.DIALYSIS_POTASSIUM_REFERENCE_MG
-        if nutrient == "potassium"
-        else ckd_food_rules.DIALYSIS_PHOSPHORUS_REFERENCE_MG
-    )
+    # **아는 축에만 참고치를 준다.** 예전에는 "칼륨이 아니면 인"으로 갈라져, 새 축이 들어오자
+    # 인의 투석 참고치가 그 축에 붙어 나갔다 — 당류에 "투석 시 참고치 하루 1,000 mg"이라는
+    # 존재하지 않는 기준이 표시됐다(2026-07-25). 의학 수치는 기본값으로 흘려보내면 안 된다.
+    reference_by_nutrient = {
+        "potassium": ckd_food_rules.DIALYSIS_POTASSIUM_REFERENCE_MG,
+        "phosphorus": ckd_food_rules.DIALYSIS_PHOSPHORUS_REFERENCE_MG,
+    }
+    reference_mg = reference_by_nutrient.get(nutrient)
+
+    if reference_mg is None:
+        return None, None
 
     return reference_mg, f"투석 시 참고치 하루 {reference_mg:,} mg"

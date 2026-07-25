@@ -211,3 +211,54 @@ def test_other_days_are_not_counted(db, user):
 
     assert result["total_items"] == 0
     assert _axis(result, "sodium")["consumed_mg"] == 0.0
+
+
+class TestAxisIntegrity:
+    """축을 늘렸을 때 **조용히 틀리지 않는지**. 2026-07-25 실측 회귀 두 건.
+
+    경고 축(`ckd_food_rules.WARNING_AXES`)에 당류를 더했더니, 이 모듈이 그 목록을 그대로
+    참조하고 있어서 하루 누적에도 딸려 들어갔다. 그리고 둘 다 예외 없이 조용히 틀렸다 —
+    합계는 항상 0이 됐고(컬럼이 sugar_g 라 `{nutrient}_mg` 조회가 빗나갔다), 참고치는
+    "칼륨이 아니면 인"으로 갈라져 **당류에 인의 투석 참고치**가 붙어 나갔다.
+    """
+
+    def test_daily_axes_are_not_the_warning_axes(self):
+        """두 목록은 분리돼 있어야 한다 — 요구하는 근거의 수준이 다르다."""
+        from services import ckd_food_rules
+
+        daily = {nutrient for _tag, nutrient, _label in day_nutrition._AXES}
+        warning = {nutrient for _tag, nutrient, _label in ckd_food_rules.WARNING_AXES}
+
+        assert daily == {"sodium", "potassium", "phosphorus"}
+        # 경고에만 있는 축(당류)은 하루 누적에 들어오지 않는다.
+        assert "sugar" in warning and "sugar" not in daily
+
+    def test_every_daily_axis_has_a_column(self):
+        """축마다 실측 컬럼이 있어야 한다. 없으면 합계가 조용히 0이 된다."""
+        from models.health_model import FoodNutrition
+
+        for _tag, nutrient, _label in day_nutrition._AXES:
+            column = day_nutrition._AXIS_COLUMNS[nutrient]
+            assert hasattr(FoodNutrition, column), f"{nutrient} → {column} 컬럼이 없다"
+
+    def test_unknown_axis_raises_instead_of_zero(self, db, user):
+        """모르는 축은 터져야 한다 — 0으로 집계되면 아무도 알아채지 못한다."""
+        _add_food(db, "테스트당류ZZ", sodium_mg=100)
+
+        with pytest.raises(KeyError):
+            day_nutrition._AXIS_COLUMNS["sugar"]
+
+    def test_reference_is_never_defaulted(self):
+        """참고치는 아는 축에만 준다. 기본값으로 흘리면 없는 기준이 만들어진다."""
+        for nutrient in ("sugar", "carbs", "protein"):
+            reference_mg, note = day_nutrition._reference(nutrient, "hemodialysis")
+
+            assert reference_mg is None, f"{nutrient} 에 참고치가 붙었다"
+            assert note is None
+
+    def test_known_references_still_work(self):
+        potassium, _ = day_nutrition._reference("potassium", "hemodialysis")
+        phosphorus, _ = day_nutrition._reference("phosphorus", "hemodialysis")
+
+        assert potassium == 2000
+        assert phosphorus == 1000
