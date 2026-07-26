@@ -1860,3 +1860,102 @@ curl 실측(별도 포트 8099, 로컬 `.env`에 토스 **테스트 키**가 있
 ### 24장 남은 과제와의 관계
 
 24장 남은 과제 2번(**웹훅 미구현**)이 이 장으로 해소됐다. 1·3·4·5번(가입 시 유료 플랜 무상 부여, proration, 앱 화면, 결제 실패 알림)은 그대로 남아 있다.
+
+---
+
+## 30. 인앱결제(IAP) — 스토어 출시를 위한 설계 (2026-07-26 작성 — **착수 전 설계이며 확정 사양이 아니다**)
+
+> 이 장은 구현되지 않았다. 스토어 출시를 하기로 정한 뒤(2026-07-26) 무엇을 해야 하는지 조사·정리한 것이다. 착수할 때 이 장을 확정 사양으로 승격한다.
+
+### 왜 — 지금 설계는 심사에서 걸린다
+
+앱은 네이티브에서 결제를 막고 **"결제는 웹에서 진행해주세요"** 를 띄운다(`k-calAI-RN/services/toss-sdk.ts`). 이것이 정확히 anti-steering 위반이다:
+
+> **3.1.3** Apps in this section **cannot, within the app, encourage users to use a purchasing method other than in-app purchase**, except for apps on the **United States storefront**
+
+미국 스토어만 예외이고 한국은 아니다. 그리고 웹 구독을 앱에서 쓰게 하는 근거 조항은 **조건부**다:
+
+> **3.1.3(b) Multiplatform Services:** Apps that operate across multiple platforms may allow users to access content, subscriptions, or features they have acquired ... on other platforms or your web site, **provided those items are also available as in-app purchases within the app.**
+
+즉 **"웹에서만 판다"는 성립하지 않는다.** 앱에도 파는 수단이 있어야 웹 구독의 앱 내 사용이 허용된다. 그리고 우리 유료 플랜은 앱 기능(비전 쿼터·그룹 인원·펫 수)을 푸는 것이라 3.1.1의 정면 대상이다:
+
+> **3.1.1** If you want to unlock features or functionality within your app, (by way of example: **subscriptions**, ... access to premium content ...), **you must use in-app purchase.**
+
+### 채택안 — A안 (웹=토스 유지 · 앱=IAP 추가)
+
+검토한 대안은 **한국 특례**(StoreKit External Purchase Entitlement)였다. 토스는 Apple 사전 승인 PSP 목록에 있어(KCP·Inicis·Toss·NICE) 쓸 수는 있지만 채택하지 않았다:
+
+| | A안 (IAP) | B안 (한국 특례) |
+|---|---|---|
+| Apple 수수료 | 30% (구독 2년차 15%) | **26%** |
+| 배포 | 전 세계 | **한국 전용 별도 바이너리**, 스토어 노출도 한국으로 제한 |
+| 앱 내 결제 UI | StoreKit | **네이티브 필수 — 웹뷰 금지** (지금의 토스 웹 SDK 재사용 불가) |
+| 의무 | 없음 | Apple 고지 모달 강제 · **월간 매출 보고**(회계월 종료 후 15일 내) · 환불·문의 전담 |
+| IAP 병용 | — | **불가** |
+
+4%p를 아끼려고 별도 바이너리와 월간 보고 의무를 지는 것은 초기 서비스에 맞지 않고, **웹뷰 금지 조항 때문에 어차피 네이티브 결제를 새로 만들어야 한다** — 새로 만드는 양이 같은데 부담만 크다.
+
+### 시한 — Google Play Billing 8 (2026-08-31)
+
+Android는 **2026-08-31까지 모든 신규 앱·업데이트가 Billing Library 8 이상**을 써야 한다(연장 신청 시 2026-11-01). 이것이 이 작업의 실질적 마감이다.
+
+라이브러리 선택도 여기서 갈린다 — **`expo-in-app-purchases`는 사용하지 않는다.** 3년째 릴리스가 없고 Billing v4를 쓰는데, 그 버전은 Play Console이 이미 거부한다. 후보는 `expo-iap`(Expo Module, OpenIAP 규격)와 `react-native-iap`(Nitro Modules)이며, 우리는 Expo라 **`expo-iap`가 1순위**다.
+
+### 서버 설계
+
+#### 검증은 영수증이 아니라 **서버 API 조회**다
+
+Apple의 `verifyReceipt`는 **deprecated**다. 지금 방식은 **App Store Server API**로, ES256 JWT로 우리를 인증하고 Apple이 서명한 JWS 트랜잭션을 받는다(`GET /inApps/v1/transactions/{transactionId}`·`/subscriptions/{transactionId}`). Google은 Play Developer API(`purchases.subscriptionsv2.get`)다.
+
+**이것은 우리가 29장에서 이미 세운 규약과 같은 모양이다** — 클라이언트가 준 것을 믿지 않고, 우리 자격증명으로 스토어에 다시 물어본다. 앱이 보낸 `transactionId`/`purchaseToken`은 **조회 키**일 뿐이고 구독 상태·만료는 스토어 응답만 쓴다.
+
+#### 갱신 알림도 웹훅이다 — 29장 규약을 그대로 쓴다
+
+| | 알림 | 우리 대응 |
+|---|---|---|
+| Apple | **App Store Server Notifications V2** | 서명 검증 후에도 **재조회**로 확정 |
+| Google | **Real-time Developer Notifications** (Pub/Sub) | 〃 |
+| 토스 | `POST /api/billing/webhook` (29장) | 〃 |
+
+Apple/Google 알림은 토스와 달리 **서명이 있다**(Apple은 JWS, Google은 Pub/Sub 인증). 그래도 재조회 규약은 유지한다 — 서명 검증은 "누가 보냈나"를 말할 뿐 "지금 상태가 무엇인가"를 말하지 않는다.
+
+#### 스키마 변경 (리비전 미정)
+
+**`user_subscriptions.provider`** — `toss` | `appstore` | `play`. **이 컬럼이 없으면 사고가 난다:**
+
+`charge_due_subscriptions`는 지금 `next_billing_at <= now`인 **모든** 구독을 청구한다. IAP 구독은 스토어가 자동 갱신하므로 우리가 청구하면 안 되는데, 빌링키가 없어 `past_due`로 떨어지고 3일 뒤 포기한다 — **결제는 정상인데 우리가 멋대로 연체 처리**하는 셈이다. 그래서 배치 쿼리에 **`provider = 'toss'`** 조건을 반드시 넣는다.
+
+| 필드 | 토스 | IAP |
+|---|---|---|
+| `next_billing_at` | 다음 청구 예정 | **NULL** — 우리가 청구하지 않는다 |
+| `current_period_end` | 우리가 계산 | **스토어가 알려준 만료 시각** |
+| `cancel_at_period_end` | 우리 DB 상태 변경 | 스토어에서 해지 → 알림으로 반영 |
+
+**`payments.provider`** + **`payments.external_id`** — IAP는 `order_id`가 없다(Apple `transactionId`, Google `purchaseToken`). `order_id` UNIQUE는 토스 전용 멱등 장치이므로, IAP는 `external_id`에 UNIQUE를 걸어 같은 역할을 시킨다.
+
+#### 이중 구독 — 막을 수 없고, 막지 않는다
+
+한 사람이 웹(토스)에서 사고 앱(IAP)에서 또 살 수 있다. 스토어 구매는 우리 서버를 거치지 않고 진행되므로 **결제 시점에 막을 방법이 없다.** 그래서:
+
+1. **앱이 구매 버튼을 그리지 않는다** — 서버가 이미 활성 구독을 알려주므로 UI에서 1차 차단
+2. 그럼에도 결제가 들어오면 **기간을 이어붙인다**(현재 기간 종료 뒤에 붙임). 환불로 되돌리는 것보다 사용자 손해가 없다
+3. 단 `provider`가 바뀌는 전환이므로 **원장에 두 건이 남는다** — 정산 때 구분되도록 `provider`를 반드시 기록한다
+
+### 앱 변경
+
+1. **`toss-sdk.ts`의 `NOT_WEB_MESSAGE`("결제는 웹에서 진행해주세요")를 제거한다.** 이 문구 자체가 위반이다.
+2. 네이티브: `expo-iap`로 상품 조회·구매 → `transactionId`/`purchaseToken`을 서버에 보내 검증 → 구독 상태를 서버에서 다시 읽는다.
+3. 웹: 지금의 토스 흐름 유지.
+4. **가격 정합성** — `plans.price_krw`와 스토어 상품 가격이 어긋나면 사용자가 다른 금액을 본다. 스토어 콘솔에 상품을 만들고 `plans`에 상품 ID를 매핑하는 참조가 필요하다(테이블 추가 여부는 착수 시 결정).
+
+### 착수 전에 정해야 할 것
+
+1. **상품 구성** — Pro/Premium을 스토어 상품으로 각각 만들 것인가, 기간(월/연)을 늘릴 것인가. 연 구독은 지금 없다.
+2. **가격** — 스토어 수수료(iOS 30%·Android 15%)를 흡수할 것인가, 앱 가격을 웹보다 높일 것인가. **웹보다 비싸게 매기는 것 자체는 허용되지만**, 앱에서 "웹이 더 싸다"고 안내하면 anti-steering이다.
+3. **기존 웹 구독자 처리** — 이미 토스로 결제한 회원은 그대로 유지한다(3.1.3(b)가 허용). 앱에서 해지·변경은 어떻게 안내할 것인가.
+4. **Google Play의 자체 결제 옵션** — 2026-06-30부터 미국·영국·EEA에서 외부 결제가 열렸으나 **한국은 대상이 아니다.** 재확인 후 판단.
+
+### 관련 문서
+
+- 심사 대응 전반은 `docs/LEGAL_COMPLIANCE.md` §6(스토어 출시 요건)에 정리한다.
+- 웹훅 규약은 29장이 정본이다 — IAP 알림도 같은 규약을 쓴다.

@@ -157,6 +157,54 @@ Expo 는 앱 설정의 `expo.ios.privacyManifests` 필드로 이를 선언할 �
 
 ---
 
+## 6. 스토어 출시 요건 (2026-07-26 조사 — 출시 방침 확정 후)
+
+법령이 아니라 **플랫폼 심사 기준**이지만, 통과하지 못하면 서비스가 시작되지 않으므로 같은 무게로 다룬다. 아래는 Apple App Store Review Guidelines 원문 기준이다.
+
+### 6-1. 의료·건강 앱 — **더 엄격한 심사 대상이다**
+
+우리는 만성질환(CKD·당뇨·고혈압) 식이 경고를 낸다. 1.4.1이 정면으로 겨냥하는 종류다:
+
+> **1.4.1** Medical apps that could provide inaccurate data or information, or that could be used for diagnosing or treating patients **may be reviewed with greater scrutiny**.
+> - Apps must **clearly disclose data and methodology** to support accuracy claims relating to health measurements ...
+> - Apps should **remind users to check with a doctor** in addition to using the app and before making medical decisions.
+
+| 요구 | 상태 |
+|---|---|
+| 근거·방법론 공개 | ✅ **우리 강점이다** — 학회 지침 출처를 `CHRONIC_NUTRITION_SOURCES.md`·`CKD_NUTRITION.md`에 정리하고 응답의 `basis`로 노출한다. 심사에서 이 문서들을 근거로 제시할 수 있다 |
+| **"의사와 상의" 고지** | ⚠️ **약관 본문에만 있다**(`constants/legal.ts`). 경고·리포트를 **보여주는 화면**에 있어야 한다 — 가이드라인이 요구하는 것은 "약관에 적어 두는 것"이 아니라 "사용자에게 상기시키는 것"이다 |
+| 규제 인허가 | 해당 없음(진단·치료 기기가 아니다). 받은 적이 있다면 심사 제출 시 링크를 첨부하라는 조항이 있으나 우리는 대상이 아니다 |
+
+> ⚠️ **금지 사례에 주의**: "기기 센서만으로 혈압·혈당·체온을 측정한다"고 주장하는 앱은 **거부**된다. 우리는 측정하지 않고 **사용자가 입력한 식사에서 영양을 계산**하므로 해당하지 않지만, 마케팅 문구가 "측정"으로 읽히지 않게 한다.
+
+### 6-2. 건강 데이터 (5.1.3)
+
+> Apps may not use or disclose ... health, fitness, and medical research data ... **for advertising, marketing, or other use-based data mining** ... Apps must not write false or inaccurate data into HealthKit ... and **may not store personal health information in iCloud**. **You must disclose the specific health data that you are collecting.**
+
+| 요구 | 상태 |
+|---|---|
+| 광고·마케팅 사용 금지 | ✅ 광고 없음 |
+| 수집 건강 데이터 명시 | ✅ 프라이버시 매니페스트·처리방침에 선언 (§3) |
+| **iCloud에 개인 건강정보 저장 금지** | ❓ **미확인** — 앱 로컬 저장물이 iOS 백업에 포함되는지 확인이 필요하다. 세션 토큰은 `expo-secure-store`(키체인)이고 건강정보는 서버에 있어 위험은 낮아 보이나, 실측하지 않았다 |
+
+### 6-3. 계정 삭제 (5.1.1(v)) — **필수**
+
+> **If your app supports account creation, you must also offer account deletion within the app.**
+
+✅ `app/(tabs)/account.tsx` → `DELETE /api/me`. 개인정보 파기와 카카오 unlink까지 이어진다(DATA_MODEL 18장).
+
+### 6-4. 결제 — 지금 설계로는 통과하지 못한다
+
+앱의 **"결제는 웹에서 진행해주세요"** 가 3.1.3의 anti-steering 위반이고, 3.1.3(b)는 앱에도 IAP가 있을 때만 웹 구독의 앱 내 사용을 허용한다. 대응은 **인앱결제 추가(A안)** 이며 설계는 **`DATA_MODEL.md` 30장**에 있다.
+
+**시한이 있다** — Android는 2026-08-31까지 Google Play Billing 8 이상이 필수다(연장 시 11-01).
+
+### 6-5. 한국 특례는 채택하지 않았다
+
+Apple은 전기통신사업법 개정에 따라 한국에서 제3자 PSP를 허용하며 **토스도 승인 목록에 있다**(KCP·Inicis·Toss·NICE, 수수료 26%). 그러나 한국 전용 별도 바이너리·월간 매출 보고·환불 전담·**웹뷰 금지**가 붙어 채택하지 않았다(30장의 비교표).
+
+---
+
 ## 참고 자료
 
 - 개인정보 보호법 제22조의2 (아동의 개인정보 보호) — 국가법령정보센터
@@ -164,3 +212,6 @@ Expo 는 앱 설정의 `expo.ios.privacyManifests` 필드로 이를 선언할 �
 - 전자상거래 등에서의 소비자보호에 관한 법률 제17·18조 — 국가법령정보센터
 - 「인터넷쇼핑몰 창업자 — 거래 관련 의무」 찾기쉬운 생활법령정보 (easylaw.go.kr)
 - Apple Privacy Manifest 요구사항 (2024-05-01 시행) · Expo 「Privacy manifests」 문서
+- Apple App Store Review Guidelines — 1.4.1(의료 앱) · 3.1.1·3.1.3(결제) · 5.1.1(v)(계정 삭제) · 5.1.3(건강 데이터)
+- Apple 「Distributing apps using a third-party payment provider in South Korea」 (StoreKit External Purchase Entitlement)
+- Google Play Billing Library 8 전환 마감 (2026-08-31, 연장 시 11-01)
