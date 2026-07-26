@@ -224,7 +224,32 @@ FastAPI가 `webapp/`를 `/`로 서빙하므로, 서브도메인(`https://api.kca
 | 상태 | `systemctl status kcalai` |
 | 애플리케이션 로그 | `tail -f /opt/kcalAI-model/task-logs/info_log.txt` (구조적 request/predict 로그) |
 | DB 백업 | `sudo -u postgres pg_dump kcal > backup.sql` (정기 cron 권장) |
-| 만료 인증 정리 | `venv/bin/python scripts/purge_expired_auth.py` (cron 권장, 무한 누적 방지) |
+| 정기 배치 확인 | `cat /etc/cron.d/kcalai` · 실행 이력은 `tail /opt/kcalAI-model/task-logs/cron_billing.log` |
+
+### 정기 배치 (cron) — 2026-07-26 등록
+
+정의는 리포의 **`deploy/kcalai.cron`** 이고 `provision.sh` 7단계가 `/etc/cron.d/kcalai` 로 설치한다.
+
+| 배치 | 시각 | 하는 일 |
+|---|---|---|
+| `charge_due_subscriptions.py` | 매일 **UTC 19:00 (KST 04:00)** | 청구 예정일이 지난 구독을 청구. **실제 결제가 일어난다** |
+| `purge_expired_auth.py` | 매일 **UTC 20:00 (KST 05:00)** | 만료 코드·세션 물리 삭제 |
+
+둘 다 멱등하며, 서버 시각대는 **UTC** 다(주석의 KST는 참고용).
+
+> ⚠️ **손으로 `crontab -e` 하지 말 것.** 그 서버에서만 살아 있고 재구축과 함께 사라진다 —
+> 2026-07-26 이전이 정확히 그 상태였다(등록 0건인데 유료 구독은 청구 예정을 달고 있었다).
+> 갱신 배치가 없으면 청구가 일어나지 않고 기간 만료로 조용히 lite 가 된다. 에러도 로그도
+> 남지 않는 종류의 사고다.
+
+기존 서버에 수동 설치·갱신할 때(프로비저닝을 다시 돌리지 않는 경우):
+
+```bash
+cd /opt/kcalAI-model
+sed -e 's#__APP_USER__#ubuntu#g' -e 's#__APP_DIR__#/opt/kcalAI-model#g' \
+  deploy/kcalai.cron | sudo tee /etc/cron.d/kcalai >/dev/null
+sudo chmod 644 /etc/cron.d/kcalai && sudo chown root:root /etc/cron.d/kcalai
+```
 
 - 서버가 안 뜨면 `journalctl -u kcalai -n 50` — production 게이트(`AUTH_CODE_PEPPER`/`HEALTH_ENCRYPTION_KEY`/`GEMINI_API_KEY`/**카카오 키 4종**)를 확인한다. 카카오는 유일한 인증 수단이라 설정이 없으면 기동을 거부한다.
 - 이미지 인식이 503이면 Gemini 키·쿼터·네트워크 확인(`predict fail backend=gemini` 로그).

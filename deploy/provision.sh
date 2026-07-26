@@ -95,6 +95,15 @@ systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}"
 systemctl restart "${SERVICE_NAME}"
 
+# ---- 7. 정기 배치 (cron) ----
+# 갱신 배치가 없으면 유료 구독이 청구되지 않고 기간 만료로 조용히 lite 가 된다 — 돈도 못 받고
+# 사용자는 서비스를 잃는다. 서버를 다시 세울 때 이 단계가 빠지면 같은 일이 반복되므로
+# 프로비저닝에 포함한다 (2026-07-26: 실제로 등록이 0건인 채 운영되고 있었다).
+log "정기 배치(cron) 등록"
+sed -e "s#__APP_USER__#${APP_USER}#g" -e "s#__APP_DIR__#${APP_DIR}#g" \
+  "$APP_DIR/deploy/kcalai.cron" > /etc/cron.d/kcalai
+chmod 644 /etc/cron.d/kcalai
+
 # 기동 대기(최대 ~30초 폴링).
 ok=0
 for _ in $(seq 1 15); do

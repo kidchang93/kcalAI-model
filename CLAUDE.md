@@ -77,7 +77,7 @@ open http://127.0.0.1:8000/docs
 
 **결제 환불** (약관의 환불 규정을 **이행하는 수단** — `docs/LEGAL_COMPLIANCE.md` §2): `venv/bin/python scripts/refund_payment.py` (인자 없이 실행하면 환불 가능한 결제 목록, `--payment-id`·`--reason` 지정 후 `--yes` 로 실행). **실행하면 실제로 돈이 나갑니다.** 상점관리자에서 직접 취소해도 이제 웹훅이 원장에 반영하지만(29장), 그건 **토스 상점관리자에 웹훅 URL을 등록한 뒤**의 이야기입니다. 등록 전에는 이 스크립트가 원장을 맞추는 유일한 경로입니다.
 
-**자동결제 갱신 배치** (청구 예정일이 지난 구독을 청구 — `docs/DATA_MODEL.md` 24장): `venv/bin/python scripts/charge_due_subscriptions.py` — 저장소 루트에서 실행, **멱등**(성공 건은 `next_billing_at`이 한 달 뒤로 밀려 재실행 시 대상에서 빠짐). 하루 1회 cron 권장. 한 건의 실패가 배치를 멈추지 않으며 실패 건은 `past_due`로 다음날 재시도합니다. `TOSS_SECRET_KEY` 미설정 시 실행을 거부합니다(exit 1). **실행하면 실제 결제가 일어납니다.**
+**자동결제 갱신 배치** (청구 예정일이 지난 구독을 청구 — `docs/DATA_MODEL.md` 24장): `venv/bin/python scripts/charge_due_subscriptions.py` — 저장소 루트에서 실행, **멱등**(성공 건은 `next_billing_at`이 한 달 뒤로 밀려 재실행 시 대상에서 빠짐). 한 건의 실패가 배치를 멈추지 않으며 실패 건은 `past_due`로 다음날 재시도합니다. `TOSS_SECRET_KEY` 미설정 시 실행을 거부합니다(exit 1). **실행하면 실제 결제가 일어납니다.** 운영에는 **cron으로 등록되어 있습니다**(매일 UTC 19:00 = KST 04:00) — 정의는 `deploy/kcalai.cron`이고 `provision.sh`가 `/etc/cron.d/kcalai`로 설치합니다. ⚠️ **`crontab -e`로 손으로 넣지 마세요** — 재구축과 함께 사라집니다(2026-07-26 이전이 그 상태였고, 등록 0건인 채 유료 구독이 청구 예정을 달고 있었습니다).
 
 **만료 인증 데이터 정리 배치** (`kakao_link_codes`·`auth_sessions` 무한 누적 방지): `venv/bin/python scripts/purge_expired_auth.py` — 만료 코드(발급 1일 뒤)·만료·폐기 세션(7일 뒤)을 물리 삭제, 멱등. 정기 실행(cron/systemd)을 권장. 보존창은 `services/auth_service.py`의 `CODE_RETENTION_DAYS`·`SESSION_RETENTION_DAYS`.
 

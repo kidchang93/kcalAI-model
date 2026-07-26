@@ -1697,7 +1697,7 @@ curl 실측(중복 confirm): 구독을 `pro`·`active`·기간 한 달 남김으
 3. **부분 환불·비례 배분(proration) 없음.** 업그레이드는 새 기간 1개월 전액 청구다.
 4. ~~**앱 화면 미구현** — `k-calAI-RN`에 `/api/billing/*` 소비처가 없다(결제창 SDK 연동 포함).~~ **구현됨** — `app/plan.tsx`·`app/billing/`·`app/payments/` + `services/billing-api.ts`. 실결제 end-to-end는 아직 사람이 확인하지 않았다.
 5. 결제 실패 알림(푸시·메일)이 없다 — `past_due` 회원이 카드 교체 시점을 알 방법이 없다. **알림 채널 자체가 없어** 이것만 따로 붙일 수 없다.
-6. **갱신 배치가 cron에 등록되어 있지 않다** (2026-07-26 운영 실측). `scripts/charge_due_subscriptions.py`가 존재할 뿐 **아무도 부르지 않는다** — 청구 예정일이 와도 청구가 일어나지 않고, 기간이 지나면 `get_effective_plan`이 조용히 lite로 해석한다. 즉 **돈도 못 받고 사용자는 서비스를 잃는다.** `scripts/purge_expired_auth.py`도 같은 상태다.
+6. ~~**갱신 배치가 cron에 등록되어 있지 않다** (2026-07-26 운영 실측). `scripts/charge_due_subscriptions.py`가 존재할 뿐 **아무도 부르지 않는다.**~~ **해소** (2026-07-26) — `deploy/kcalai.cron` → `/etc/cron.d/kcalai`(갱신 UTC 19:00 · 정리 UTC 20:00), `provision.sh` 7단계가 재구축 때도 설치한다. **cron이 실제로 실행하는 것까지 실측**했다(임시 항목으로 당겨 실행 → `due=0 charged=0`, `task-logs/cron_billing.log`에 기록). `deploy/DEPLOY.md` §6.
 
 ---
 

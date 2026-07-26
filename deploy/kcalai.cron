@@ -1,0 +1,30 @@
+# kcalAI-model 정기 배치 — /etc/cron.d/kcalai 로 설치한다 (provision.sh 7단계).
+#
+# 왜 crontab 이 아니라 /etc/cron.d 인가: 파일로 관리되어 재현 가능하고, 서버를 다시 세울 때
+# provision.sh 가 그대로 복원한다. `crontab -e` 로 손으로 넣으면 그 서버에서만 살아 있고
+# 재구축과 함께 조용히 사라진다 — 2026-07-26 에 실제로 이 상태였다(등록된 배치가 0건인데
+# 유료 구독은 청구 예정을 달고 있었다).
+#
+# ⚠️ 파일명에 점(.)을 넣지 말 것 — cron 이 그런 파일을 무시한다.
+# ⚠️ 반드시 저장소 루트에서 실행한다(`cd` 필수) — load_dotenv() 가 cwd 기준으로 .env 를 찾는다.
+#
+# __APP_USER__·__APP_DIR__ 는 provision.sh 가 치환한다(kcalai.service 와 같은 규약).
+# 손으로 설치할 때는 직접 바꿔 넣는다:
+#   sed -e 's#__APP_USER__#ubuntu#g' -e 's#__APP_DIR__#/opt/kcalAI-model#g' \
+#     deploy/kcalai.cron | sudo tee /etc/cron.d/kcalai >/dev/null
+#   sudo chmod 644 /etc/cron.d/kcalai
+#
+# 서버 시각대는 UTC 다(Etc/UTC 실측). 주석의 KST 는 참고용이며, 시각을 바꿀 때 함께 고친다.
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# 자동결제 갱신 — 매일 UTC 19:00 (KST 04:00).
+# 새벽으로 잡은 이유는 카드사 정기 점검 시간대(자정 전후)를 피하기 위해서다.
+# 멱등하다: 성공한 구독은 next_billing_at 이 한 달 뒤로 밀려 재실행 대상에서 빠진다.
+# ⚠️ 실행되면 실제 결제가 일어난다.
+0 19 * * * __APP_USER__ cd __APP_DIR__ && { date -Is; venv/bin/python scripts/charge_due_subscriptions.py; } >> task-logs/cron_billing.log 2>&1
+
+# 만료 인증 데이터 정리 — 매일 UTC 20:00 (KST 05:00).
+# kakao_link_codes·auth_sessions 무한 누적 방지. 멱등하며 돈과 무관하다.
+0 20 * * * __APP_USER__ cd __APP_DIR__ && { date -Is; venv/bin/python scripts/purge_expired_auth.py; } >> task-logs/cron_purge.log 2>&1
