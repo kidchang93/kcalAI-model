@@ -4,7 +4,16 @@ from sqlalchemy.orm import Session
 from models.auth_model import AuthSession, KakaoLinkCode, User
 from models.consent_model import UserAllergy, UserCondition, UserConsent, UserHealthProfile
 from models.group_model import Group, GroupChallenge, GroupMember, GroupPet
-from models.health_model import ExerciseGoal, ExerciseLog, MealItem, MealLog, UserGoal, UserProfile, WeightLog
+from models.health_model import (
+    ExerciseGoal,
+    ExerciseLog,
+    LabResult,
+    MealItem,
+    MealLog,
+    UserGoal,
+    UserProfile,
+    WeightLog,
+)
 from models.pet_model import Pet, PetFeedingLog
 from models.recommendation_model import DietRecommendation
 from models.subscription_model import BillingKey, Payment, UserSubscription, VisionUsageDaily
@@ -57,6 +66,9 @@ def delete_account(db: Session, user: User) -> None:
     db.execute(delete(MealItem).where(MealItem.meal_log_id.in_(my_meal_log_ids)))
     db.execute(delete(MealLog).where(MealLog.user_id == user_id))
     db.execute(delete(WeightLog).where(WeightLog.user_id == user_id))
+    # 검사 수치(리비전 0027). FK 가 ON DELETE NO ACTION 이라 빠뜨리면 이 사용자는 영구히
+    # 탈퇴할 수 없다 — 2026-07-16 에 payments 누락으로 실제 발생했다.
+    db.execute(delete(LabResult).where(LabResult.user_id == user_id))
     db.execute(delete(ExerciseLog).where(ExerciseLog.user_id == user_id))
     db.execute(delete(ExerciseGoal).where(ExerciseGoal.user_id == user_id))
     db.execute(delete(UserGoal).where(UserGoal.user_id == user_id))

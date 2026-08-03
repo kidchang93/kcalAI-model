@@ -271,6 +271,26 @@ class ReportMeal(BaseModel):
     items: list[ReportMealItem]
 
 
+class ReportLabResult(BaseModel):
+    """리포트에 실리는 검사 수치 (리비전 0027, `docs/CARE_LOOP.md` §4).
+
+    식단 요약 옆에 **결과 축**을 나란히 놓는다 — 그전까지 이 문서는 "무엇을 먹었나"만 담고
+    "그래서 수치가 어떻게 됐나"가 없어 진료에서 되짚을 근거가 절반이었다.
+    """
+
+    measured_on: str
+    panel: str
+    label: str
+    value: float
+    unit: str
+    # 지침이 정한 정상범위 문장. 근거가 없는 항목(혈압)은 null 이다.
+    reference: str | None
+    note: str | None
+    # 리포트 기간 이전의 검사인가. 검사 주기(3개월)가 리포트 기간보다 길어 직전 값을 함께
+    # 싣기 때문에, 화면이 "기간 이전 검사"임을 밝힐 수 있어야 한다.
+    is_before_period: bool
+
+
 class ReportKcalSummary(BaseModel):
     target: int | None
     # 기록한 날만 나눈 평균. 기록 없는 날은 0이 아니라 '모름'이다.
@@ -296,5 +316,7 @@ class MedicalReportResponse(BaseModel):
     kcal: ReportKcalSummary
     # 질환 축 추이. 해당 질환이 없으면 null (TrendsResponse 와 같은 구조).
     nutrients: NutrientTrends | None
+    # 검사 수치. 기간 내 결과 + 항목별 직전 1건 (기간에 없으면 `is_before_period=true`).
+    labs: list[ReportLabResult]
     meals: list[ReportMeal]
     notice: str

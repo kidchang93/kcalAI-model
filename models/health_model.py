@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Integer, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
@@ -198,6 +198,38 @@ class ExerciseGoal(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class LabResult(Base):
+    """검사 수치 — 케어 루프의 결과 축 (리비전 0027, `docs/CARE_LOOP.md` §4).
+
+    식단만 기록하면 "나트륨을 얼마나 먹었다"까지만 말할 수 있다. 그래서 무엇이 달라졌는지는
+    말하지 못했고, 목표(`docs/PRODUCT_STRATEGY.md` §0-2)의 "검사 수치가 나빠졌을 때 되짚을 수
+    있었는가"가 반쪽이었다. 이 테이블이 그 나머지 절반이다.
+
+    **우리가 측정하지 않는다.** 사용자가 결과지를 보고 옮겨 적거나 가정용 혈압계 값을 넣는다.
+    Apple 은 "기기 센서만으로 혈압·혈당을 측정한다"고 주장하는 앱을 거부한다
+    (`docs/LEGAL_COMPLIANCE.md` §6-1) — 우리 문구가 '측정'으로 읽히면 안 된다.
+
+    항목·단위·정상범위는 `services/lab_panels.py` 가 단일 진실이다. DB 에 enum 을 두지 않는
+    이유는 그것이 참조 데이터가 아니라 **지침 인용**이기 때문이다 — 지침이 개정되면 코드를
+    고치지 마이그레이션을 돌릴 일이 아니다.
+    """
+
+    __tablename__ = "lab_results"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    # 검사일이지 입력일이 아니다. 지난 결과지를 나중에 옮겨 적는 것이 정상 흐름이다.
+    measured_on: Mapped[date] = mapped_column(Date, nullable=False)
+    panel: Mapped[str] = mapped_column(String(30), nullable=False)
+    value: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    unit: Mapped[str] = mapped_column(String(20), nullable=False)
+    source: Mapped[str] = mapped_column(String(10), nullable=False, server_default="manual")
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

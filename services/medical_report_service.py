@@ -27,7 +27,14 @@ from sqlalchemy.orm import Session, selectinload
 
 from timeutil import UTC
 from models.health_model import MealLog
-from services import ckd_food_rules, day_nutrition, health_service, meta_service
+from services import (
+    ckd_food_rules,
+    day_nutrition,
+    health_service,
+    lab_panels,
+    lab_service,
+    meta_service,
+)
 
 # 진료 목적이라 상한을 추이(92일)와 같게 둔다 — 분기 단위 진료를 커버한다.
 REPORT_MAX_DAYS = health_service.TRENDS_MAX_DAYS
@@ -71,9 +78,53 @@ def build_report(db: Session, user_id: int, start_date: date, end_date: date) ->
             "total_days": len(trends["days"]),
         },
         "nutrients": trends["nutrients"],
+        # 검사 수치 (리비전 0027, `docs/CARE_LOOP.md` §4). 식단 요약 옆에 결과 축을 나란히
+        # 놓는 것이 이 리포트의 목적이다 — 그전까지는 "무엇을 먹었나"만 있고 "그래서 수치가
+        # 어떻게 됐나"가 없어, 진료에서 되짚을 근거가 절반이었다.
+        #
+        # ⚠️ 기간 밖의 값도 **직전 1건은 싣는다**. 검사는 3개월에 한 번인데 리포트 기간은
+        # 보통 그보다 짧아, 기간으로만 자르면 대부분의 리포트에서 검사란이 비어 버린다.
+        "labs": _labs_for_report(db, user_id, start_date, end_date),
         "meals": _meals_in_range(db, user_id, start_date, end_date),
         "notice": REPORT_NOTICE,
     }
+
+
+def _labs_for_report(db: Session, user_id: int, start_date: date, end_date: date) -> list[dict]:
+    """기간 안의 검사 + 항목별 직전 1건.
+
+    검사 주기(3개월)가 리포트 기간보다 길다는 것이 이 함수가 존재하는 이유다. 기간으로만
+    자르면 "이번 달 리포트"에는 검사값이 하나도 안 실린다 — 진료에서 가장 보고 싶은 것이
+    지난번 수치인데도.
+    """
+    in_range = lab_service.list_results(db, user_id, start_date=start_date, end_date=end_date)
+    covered = {row.panel for row in in_range}
+    rows = list(in_range)
+
+    # 기간에 없는 항목만 직전 값을 채운다. list_results 는 최신순이라 첫 행이 직전 값이다.
+    for previous in lab_service.list_results(db, user_id, end_date=start_date):
+        if previous.panel not in covered:
+            covered.add(previous.panel)
+            rows.append(previous)
+
+    rows.sort(key=lambda row: (row.measured_on, row.panel), reverse=True)
+
+    return [
+        {
+            "measured_on": row.measured_on.isoformat(),
+            "panel": row.panel,
+            # 표시명·정상범위를 서버가 싣는다 — 리포트는 인쇄되어 진료실에서 읽히는 문서라
+            # 앱이 의학 용어를 만들면 안 된다.
+            "label": (panel.label if (panel := lab_panels.get_panel(row.panel)) else row.panel),
+            "value": float(row.value),
+            "unit": row.unit,
+            "reference": panel.reference if panel else None,
+            "note": row.note,
+            # 리포트 기간 밖의 값인지. 화면이 "기간 이전 검사"임을 밝힐 수 있어야 한다.
+            "is_before_period": row.measured_on < start_date,
+        }
+        for row in rows
+    ]
 
 
 def _stage_label(db: Session, user_id: int) -> str | None:

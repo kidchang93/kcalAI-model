@@ -177,6 +177,7 @@ def test_delete_account_covers_every_user_referencing_table(db):
         "group_challenges",
         "group_members",
         "groups",
+        "lab_results",
         "meal_logs",
         "payments",
         "pets",

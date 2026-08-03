@@ -151,6 +151,7 @@ open http://127.0.0.1:8000/docs
 | Account | `DELETE /api/me` (회원 탈퇴 — 개인 데이터 전부 물리 삭제, 소유 그룹은 그룹째 삭제. `docs/DATA_MODEL.md` 18장) | `api/account_api.py` |
 | Exercises | `GET /api/exercise-types` · `POST·GET /api/exercises` · `PUT·DELETE /api/exercises/{id}` · `GET /api/me/exercise-summary` · `GET·PUT /api/me/exercise-goal` (운동 기록·주간 목표 — 식단과 같은 규약: UTC 자정 경계·soft delete·404 존재 은닉. **플랫폼 중립** — 앱·웹 동일, 기기 연동은 `source`가 느는 입력 경로일 뿐. DATA_MODEL 25장, `docs/ACTIVITY_GUIDANCE.md`) | `api/exercise_api.py` |
 | Challenges | `POST·GET /api/groups/{id}/challenges` · `GET·DELETE /api/groups/{id}/challenges/{cid}` (그룹 운동 챌린지. ⚠️ **순위는 제3자 노출**이라 `group_activity_share` 동의자만 담긴다 — DATA_MODEL 26장) | `api/challenge_api.py` |
+| Labs | `GET /api/me/lab-panels` (입력 가능한 검사 항목·단위·정상범위 — **앱이 의학 용어와 수치를 갖지 않는다**) · `POST·GET /api/me/labs` · `DELETE /api/me/labs/{id}` (검사 수치. Bearer + **`sensitive_health` 동의 필수**. 같은 날 같은 항목은 **덮어쓴다**. 항목 정의는 `services/lab_panels.py`가 단일 진실 — 대한신장학회 e북 1권 I-20 p47–49 인용. ⚠️ **정상/비정상을 판정하지 않는다** — 범위를 나란히 놓을 뿐이다. `docs/CARE_LOOP.md` §4, 리비전 0027) |
 | Coaching | `GET /api/me/coaching` (주간 조언 — **규칙 기반, LLM 없음**. Bearer + `sensitive_health` 동의 필수. DATA_MODEL 27장) | `api/coaching_api.py` |
 | Recommendations | `GET /api/recommendations` (Bearer + `sensitive_health` 동의 필수, 캐시 우선) | `api/recommendation_api.py` |
 
