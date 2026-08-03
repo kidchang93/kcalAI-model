@@ -196,6 +196,22 @@ class MealItemResponse(BaseModel):
     confidence: float | None
     created_at: datetime
 
+    # ── 기록 시점 영양 스냅샷 (리비전 0025 / 응답 노출은 2026-08-03) ────────────
+    # **먹은 양 기준**(1인분 실측 × serving_ratio)이며 실측이 없으면 null 이다.
+    #
+    # 컬럼은 2026-07-25부터 있었지만 **응답에 실리지 않아 앱이 받을 수 없었다.**
+    # 그래서 과거 기록 화면은 kcal 만 그렸고, 질환 축은 기록하는 순간에만 보였다 —
+    # 목표(`docs/PRODUCT_STRATEGY.md` §0-1)의 "나중에 다시 꺼내 볼 수 있는가"가
+    # 저장은 됐는데 조회가 안 되는 상태로 반쪽만 충족돼 있었다 (`docs/CARE_LOOP.md` §0-3).
+    #
+    # ⚠️ **등급(tier)은 여기 담지 않는다.** 수치는 사실이라 굳히지만 등급은 해석이라
+    # 조회 시점의 규칙으로 다시 계산한다 — 굳히면 규칙을 고쳐도 과거 기록만 낡은
+    # 판정을 달고 남는다 (CARE_LOOP §0-3).
+    sodium_mg: float | None = None
+    potassium_mg: float | None = None
+    phosphorus_mg: float | None = None
+    sugar_g: float | None = None
+
     model_config = {"from_attributes": True}
 
 
