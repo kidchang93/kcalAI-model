@@ -68,6 +68,34 @@ NUTRIENT_COLUMNS = {
 
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 
+# 우리 curated 라벨 → 식약처 표기 (2026-08-03).
+#
+# **유사 매칭이 아니다.** 정확 일치만 쓴다는 원칙은 그대로이고(유사도를 허용하면 바나나에
+# '말린것'이 섞여 칼륨이 2배가 된다), 여기 있는 것은 **사람이 원본 CSV 를 직접 확인한 1:1
+# 대응**이다. 확인하지 못한 것은 넣지 않는다 — 비어 있는 편이 틀린 값보다 낫다.
+#
+# 왜 필요했나: `docs/PRODUCT_STRATEGY.md` §5-2 는 남은 71건을 "외국 요리·가공식품이라 원본이
+# 없다"고 진단했는데 **틀렸다.** 목록에 계란찜·계란말이·북엇국·돈까스 같은 한식이 섞여 있었고,
+# 원인은 원본 부재가 아니라 **표기 차이**였다. 계란찜은 원본에 `달걀찜`으로 멀쩡히 있다.
+# 그 오진 때문에 "고칠 수 없는 일"로 분류돼 CKD 환자가 계란찜을 기록해도 인·칼륨 경고가
+# 침묵하고 있었다.
+LABEL_ALIASES = {
+    "계란찜": "달걀찜",
+    "계란말이": "달걀말이",
+    "돈까스": "돈가스",
+    "돼지고기수육": "수육",
+    "알타리김치": "총각김치",
+    "북엇국": "북어국",
+    "소바": "메밀소바",
+}
+
+# 검토했으나 **넣지 않은 것** — 다음에 같은 후보를 다시 검토하지 않도록 이유를 남긴다.
+#   보쌈 → 보쌈김치      : 고기 요리와 김치다. 완전히 다른 음식
+#   무김치 → 깍두기      : 깍두기는 무김치의 한 종류일 뿐 대표하지 못한다
+#   새우매운탕 → 매운탕  : 원본 '매운탕'은 생선 기준이라 재료가 다르다
+#   회 → 모듬회          : '회'가 너무 일반적이라 어느 어종인지 정해지지 않는다
+#   스튜 → 소고기스튜    : 〃
+
 
 def parse_decimal(raw: str | None) -> Decimal | None:
     if raw is None:
@@ -202,10 +230,20 @@ def main() -> None:
         print(f"대상({label}): {len(targets)}건")
 
         filled, skipped_no_source, skipped_no_size = 0, [], []
+        used_aliases: list[str] = []
         sql_lines: list[str] = []
 
         for row_id, label, serving_size_g in targets:
             source_rows = index.get(label)
+
+            # 이름이 그대로 없으면 **확인된 별칭**으로 한 번 더 찾는다 (LABEL_ALIASES).
+            if not source_rows:
+                alias = LABEL_ALIASES.get(label)
+                if alias:
+                    source_rows = index.get(alias)
+                    if source_rows:
+                        used_aliases.append(f"{label}→{alias}")
+
             if not source_rows:
                 skipped_no_source.append(label)
                 continue
@@ -264,12 +302,19 @@ def main() -> None:
         mode = "[dry-run] " if args.dry_run else ("[emit-sql] " if args.emit_sql else "")
         print(f"\n{mode}채움: {filled}건")
 
+        if used_aliases:
+            # 별칭으로 찾은 것은 **드러내 놓는다** — 어떤 이름이 어떤 원본으로 채워졌는지
+            # 보이지 않으면 잘못된 대응이 조용히 굳는다.
+            print(f"  별칭 사용 {len(used_aliases)}건: {', '.join(used_aliases)}")
+
         if skipped_no_size:
             print(f"건너뜀(1인분 무게 없음) {len(skipped_no_size)}건: {', '.join(skipped_no_size)}")
 
         if skipped_no_source:
-            # 외국 요리·가공식품 등 공공 DB에 원본이 없는 라벨. 유사 매칭으로 억지로 채우지 않는다.
-            print(f"건너뜀(원본 없음) {len(skipped_no_source)}건: {', '.join(skipped_no_source)}")
+            # 원본에 그 이름이 없고 확인된 별칭도 없는 라벨. 유사 매칭으로 억지로 채우지 않는다.
+            # 다만 "원본이 없다"고 단정하지 말 것 — 표기가 다를 뿐인 경우가 섞여 있다
+            # (2026-08-03에 계란찜→달걀찜 등 7건이 그렇게 발견됐다, LABEL_ALIASES 주석).
+            print(f"건너뜀(이름 못 찾음) {len(skipped_no_source)}건: {', '.join(skipped_no_source)}")
     finally:
         session.close()
 
