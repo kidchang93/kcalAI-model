@@ -63,8 +63,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Food Classification API",
-    description="음식 이미지를 분류하는 API",
+    title="케어테이블 API",
+    description="만성질환 식이돌봄 서비스 케어테이블(CareTable)의 기능 서버",
     version="1.0.0",
     lifespan=lifespan,
 )

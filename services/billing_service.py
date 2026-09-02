@@ -105,8 +105,13 @@ def _new_order_id() -> str:
     return f"ord_{uuid.uuid4().hex}"
 
 
+# 토스 결제창과 카드 명세서에 그대로 뜨는 이름이다 — 서비스명이 없으면 결제자가 무엇에
+# 대한 청구인지 알 수 없다(2026-08-19 브랜드 반영).
+SERVICE_NAME = "케어테이블"
+
+
 def _order_name(plan: Plan) -> str:
-    return f"{plan.label_ko} 요금제 1개월"
+    return f"{SERVICE_NAME} {plan.label_ko} 요금제 1개월"
 
 
 # ---- 결제수단(빌링키) ----
