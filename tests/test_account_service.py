@@ -171,6 +171,7 @@ def test_delete_account_covers_every_user_referencing_table(db):
     handled = {
         "auth_sessions",
         "billing_keys",
+        "care_visits",
         "diet_recommendations",
         "exercise_goals",
         "exercise_logs",

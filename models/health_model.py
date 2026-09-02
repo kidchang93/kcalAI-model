@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
@@ -232,4 +232,41 @@ class LabResult(Base):
     note: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class CareVisit(Base):
+    """진료 일정 — 케어 루프의 시작과 끝 (리비전 0028, `docs/CARE_LOOP.md` §1·§4-3).
+
+    이 앱의 완결은 "예약"이 아니라 **진료와 진료 사이 한 바퀴**인데, 진료일을 모르면 그 바퀴의
+    시작과 끝을 앱이 모른다. 리포트를 언제 뽑아야 하는지도, 오늘 기록해야 할 이유도 거기서
+    나온다 (§9 의 열린 결정 4번).
+
+    ⚠️ **예약 시스템이 아니다.** 사용자가 자기 일정을 적어 두는 메모이고, 우리는 병원과 아무
+    것도 주고받지 않는다. 방향이 반대라야 의료법 제27조 제3항(소개·알선 금지)에 닿지 않는다 —
+    우리가 환자를 병원에 보내는 게 아니라, 환자가 받아 온 것을 앱이 이어받는다 (§3).
+    같은 이유로 `clinic_label` 은 자유 텍스트다: 병원 목록을 두면 순서가 생기고 순서에는
+    이해관계가 붙는다.
+
+    지금 API 가 여는 것은 `scheduled_on` 하나다. 나머지는 §4-3 에서 설계가 확정된 자리이고,
+    진료 질문·결과 기록을 붙일 때 그대로 쓴다.
+    """
+
+    __tablename__ = "care_visits"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    scheduled_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # null 이면 아직 다녀오지 않은 예정 건이다.
+    visited_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    clinic_label: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    questions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
+    report_from: Mapped[date | None] = mapped_column(Date, nullable=True)
+    report_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )

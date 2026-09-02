@@ -5,6 +5,7 @@ from models.auth_model import AuthSession, KakaoLinkCode, User
 from models.consent_model import UserAllergy, UserCondition, UserConsent, UserHealthProfile
 from models.group_model import Group, GroupChallenge, GroupMember, GroupPet
 from models.health_model import (
+    CareVisit,
     ExerciseGoal,
     ExerciseLog,
     LabResult,
@@ -69,6 +70,7 @@ def delete_account(db: Session, user: User) -> None:
     # 검사 수치(리비전 0027). FK 가 ON DELETE NO ACTION 이라 빠뜨리면 이 사용자는 영구히
     # 탈퇴할 수 없다 — 2026-07-16 에 payments 누락으로 실제 발생했다.
     db.execute(delete(LabResult).where(LabResult.user_id == user_id))
+    db.execute(delete(CareVisit).where(CareVisit.user_id == user_id))
     db.execute(delete(ExerciseLog).where(ExerciseLog.user_id == user_id))
     db.execute(delete(ExerciseGoal).where(ExerciseGoal.user_id == user_id))
     db.execute(delete(UserGoal).where(UserGoal.user_id == user_id))

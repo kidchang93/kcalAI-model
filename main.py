@@ -25,6 +25,7 @@ from api.challenge_api import router as challenge_router
 from api.coaching_api import router as coaching_router
 from api.guide_api import router as guide_router
 from api.lab_api import router as lab_router
+from api.visit_api import router as visit_router
 from api.exercise_api import router as exercise_router
 from api.recommendation_api import router as recommendation_router
 from api.subscription_api import router as subscription_router
@@ -129,6 +130,7 @@ app.include_router(exercise_router, prefix="/api", tags=["Exercises"])
 app.include_router(coaching_router, prefix="/api", tags=["Coaching"])
 app.include_router(guide_router, prefix="/api", tags=["Guides"])
 app.include_router(lab_router, prefix="/api", tags=["Labs"])
+app.include_router(visit_router, prefix="/api", tags=["Visits"])
 app.include_router(nutrition_router, prefix="/api", tags=["Nutrition"])
 app.include_router(consent_router, prefix="/api", tags=["Consent"])
 app.include_router(group_router, prefix="/api", tags=["Groups"])
