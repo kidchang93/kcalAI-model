@@ -2,10 +2,11 @@ from datetime import datetime
 
 from timeutil import UTC
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from models.consent_model import UserAllergy, UserCondition, UserConsent, UserHealthProfile
+from models.health_model import CareVisit, LabResult
 from services import meta_service
 
 SENSITIVE_HEALTH = "sensitive_health"
@@ -140,10 +141,28 @@ def revoke_consent(db: Session, user_id: int, kind: str) -> UserConsent:
 
 
 def _destroy_sensitive_data(db: Session, user_id: int) -> None:
-    # 민감정보는 soft delete 가 아니라 물리 삭제(파기)다. DATA_MODEL.md 7장 파기 규칙.
+    """민감정보는 soft delete 가 아니라 물리 삭제(파기)다 (`docs/DATA_MODEL.md` 7장).
+
+    **2026-08-19: 검사 수치와 진료 메모를 파기 대상에 추가했다.** 그전까지는 혈액형·질병·
+    알러지 셋만 지웠고, 리비전 0027(`lab_results`)·0028(`care_visits`)이 들어올 때 이 목록이
+    갱신되지 않았다 — 철회해도 검사 수치가 남아 있었다. 조회는 403 으로 막혔지만 파기는
+    "접근을 막는 것"이 아니라 "없애는 것"이다.
+
+    ⚠️ 새로 민감정보를 담는 테이블을 만들면 **여기에 반드시 추가한다.** 탈퇴 연쇄
+    (`account_service.delete_account`)와 짝이지만 서로 다른 목록이라, 한쪽만 고치면 이 사고가
+    그대로 반복된다.
+    """
     db.execute(delete(UserHealthProfile).where(UserHealthProfile.user_id == user_id))
     db.execute(delete(UserCondition).where(UserCondition.user_id == user_id))
     db.execute(delete(UserAllergy).where(UserAllergy.user_id == user_id))
+    # 검사 수치는 그 자체가 건강 민감정보다 — 행째 파기한다.
+    db.execute(delete(LabResult).where(LabResult.user_id == user_id))
+    # 진료 메모(`outcome`)만 비운다. **행을 지우지 않는 이유**는 `scheduled_on`(날짜)이
+    # 민감정보가 아니어서다 — 동의 없이도 D-day 는 계속 쓸 수 있어야 하고, 철회했다고
+    # 진료 일정까지 잃게 하는 것은 필요 이상의 파기다 (`docs/DATA_MODEL.md` 31장).
+    db.execute(
+        update(CareVisit).where(CareVisit.user_id == user_id).values(outcome=None)
+    )
 
 
 # ---- 건강 프로필 (혈액형·Rh) ----
