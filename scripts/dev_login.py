@@ -4,14 +4,16 @@
     venv/bin/python scripts/dev_login.py
     venv/bin/python scripts/dev_login.py --conditions ckd --label ckd
     venv/bin/python scripts/dev_login.py --origin http://localhost:8000
+    venv/bin/python scripts/dev_login.py --label demo --json   # 세션 JSON 한 줄만 (dev.sh 용)
 
 왜 필요한가: 카카오 앱에 **허용 IP 제한**이 걸려 있어 로컬(유동 공인 IP)에서는 카카오
 로그인이 통과하지 못한다 (CLAUDE.md 알려진 문제 12). 운영은 정상이므로, 로컬 개발만
-이 스크립트로 우회한다.
+이 스크립트로 우회한다. `../dev.sh`는 기동할 때 이 스크립트로 세션을 받아 앱에 자동으로 넣는다.
 
 실제 가입·로그인 경로(`create_link_code` → `kakao_signup`/`kakao_login`)를 그대로 태운다 —
 세션 발급을 흉내 내지 않으므로 약관 동의·요금제 행도 정상적으로 생긴다. 추가로 앱이 온보딩
-화면으로 튕기지 않도록 신체 프로필·목표·민감정보 동의까지 채운다.
+화면으로 튕기지 않도록 신체 프로필·목표·민감정보 동의까지 채운다. **이미 있는 계정은 프로필·목표·
+질병을 덮지 않는다** — 없는 것만 채우고, 질병은 `--conditions`를 줬을 때만 바꾼다.
 
 ⚠️ `APP_ENV=production` 이면 실행을 거부한다. 이 스크립트는 임의 계정의 세션을 만들 수 있어
 운영에서 실행되면 그 자체가 인증 우회다.
@@ -54,13 +56,18 @@ def main() -> int:
     parser.add_argument("--label", default="dev", help="계정 구분자. kakao_id 는 local-dev:<label>")
     parser.add_argument(
         "--conditions",
-        default="",
-        help="쉼표로 구분한 질병 코드 (예: ckd,hypertension). 생략하면 질병 없음",
+        default=None,
+        help="쉼표로 구분한 질병 코드 (예: ckd,hypertension). 생략하면 기존 값 유지(신규 계정은 질병 없음)",
     )
     parser.add_argument(
         "--origin",
         default="http://localhost:8081",
         help="세션을 심을 앱 오리진. localStorage 는 오리진마다 따로다",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="세션 JSON 한 줄만 출력한다 (dev.sh 가 저장해 앱에 넣는다)",
     )
     args = parser.parse_args()
 
@@ -69,7 +76,11 @@ def main() -> int:
         return 1
 
     kakao_id = f"{KAKAO_ID_PREFIX}:{args.label}"
-    conditions = [code.strip() for code in args.conditions.split(",") if code.strip()]
+    conditions = (
+        None
+        if args.conditions is None
+        else [code.strip() for code in args.conditions.split(",") if code.strip()]
+    )
 
     db = SessionLocal()
     try:
@@ -91,9 +102,14 @@ def main() -> int:
                 consent_service.SENSITIVE_HEALTH_VERSION,
             )
 
-        consent_service.replace_conditions(db, user.id, conditions)
-        health_service.upsert_profile(db, user.id, **DEFAULT_PROFILE)
-        health_service.upsert_goal(db, user.id, **DEFAULT_GOAL)
+        # 기존 계정의 값은 덮지 않는다 — dev.sh 가 세션 만료 때마다 이 스크립트를 다시 부르므로,
+        # 덮으면 앱에서 바꿔 둔 체중·목표·질병이 그때마다 더미 기본값으로 돌아간다.
+        if conditions is not None:
+            consent_service.replace_conditions(db, user.id, conditions)
+        if not _exists(health_service.get_profile, db, user.id):
+            health_service.upsert_profile(db, user.id, **DEFAULT_PROFILE)
+        if not _exists(health_service.get_goal, db, user.id):
+            health_service.upsert_goal(db, user.id, **DEFAULT_GOAL)
         db.commit()
 
         session_payload = {
@@ -107,10 +123,15 @@ def main() -> int:
             },
         }
         user_id = user.id
+        current_conditions = consent_service.list_conditions(db, user.id)
     finally:
         db.close()
 
-    print(f"user_id={user_id}  kakao_id={kakao_id}  질병={conditions or '없음'}")
+    if args.json:
+        print(json.dumps(session_payload, ensure_ascii=False))
+        return 0
+
+    print(f"user_id={user_id}  kakao_id={kakao_id}  질병={current_conditions or '없음'}")
     print(f"\n# 웹({args.origin}) — 브라우저 콘솔에 붙여넣으세요")
     raw = json.dumps(json.dumps(session_payload, ensure_ascii=False), ensure_ascii=False)
     print(f"localStorage.setItem('auth-session', {raw}); location.href='/';")
@@ -119,6 +140,15 @@ def main() -> int:
     print('curl -H "Authorization: Bearer $KCAL_TOKEN" '
           f'{args.origin.replace("8081", "8000")}/api/me/summary')
     return 0
+
+
+def _exists(getter, db, user_id: int) -> bool:
+    # health_service 의 조회 함수는 없으면 ValueError 를 던진다 (API 가 404 로 바꾼다).
+    try:
+        getter(db, user_id)
+    except ValueError:
+        return False
+    return True
 
 
 def _session_expiry(db, token: str) -> str:

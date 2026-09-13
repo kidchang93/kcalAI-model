@@ -53,7 +53,7 @@ open http://127.0.0.1:8000/docs
 
 **워크스페이스 원클릭 실행기**: `../dev.sh` (Postgres + 서버 + Expo 앱). `../dev.sh server`로 서버만 띄울 수 있습니다.
 
-**로컬 로그인** (카카오 우회 — 알려진 문제 12): `venv/bin/python scripts/dev_login.py --conditions ckd` — 실제 가입·로그인 경로를 그대로 태워 세션을 발급하고, 온보딩 가드를 통과하도록 프로필·목표·민감정보 동의까지 채웁니다. 출력된 `localStorage.setItem(...)` 한 줄을 앱 오리진(기본 `http://localhost:8081`) 브라우저 콘솔에 붙여넣으면 로그인 상태가 됩니다. 계정은 `local-dev:<label>`로 구분되며 **`APP_ENV=production`이면 실행을 거부**합니다.
+**로컬 로그인** (카카오 우회 — 알려진 문제 12): **`../dev.sh`(ios·android·web·start)가 자동으로 합니다** (2026-09-13). 개발 계정 `local-dev:demo`의 세션을 `task-logs/dev-session-<label>.json`(권한 600)에 저장해 두고 기동마다 재사용하며, 서버가 거부할 때(만료·로그아웃 폐기·DB 초기화)만 다시 받습니다. 앱은 `EXPO_PUBLIC_DEV_AUTH_SESSION`을 `__DEV__`에서만 읽습니다. 끄기 `DEV_LOGIN=0`, 다른 계정 `DEV_LOGIN_LABEL=ckd`. 수동으로는 `venv/bin/python scripts/dev_login.py --conditions ckd` — 실제 가입·로그인 경로를 그대로 태워 세션을 발급하고, 온보딩 가드를 통과하도록 프로필·목표·민감정보 동의까지 채웁니다. **이미 있는 계정은 프로필·목표·질병을 덮지 않습니다**(없는 것만 채우고, 질병은 `--conditions`를 줬을 때만 교체). 출력된 `localStorage.setItem(...)` 한 줄을 앱 오리진(기본 `http://localhost:8081`) 브라우저 콘솔에 붙여넣으면 로그인 상태가 됩니다(`--json`은 세션 JSON만 출력). 계정은 `local-dev:<label>`로 구분되며 **`APP_ENV=production`이면 실행을 거부**합니다.
 
 **식약처 음식 DB 적재** (칼로리 측정 `/api/nutrition/estimate`과 식단 추천의 데이터 원천 — 둘 다 LLM 없이 이 DB만 씁니다, `docs/DATA_MODEL.md` 12·13장): `venv/bin/python scripts/import_mfds_food.py <식약처 음식 CSV 경로>` — 저장소 루트에서 실행, idempotent upsert(재실행 안전). 원본 CSV(`../data/`)는 커밋하지 않습니다.
 
