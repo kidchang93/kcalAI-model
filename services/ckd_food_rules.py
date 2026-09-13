@@ -74,6 +74,11 @@ STAGE_TARGETS: dict[str, dict] = {
 #   "이 정도가 흔히 쓰이는 기준" 수준의 안내로만 노출한다.
 DIALYSIS_POTASSIUM_REFERENCE_MG = 2000  # 국가건강정보포털(투석환자 식이요법) 실무 통용치
 DIALYSIS_PHOSPHORUS_REFERENCE_MG = 1000  # KSN2 p141 (800–1,000 mg 중 상단)
+# 참고치를 보일 때 붙이는 출처. 칼륨 2,000 은 KSN 에 수치가 없어 국가건강정보포털 실무값이다.
+REFERENCE_CITATIONS: dict[str, str] = {
+    "potassium": "국가건강정보포털 투석환자 식이요법",
+    "phosphorus": "대한신장학회 영양-식생활 관리 2권 p141",
+}
 
 # 참고치를 노출할 때 함께 내리는 고지. 지침 권고가 아니라는 사실을 숨기지 않는다.
 POTASSIUM_PHOSPHORUS_REFERENCE_NOTICE = (
@@ -89,11 +94,35 @@ SODIUM_STAGE_UNKNOWN_NOTE = (
 )
 
 
+# 나트륨 1일 상한을 **화면에 보일 때** 붙이는 출처 — 누가 그은 선인지 밝힌다(KCAL-15·16).
+# 앱이 정한 선처럼 읽히면 우리가 판정하는 쪽이 된다. 쪽수는 원문 PDF(`../data/`)로 확인했다.
+#
+# ⚠️ **혈액투석 3,000 mg 은 같은 책 안에서 엇갈린다** (2026-09-13 원문 확인). KSN2 p96 은
+# "나트륨 3,000 mg/day"라고 적지만, p114 는 "혈액투석을 하는 경우에도 … 5 g(나트륨 2,000 mg)
+# 이하 … 투석을 하지 않는 만성 콩팥병 환자와 동일하게"라고 적는다. 어느 쪽이 맞는지는 우리가
+# 정하지 않는다 — 값은 기존대로 두고, **충돌 자체를 출처에 드러내** 사용자·의료진이 판단하게 한다.
+SODIUM_LIMIT_CITATIONS: dict[str, str] = {
+    CKD_STAGE_NONDIALYSIS: "대한신장학회 영양-식생활 관리 1권 p101·105",
+    CKD_STAGE_HEMODIALYSIS: "대한신장학회 영양-식생활 관리 2권 p96 (같은 책 p114는 2,000 mg 이하로 적음)",
+    CKD_STAGE_PERITONEAL: "국가건강정보포털·KDIGO 2024 (신장학회 지침서 범위 밖)",
+}
+
+
 def sodium_daily_limit_mg(stage: str | None) -> int | None:
     """병기별 나트륨 1일 상한. 병기 미상이면 None (상한을 임의로 고르지 않는다)."""
     targets = STAGE_TARGETS.get(stage or "")
 
     return int(targets["sodium_mg_max"]) if targets is not None else None
+
+
+def uses_dialysis_fruit_table(stage: str | None) -> bool:
+    """칼륨 과일 분류에 투석(엄격) 표를 쓸지.
+
+    **투석 전(보존기)이 확인된 경우만** 완화한다(KSN1 — 귤·포도가 저칼륨). 병기를 모르면 엄격한
+    쪽을 쓴다 — 과잉 주의는 안전 측 오류다. 예전엔 병기가 있어도 호출부가 넘기지 않아 보존기
+    환자에게 투석 기준이 적용됐다(KCAL-15).
+    """
+    return stage != CKD_STAGE_NONDIALYSIS
 
 # ── 칼륨 3단계 분류 (신장질환 식품교환표 1997 / 농진청 9개정판, KSN1 p107–108 · KSN2) ──
 # 이름 부분일치(substring)로 라벨에 매칭한다 — meta_service.match_exclude_keyword 와 같은 규약.
@@ -117,7 +146,8 @@ VEGETABLE_K_HIGH: tuple[str, ...] = (
 
 # 과일: 비투석(KSN1)은 다소 관대, 혈액투석(KSN2)은 더 엄격(귤·포도가 저→중으로 강등).
 # 아래는 **투석(엄격) 기준**을 기본으로 인코딩한다 — 과잉 주의는 안전 측 오류다.
-# 비투석 완화가 필요하면 fruit_potassium_tier(on_dialysis=False) 로 사과·귤·포도를 저칼륨으로 본다.
+# 비투석 완화는 potassium_tier(on_dialysis=False) 로 귤·포도를 저칼륨으로 본다. 호출부는
+# uses_dialysis_fruit_table(stage) 로 이 인자를 정한다 — 넘기지 않으면 보존기 환자도 투석 기준이다.
 FRUIT_K_LOW: tuple[str, ...] = (
     "사과", "단감", "연시", "레몬", "자두", "파인애플", "금귤", "딸기", "블루베리", "통조림",
 )

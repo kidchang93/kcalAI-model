@@ -99,6 +99,7 @@ def get_recommendation(
     # tips 는 현재 질병 기준으로 매 요청 계산한다 (저장 안 함) — 캐시된 추천에도 최신 안내가 붙는다.
     conditions = meta_service.list_user_condition_types(db, user_id)
     tips = _condition_tips(conditions)
+    stage = meta_service.get_user_ckd_stage(db, user_id)
 
     cached = db.scalar(
         select(DietRecommendation).where(
@@ -112,7 +113,7 @@ def get_recommendation(
             cached,
             True,
             tips,
-            _annotate_tiers(cached.items, conditions),
+            _annotate_tiers(cached.items, conditions, stage),
             _tier_notice(conditions),
         )
 
@@ -146,7 +147,7 @@ def get_recommendation(
         recommendation,
         False,
         tips,
-        _annotate_tiers(recommendation.items, conditions),
+        _annotate_tiers(recommendation.items, conditions, stage),
         _tier_notice(conditions),
     )
 
@@ -162,12 +163,15 @@ def _tier_notice(conditions: list[ConditionType]) -> str | None:
     return ckd_food_rules.TIER_NOTICE if any(_tier_axes(conditions)) else None
 
 
-def _annotate_tiers(items: list[dict], conditions: list[ConditionType]) -> list[dict]:
+def _annotate_tiers(
+    items: list[dict], conditions: list[ConditionType], stage: str | None = None
+) -> list[dict]:
     """실측 수치에 상대 등급(저/중/고)을 얹는다 (docs/CKD_NUTRITION.md 3-4).
 
     칼륨·인 제한 대상(신장병 등)에게만 채운다 — 그 외 사용자에게 칼륨 등급은 노이즈다.
     저장된 items 를 변형하지 않고 복사본을 만든다(캐시 행은 JSONB 원본 그대로 둔다).
-    병기 정보가 없으므로 칼륨은 투석 기준(엄격)으로 판정한다.
+    칼륨 과일 분류는 병기를 따른다 — 투석 전(보존기)이 확인되면 귤·포도를 저칼륨으로 본다(KSN1).
+    병기를 모르면 투석 기준(엄격)이다. 예전엔 병기 필드가 생긴 뒤에도 여기에 넘기지 않았다(KCAL-15).
     """
     show_potassium, show_phosphorus = _tier_axes(conditions)
 
@@ -181,7 +185,7 @@ def _annotate_tiers(items: list[dict], conditions: list[ConditionType]) -> list[
         name = entry.get("name", "")
         if show_potassium:
             entry["potassium_tier"] = ckd_food_rules.potassium_display_tier(
-                name, entry.get("potassium_mg")
+                name, entry.get("potassium_mg"), ckd_food_rules.uses_dialysis_fruit_table(stage)
             )
         if show_phosphorus:
             entry["phosphorus_tier"] = ckd_food_rules.phosphorus_display_tier(

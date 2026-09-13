@@ -37,6 +37,30 @@ def _contains_any(name: str, keywords) -> str | None:
     return None
 
 
+class TestPotassiumTierFollowsStage:
+    """칼륨 과일 분류는 병기를 따른다 (KSN1: 보존기는 귤·포도가 저칼륨, KSN2: 투석은 중칼륨).
+
+    병기 필드(2026-07-23)가 생긴 뒤에도 추천이 병기를 넘기지 않아, 보존기 환자에게 투석
+    기준 '보통'이 붙어 나갔다(KCAL-15, 2026-09-13).
+    """
+
+    ITEMS = [{"name": "포도", "potassium_mg": None}]
+
+    def _tier(self, db, ckd_user, stage):
+        conditions = svc.meta_service.list_user_condition_types(db, ckd_user.id)
+        return svc._annotate_tiers(self.ITEMS, conditions, stage)[0]["potassium_tier"]
+
+    def test_nondialysis_relaxes_grape_to_low(self, db, ckd_user):
+        assert self._tier(db, ckd_user, ckd_food_rules.CKD_STAGE_NONDIALYSIS) == "low"
+
+    def test_hemodialysis_keeps_grape_mid(self, db, ckd_user):
+        assert self._tier(db, ckd_user, ckd_food_rules.CKD_STAGE_HEMODIALYSIS) == "mid"
+
+    def test_unknown_stage_stays_strict(self, db, ckd_user):
+        """병기를 모르면 엄격한 쪽 — 과잉 주의는 안전 측 오류다."""
+        assert self._tier(db, ckd_user, None) == "mid"
+
+
 class TestCkdRecommendationIntegration:
     def test_meal_items_carry_measured_nutrients(self, db, ckd_user):
         result = get_recommendation(db, ckd_user.id, REC_DATE, "lunch")

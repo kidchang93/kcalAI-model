@@ -311,6 +311,9 @@ def get_record_warnings(db: Session, user_id: int, food_labels: list[str]) -> li
             if matched is not None:
                 add("allergy", allergen.code, allergen.label_ko, matched, label, None)
 
+    # 칼륨 과일 분류가 병기에서 갈린다(보존기는 귤·포도가 저칼륨) — 한 번만 읽는다.
+    on_dialysis = ckd_food_rules.uses_dialysis_fruit_table(meta_service.get_user_ckd_stage(db, user_id))
+
     for condition in meta_service.list_user_condition_types(db, user_id):
         tags = set(condition.dietary_tags)
         nutrient_axes = [axis for axis in ckd_food_rules.WARNING_AXES if axis[0] in tags]
@@ -320,7 +323,9 @@ def get_record_warnings(db: Session, user_id: int, food_labels: list[str]) -> li
                 for _tag, nutrient, _display in nutrient_axes:
                     matched = _ckd_axis_match(nutrient, label)
                     nutrient_mg = _axis_measured_mg(measured[label], nutrient)
-                    tier = _axis_tier(nutrient, label, nutrient_mg, condition.code, matched)
+                    tier = _axis_tier(
+                        nutrient, label, nutrient_mg, condition.code, matched, on_dialysis
+                    )
 
                     # 이름에 안 걸려도 **실측이 높으면** 알린다 — 지침 키워드 목록은 원물 중심이라
                     # 요리명(예: 감자탕이 아닌 '알감자조림')이 새어 나간다. 추천의 이름+실측
@@ -492,9 +497,10 @@ def _axis_tier(
     nutrient_mg: float | None,
     condition_code: str | None = None,
     name_matched: str | None = None,
+    on_dialysis: bool = True,
 ) -> str | None:
     if nutrient == "potassium":
-        return ckd_food_rules.potassium_display_tier(label, nutrient_mg)
+        return ckd_food_rules.potassium_display_tier(label, nutrient_mg, on_dialysis)
     if nutrient == "phosphorus":
         return ckd_food_rules.phosphorus_display_tier(label, nutrient_mg)
     if nutrient == "sodium":

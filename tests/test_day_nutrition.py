@@ -209,6 +209,67 @@ def test_diabetes_gets_sodium_axis_by_guideline(db, user):
     assert _axis(result, "sodium")["limit_mg"] == 2300
 
 
+class TestBasisCitesWhoDrewTheLine:
+    """기준선 설명에 **출처가 같은 줄에** 붙는다 (KCAL-15·16).
+
+    출처 없는 "기준 2,000 mg"은 앱이 그은 선으로 읽힌다. 리포트는 진료실에서 의료진이 보는
+    종이라 더 그렇다.
+    """
+
+    def test_nondialysis_cites_ksn1_pages(self, db, user):
+        _add_condition(db, user, "ckd")
+        _set_stage(db, user, "nondialysis")
+        _log_meal(db, user, [("테스트미측정ZZ", 1.0)])
+
+        basis = _axis(day_nutrition.get_day_nutrient_axes(db, user.id, TODAY), "sodium")["basis"]
+
+        assert "대한신장학회" in basis and "1권 p101·105" in basis
+
+    def test_hemodialysis_discloses_the_conflict_inside_the_book(self, db, user):
+        """2권 p96(3,000 mg)과 p114(2,000 mg 이하)가 엇갈린다. 값을 고르지 않고 충돌을 드러낸다."""
+        _add_condition(db, user, "ckd")
+        _set_stage(db, user, "hemodialysis")
+        _log_meal(db, user, [("테스트미측정ZZ", 1.0)])
+
+        sodium = _axis(day_nutrition.get_day_nutrient_axes(db, user.id, TODAY), "sodium")
+
+        assert sodium["limit_mg"] == 3000
+        assert "2권 p96" in sodium["basis"] and "p114" in sodium["basis"]
+
+    def test_hypertension_cites_ksh_recommendation(self, db, user):
+        _add_condition(db, user, "hypertension")
+        _log_meal(db, user, [("테스트미측정ZZ", 1.0)])
+
+        basis = _axis(day_nutrition.get_day_nutrient_axes(db, user.id, TODAY), "sodium")["basis"]
+
+        assert "대한고혈압학회" in basis and "권고 21" in basis
+
+    def test_dialysis_references_carry_their_source(self, db, user):
+        _add_condition(db, user, "ckd")
+        _set_stage(db, user, "hemodialysis")
+        _log_meal(db, user, [("테스트미측정ZZ", 1.0)])
+
+        result = day_nutrition.get_day_nutrient_axes(db, user.id, TODAY)
+
+        assert "국가건강정보포털" in _axis(result, "potassium")["basis"]
+        assert "2권 p141" in _axis(result, "phosphorus")["basis"]
+
+    def test_equal_limits_pick_the_same_source_every_time(self, db, user):
+        """고혈압 2,000 과 보존기 2,000 은 값이 같다. 출처가 질환 집합 순회 순서에 따라 흔들리면
+        같은 기록의 리포트가 뽑을 때마다 다른 학회를 말한다."""
+        _add_condition(db, user, "ckd")
+        _add_condition(db, user, "hypertension")
+        _set_stage(db, user, "nondialysis")
+        _log_meal(db, user, [("테스트미측정ZZ", 1.0)])
+
+        bases = {
+            _axis(day_nutrition.get_day_nutrient_axes(db, user.id, TODAY), "sodium")["basis"]
+            for _ in range(5)
+        }
+
+        assert len(bases) == 1
+
+
 def test_other_days_are_not_counted(db, user):
     """하루 경계는 끼니 조회와 같은 UTC 자정이다."""
     _add_condition(db, user, "hypertension")

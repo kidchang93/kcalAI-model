@@ -16,6 +16,9 @@ from services.ckd_food_rules import _matches, _stricter, _tier_by_mg
 HTN_SODIUM_MG_PER_DAY = 2000
 # 당뇨 나트륨 1일 상한. KDA2025 권고 9.
 DM_SODIUM_MG_PER_DAY = 2300
+# 위 두 상한을 화면에 보일 때 붙이는 출처 (KCAL-15 — 누가 그은 선인지 밝힌다).
+HTN_SODIUM_CITATION = "대한고혈압학회 진료지침 2026 권고 21"
+DM_SODIUM_CITATION = "대한당뇨병학회 진료지침 2025 권고 9"
 # 당뇨병콩팥병. KSN-DKD 4.1.1 — 고혈압과 같은 값이라 병존해도 충돌하지 않는다.
 DKD_SODIUM_MG_PER_DAY = 2000
 # 이 아래로는 내리도록 유도하지 않는다. KDA2025 권고 9 본문(엄격한 제한의 근거 부족).

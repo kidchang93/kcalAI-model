@@ -29,7 +29,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from timeutil import UTC
-from models.consent_model import UserHealthProfile
 from models.health_model import MealItem, MealLog
 from services import chronic_food_rules, ckd_food_rules, meta_service, nutrition_service
 
@@ -63,9 +62,18 @@ _AXIS_COLUMNS: dict[str, str] = {
 }
 
 # 나트륨 1일 상한을 가진 질환 (병기와 무관하게 단일 값). CKD 는 병기별이라 여기 없다.
-_SODIUM_LIMIT_BY_CONDITION: dict[str, tuple[int, str]] = {
-    "hypertension": (chronic_food_rules.HTN_SODIUM_MG_PER_DAY, "고혈압"),
-    "diabetes": (chronic_food_rules.DM_SODIUM_MG_PER_DAY, "당뇨"),
+# (상한 mg, 질환 표시명, 출처). 출처는 기준선을 보일 때 같은 줄에 붙는다 — 누가 그은 선인지.
+_SODIUM_LIMIT_BY_CONDITION: dict[str, tuple[int, str, str]] = {
+    "hypertension": (
+        chronic_food_rules.HTN_SODIUM_MG_PER_DAY,
+        "고혈압",
+        chronic_food_rules.HTN_SODIUM_CITATION,
+    ),
+    "diabetes": (
+        chronic_food_rules.DM_SODIUM_MG_PER_DAY,
+        "당뇨",
+        chronic_food_rules.DM_SODIUM_CITATION,
+    ),
 }
 
 # 하루 누적을 노출할 때 항상 함께 내리는 고지. 수치가 추정 기반이라는 사실과, 이것이 진료
@@ -84,7 +92,7 @@ def get_day_nutrient_axes(db: Session, user_id: int, target_date: date) -> dict 
         return None
 
     items = _day_items(db, user_id, target_date)
-    stage = get_ckd_stage(db, user_id)
+    stage = meta_service.get_user_ckd_stage(db, user_id)
     conditions = {condition.code for condition in meta_service.list_user_condition_types(db, user_id)}
 
     totals: dict[str, float] = {nutrient: 0.0 for nutrient in axes}
@@ -133,7 +141,7 @@ def get_period_nutrient_axes(
     if not axes:
         return None
 
-    stage = get_ckd_stage(db, user_id)
+    stage = meta_service.get_user_ckd_stage(db, user_id)
     conditions = {condition.code for condition in meta_service.list_user_condition_types(db, user_id)}
 
     start, _ = _day_bounds(start_date)
@@ -223,13 +231,6 @@ def _notice(payloads: list[dict]) -> str:
     return DAILY_NUTRIENT_NOTICE
 
 
-def get_ckd_stage(db: Session, user_id: int) -> str | None:
-    """건강 프로필의 병기. 프로필 자체가 없으면 None — 없다고 조회가 실패하면 안 된다."""
-    return db.scalar(
-        select(UserHealthProfile.ckd_stage).where(UserHealthProfile.user_id == user_id)
-    )
-
-
 def _axes_for_user(db: Session, user_id: int) -> list[str]:
     """이 사용자에게 보여줄 영양 축. 질환의 dietary_tags 로 정하되 나트륨만 예외를 둔다."""
     tags: set[str] = set()
@@ -310,25 +311,35 @@ def _sodium_limit(conditions: set[str], stage: str | None) -> tuple[int | None, 
     CKD 는 병기가 있어야 값이 나온다(비투석 2,000 · 투석 3,000). 병기를 모르면서 다른 질환도
     없으면 상한 없이 안내 문구만 준다 — 임의로 한쪽을 고르면 투석 환자에게는 과잉 제한이고
     비투석 환자에게는 느슨하다.
+
+    기준선 설명(basis)에는 **출처를 같은 줄에** 붙인다 — "신장 질환 투석 전(보존기) 기준 하루
+    2,000 mg · 대한신장학회 … p101·105". 앱이 그은 선처럼 읽히면 우리가 판정하는 쪽이 된다
+    (KCAL-15·16). 앱·리포트는 이 문자열을 그대로 쓴다.
     """
-    candidates: list[tuple[int, str]] = [
-        _SODIUM_LIMIT_BY_CONDITION[code] for code in conditions if code in _SODIUM_LIMIT_BY_CONDITION
+    candidates: list[tuple[int, str, str]] = [
+        _SODIUM_LIMIT_BY_CONDITION[code] for code in sorted(conditions) if code in _SODIUM_LIMIT_BY_CONDITION
     ]
 
     if "ckd" in conditions:
         ckd_limit = ckd_food_rules.sodium_daily_limit_mg(stage)
 
         if ckd_limit is not None:
-            candidates.append((ckd_limit, f"신장 질환 {ckd_food_rules.CKD_STAGE_LABELS[stage]}"))
+            candidates.append(
+                (
+                    ckd_limit,
+                    f"신장 질환 {ckd_food_rules.CKD_STAGE_LABELS[stage]}",
+                    ckd_food_rules.SODIUM_LIMIT_CITATIONS[stage],
+                )
+            )
         elif not candidates:
             return None, ckd_food_rules.SODIUM_STAGE_UNKNOWN_NOTE
 
     if not candidates:
         return None, None
 
-    limit_mg, source = min(candidates, key=lambda item: item[0])
+    limit_mg, source, citation = min(candidates, key=lambda item: item[0])
 
-    return limit_mg, f"{source} 기준 하루 {limit_mg:,} mg"
+    return limit_mg, f"{source} 기준 하루 {limit_mg:,} mg · {citation}"
 
 
 def _reference(nutrient: str, stage: str | None) -> tuple[int | None, str | None]:
@@ -356,4 +367,7 @@ def _reference(nutrient: str, stage: str | None) -> tuple[int | None, str | None
     if reference_mg is None:
         return None, None
 
-    return reference_mg, f"투석 시 참고치 하루 {reference_mg:,} mg"
+    return (
+        reference_mg,
+        f"투석 시 참고치 하루 {reference_mg:,} mg · {ckd_food_rules.REFERENCE_CITATIONS[nutrient]}",
+    )

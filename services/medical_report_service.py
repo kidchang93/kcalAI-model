@@ -133,7 +133,7 @@ def _stage_label(db: Session, user_id: int) -> str | None:
     `consent_service.get_health_profile`을 쓰지 않는다 — 그쪽은 프로필이 없으면 **예외**를
     던져(혈액형 등록을 요구한다) 리포트 전체가 실패한다. 병기는 없어도 되는 값이다.
     """
-    stage = day_nutrition.get_ckd_stage(db, user_id)
+    stage = meta_service.get_user_ckd_stage(db, user_id)
 
     return None if stage is None else ckd_food_rules.CKD_STAGE_LABELS.get(stage)
 
