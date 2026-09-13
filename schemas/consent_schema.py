@@ -30,6 +30,11 @@ class ConsentResponse(BaseModel):
     version: str
     agreed_at: datetime
     revoked_at: datetime | None
+    # 이 행의 version 이 그 kind 의 **현재 버전**인가 (현재 버전을 모르는 kind 는 true).
+    # 컬럼이 아니라 응답 시 계산한다 — 서버 상수가 바뀌면 같은 행의 값이 바뀐다
+    # (`consent_service.serialize_consent`). 기본값을 두지 않는 이유: ORM 행을 그대로 넘기면
+    # 조용히 true 가 되는 대신 검증에서 터지게 하려는 것이다.
+    is_current: bool
 
     model_config = {"from_attributes": True}
 

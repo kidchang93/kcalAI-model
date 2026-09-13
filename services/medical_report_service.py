@@ -29,6 +29,7 @@ from timeutil import UTC
 from models.health_model import MealLog
 from services import (
     ckd_food_rules,
+    consent_service,
     day_nutrition,
     health_service,
     lab_panels,
@@ -45,14 +46,29 @@ REPORT_NOTICE = (
     "실제 섭취량·조리법에 따라 실제 값과 다를 수 있습니다."
 )
 
+# 동의 문구가 개정돼 **질환·검사를 싣지 못한** 리포트에만 붙인다. 진료 문서에서 질환이 조용히
+# 빠지면 "질환 없음"으로 읽힌다 — 빠진 이유를 문서 안에 남긴다.
+# 동의가 없거나 철회한 경우에는 붙이지 않는다: 입력이 막혀 있거나 철회 때 파기돼 **실을 데이터가
+# 애초에 없다** — 빠진 것이 없는데 빠졌다고 쓰면 그것도 틀린 기록이다.
+REPORT_OUTDATED_CONSENT_NOTICE = (
+    "건강 정보 동의 내용이 바뀌어 다시 동의하기 전까지 질환·병기·검사 수치는 이 기록에 싣지 않았습니다."
+)
+
 
 def build_report(db: Session, user_id: int, start_date: date, end_date: date) -> dict:
-    """기간 리포트. 범위 검증은 추이와 같은 규칙을 쓴다."""
+    """기간 리포트. 범위 검증은 추이와 같은 규칙을 쓴다.
+
+    **질환·병기·검사 수치·질환 축은 민감정보 동의가 ACTIVE 일 때만 싣는다** (DATA_MODEL 7장).
+    라우트는 막지 않는다 — 동의하지 않은 사용자도 칼로리·끼니 기록은 진료에 가져갈 수 있어야 한다.
+    """
     if end_date < start_date:
         raise ValueError("종료일이 시작일보다 빠릅니다. 날짜 범위를 확인해주세요.")
 
     if (end_date - start_date).days + 1 > REPORT_MAX_DAYS:
         raise ValueError(f"조회 범위는 최대 {REPORT_MAX_DAYS}일입니다. 범위를 줄여 다시 시도해주세요.")
+
+    consent_state = consent_service.get_consent_state(db, user_id)
+    readable = consent_state is consent_service.ConsentState.ACTIVE
 
     trends = health_service.get_trends(db, user_id, start_date, end_date)
     recorded = [day for day in trends["days"] if day["meal_count"] > 0]
@@ -62,10 +78,12 @@ def build_report(db: Session, user_id: int, start_date: date, end_date: date) ->
         "end_date": end_date.isoformat(),
         # 언제 뽑은 문서인지 — 진료실에서 최신본인지 판단하는 근거다.
         "generated_at": datetime.now(UTC).isoformat(),
-        "conditions": [
-            condition.label_ko for condition in meta_service.list_user_condition_types(db, user_id)
-        ],
-        "ckd_stage_label": _stage_label(db, user_id),
+        "conditions": (
+            [condition.label_ko for condition in meta_service.list_user_condition_types(db, user_id)]
+            if readable
+            else []
+        ),
+        "ckd_stage_label": _stage_label(db, user_id) if readable else None,
         "kcal": {
             "target": trends["target_kcal"],
             # 기록한 날만 나눈다 — 기간 추이와 같은 규칙 (기록 없는 날은 0이 아니라 '모름'이다).
@@ -77,17 +95,26 @@ def build_report(db: Session, user_id: int, start_date: date, end_date: date) ->
             "recorded_days": len(recorded),
             "total_days": len(trends["days"]),
         },
-        "nutrients": trends["nutrients"],
+        # get_trends 도 동의를 보고 None 을 주지만, 리포트가 싣는 민감정보는 이 함수 안에서 한 번에
+        # 판정이 보이게 둔다 — 한쪽 게이트가 빠져도 문서에 새지 않는다.
+        "nutrients": trends["nutrients"] if readable else None,
         # 검사 수치 (리비전 0027, `docs/CARE_LOOP.md` §4). 식단 요약 옆에 결과 축을 나란히
         # 놓는 것이 이 리포트의 목적이다 — 그전까지는 "무엇을 먹었나"만 있고 "그래서 수치가
         # 어떻게 됐나"가 없어, 진료에서 되짚을 근거가 절반이었다.
         #
         # ⚠️ 기간 밖의 값도 **직전 1건은 싣는다**. 검사는 3개월에 한 번인데 리포트 기간은
         # 보통 그보다 짧아, 기간으로만 자르면 대부분의 리포트에서 검사란이 비어 버린다.
-        "labs": _labs_for_report(db, user_id, start_date, end_date),
+        "labs": _labs_for_report(db, user_id, start_date, end_date) if readable else [],
         "meals": _meals_in_range(db, user_id, start_date, end_date),
-        "notice": REPORT_NOTICE,
+        "notice": _report_notice(consent_state),
     }
+
+
+def _report_notice(consent_state: consent_service.ConsentState) -> str:
+    if consent_state is consent_service.ConsentState.OUTDATED:
+        return f"{REPORT_NOTICE} {REPORT_OUTDATED_CONSENT_NOTICE}"
+
+    return REPORT_NOTICE
 
 
 def _labs_for_report(db: Session, user_id: int, start_date: date, end_date: date) -> list[dict]:

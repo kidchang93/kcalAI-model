@@ -27,11 +27,12 @@ def require_sensitive_consent(
     db: Session = Depends(get_db),
 ) -> User:
     # 401(미로그인)은 get_current_user 가 처리한다. 여기는 로그인된 사용자의 동의 여부만 본다.
-    if not consent_service.has_active_consent(db, current_user.id):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="건강 민감정보 이용 동의가 필요합니다. 동의 후 다시 시도해주세요.",
-        )
+    # 버전이 낡은 동의도 403 이다 — 판정과 문구는 서비스가 정한다(ensure_sensitive_consent).
+    try:
+        consent_service.ensure_sensitive_consent(db, current_user.id)
+    except consent_service.SensitiveConsentRequiredError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+
     return current_user
 
 
@@ -46,7 +47,10 @@ def read_consents(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return consent_service.list_consents(db, current_user.id)
+    return [
+        consent_service.serialize_consent(consent)
+        for consent in consent_service.list_consents(db, current_user.id)
+    ]
 
 
 @router.post(
@@ -61,11 +65,13 @@ def create_consent(
     db: Session = Depends(get_db),
 ):
     try:
-        return consent_service.create_consent(db, current_user.id, request.kind, request.version)
+        consent = consent_service.create_consent(db, current_user.id, request.kind, request.version)
     except ValueError as error:
         # 앱이 옛 문서를 보여주고 있다 (ensure_current_version). 메시지는 서비스가 만든
         # 사용자용 한국어 문구다 — 앱을 업데이트하면 해소된다.
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+    return consent_service.serialize_consent(consent)
 
 
 @router.post(

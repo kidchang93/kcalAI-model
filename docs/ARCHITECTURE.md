@@ -32,7 +32,8 @@ kcalAI-model/
 │   ├── billing_service.py      # 자동결제 흐름 — checkout·confirm(빌링키 발급·저장·최초 청구)·cancel·갱신 배치, 달력 1개월 (24장)
 │   ├── toss_client.py          # 토스페이먼츠 어댑터 — 빌링키 발급·청구, Basic base64("{시크릿}:"), TossError. **키·빌링키 미로깅**
 │   ├── health_service.py       # 프로필·목표·끼니·체중·추이 집계, Mifflin-St Jeor
-│   ├── consent_service.py      # 동의 이력·유효성 검사, 민감정보 파기(물리 삭제)
+│   ├── consent_service.py      # 동의 이력·유효성 검사(버전이 낡은 민감정보 동의는 무효), 민감정보 파기(물리 삭제)
+│   ├── guide_service.py        # /guides 목록의 is_mine — 민감정보 동의가 ACTIVE 일 때만 등록 질환을 읽는다
 │   ├── group_service.py        # 그룹 생성·참여, invite_code 생성, 멤버십·펫 참여, 라이프사이클(탈퇴·삭제·제거·해제, 17장)
 │   ├── pet_service.py          # 반려동물 CRUD(soft delete), 급여 기록, 접근 권한, 권장 칼로리(RER/MER, 18장)
 │   ├── account_service.py      # 회원 탈퇴 — 개인 데이터 물리 삭제 연쇄 (단일 트랜잭션, 18장)
@@ -245,7 +246,8 @@ kcal/build-web.sh → npx expo export --platform web → kcalAI-model/webapp/
 
 - 스키마 변경은 **Alembic 리비전으로만** 합니다 (`alembic/versions/`). `create_all`은 신규 테이블 생성용으로만 남아 있습니다.
 - 세션 토큰 검증은 `api/dependencies.py:get_current_user`가 담당합니다. `/api/predict`도 2026-07-12부터 Bearer 필수입니다 (무인증 공개 라우트는 Auth 가입·로그인 4종뿐).
-- `/api/me/health-profile`·`/api/me/conditions`·`/api/me/allergies`는 유효한 `sensitive_health` 동의(최신 행의 `revoked_at IS NULL`)가 없으면 **403**을 반환합니다. 401(미로그인)과 구분됩니다.
+- `/api/me/health-profile`·`/api/me/conditions`·`/api/me/allergies`는 유효한 `sensitive_health` 동의(최신 행의 `revoked_at IS NULL` **이고 `version`이 현재 버전** — 2026-09-13)가 없으면 **403**을 반환합니다. 401(미로그인)과 구분됩니다. 판정·문구는 `consent_service.ensure_sensitive_consent`가 정하고 api는 `SensitiveConsentRequiredError`를 403으로 바꿀 뿐입니다 (DATA_MODEL 7장).
+- 동의 없이 열리는 라우트(`/api/me/summary`·`trends`·`report`, `/api/guides`)는 막지 않고 **읽는 서비스**(`day_nutrition`·`medical_report_service`·`guide_service`)가 동의 상태를 확인해 민감정보 자리만 비웁니다. 민감정보를 읽는 새 경로는 라우트 게이트나 서비스 확인 중 하나를 반드시 거칩니다.
 
 ## 전역 초기화 (import 시점)
 

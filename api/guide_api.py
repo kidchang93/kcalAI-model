@@ -9,13 +9,14 @@ from schemas.guide_schema import (
     GuideListResponse,
     GuideSummary,
 )
-from services import meta_service, nutrition_guide
+from services import guide_service, nutrition_guide
 
 router = APIRouter()
 
 
 # `sensitive_health` 동의를 요구하지 **않는다.** 이 응답은 학회 지침을 옮긴 공개 정보이고
 # 사용자의 질병·검사값을 읽지 않는다 — 어떤 질환의 가이드를 볼지는 호출자가 정한다.
+# (목록의 `is_mine` 만 등록 질환을 읽고, 그 판정은 서비스가 동의 상태를 보고 한다.)
 # 동의를 요구하면 온보딩에서 질환을 고른 직후(§CARE_LOOP 5-2의 첫 진입점)에 막히는데,
 # 정작 그 순간이 사용자가 가장 알고 싶어 하는 때다.
 #
@@ -32,32 +33,13 @@ def list_guides(
 
     근거 문서가 없는 질환(임신·암)은 여기 없다 — 목록에 없으면 앱은 진입점을 그리지 않는다.
 
-    `is_mine` 은 사용자가 등록한 질환인지다. 등록 질환을 읽지만 **동의를 요구하지는 않는다** —
-    미동의면 등록된 질환이 없어 전부 false 가 되고, 목록 자체(공개 정보)는 그대로 나간다.
+    `is_mine` 은 사용자가 등록한 질환인지다. 라우트는 **동의를 요구하지 않는다** — 목록 자체는
+    공개 정보다. 대신 서비스가 민감정보 동의가 ACTIVE 일 때만 질병을 읽고, 아니면 전부 false 다
+    (`services/guide_service.py`).
     """
-    mine = {row.code for row in meta_service.list_user_condition_types(db, current_user.id)}
-    summaries = []
+    summaries = guide_service.list_guide_summaries(db, current_user.id)
 
-    for code in nutrition_guide.available_conditions():
-        guide = nutrition_guide.get_guide(code)
-
-        if guide is None:  # pragma: no cover - available_conditions 가 보증한다
-            continue
-
-        summaries.append(
-            GuideSummary(
-                condition=guide.condition,
-                label=guide.label,
-                intro=guide.intro,
-                axis_count=len(guide.axes),
-                is_mine=guide.condition in mine,
-            )
-        )
-
-    # 내 질환을 앞에 둔다. 홈 카드는 앞에서부터 그리므로 순서가 곧 노출 우선순위다.
-    summaries.sort(key=lambda item: not item.is_mine)
-
-    return GuideListResponse(conditions=summaries)
+    return GuideListResponse(conditions=[GuideSummary(**summary) for summary in summaries])
 
 
 @router.get(

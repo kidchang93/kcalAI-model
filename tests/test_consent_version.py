@@ -136,11 +136,14 @@ def test_unknown_kind_passes_through(db):
 
 
 def test_version_formats_differ_by_kind_and_that_is_intentional(db):
-    """terms·privacy 는 '1.0', sensitive_health 는 'v1.0' 이다.
+    """terms·privacy 는 '1.1', sensitive_health 는 'v1.1' 이다 (2026-09-13 KCAL-22 개정 후).
 
     기존 데이터가 그렇게 쌓여 있어 통일하려면 마이그레이션이 필요하다. 검증은 kind 별 비교라
     지장이 없다 — 이 테스트는 그 사실을 문서화하고, 무심코 한쪽만 바꾸면 실패한다.
+
+    ⚠️ 이 값을 고친다면 앱의 `constants/legal.ts`·`constants/consent.ts` 도 같은 작업 단위에서
+    올렸는지 확인한다. sensitive_health 를 올리면 기존 동의자는 재동의 전까지 403 이다.
     """
-    assert consent_service.TERMS_VERSION == "1.0"
-    assert consent_service.PRIVACY_VERSION == "1.0"
-    assert consent_service.SENSITIVE_HEALTH_VERSION == "v1.0"
+    assert consent_service.TERMS_VERSION == "1.1"
+    assert consent_service.PRIVACY_VERSION == "1.1"
+    assert consent_service.SENSITIVE_HEALTH_VERSION == "v1.1"

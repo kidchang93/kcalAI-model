@@ -160,6 +160,13 @@
 - **`average_mg`는 기록한 날만 나눈다.** 기록 없는 날을 0으로 넣으면 "적게 먹었다"로 읽히는데 실제로는 기록을 안 한 것이다. 기록이 하루도 없으면 null.
 - **`days_over_limit`은 상한이 있는 축(나트륨)만** 갖고, **기록한 날만** 센다 — 기록 없는 날은 넘었는지 알 수 없다.
 - 수치는 `meal_items` 스냅샷이라 **과거가 흔들리지 않는다**(리비전 0025). 이 선행 작업이 없으면 기간 집계는 볼 때마다 달라진다.
+- 민감정보 동의가 ACTIVE 가 아니면 `nutrients` 는 null 이다 — 질병·병기를 읽지 않는다 (2026-09-13, 7장 "읽기도 동의 상태를 따른다").
+
+### `GET /api/me/report` — 민감정보 항목은 동의 상태를 따른다 (2026-09-13)
+
+진료 지참용 기간 리포트(`services/medical_report_service.py`). 동의가 ACTIVE 가 아니어도 라우트는 200 이고
+칼로리·끼니는 그대로 싣되, `conditions`·`ckd_stage_label`·`labs`·`nutrients` 는 비운다. 동의가 **낡아서**
+비운 경우(OUTDATED)에만 `notice` 끝에 그 사실을 한 문장으로 남긴다 — 7장 "읽기도 동의 상태를 따른다".
 
 ### `meal_items` 영양 스냅샷 — 기록이 기록으로 남게 (리비전 0025, 2026-07-25)
 
@@ -315,6 +322,7 @@ Alembic이 도입됐으므로 컬럼 추가는 이제 마이그레이션으로 �
 - 모르는 `kind`는 통과시킨다 — 동의 종류가 늘 때 서버만 먼저 배포돼도 깨지지 않아야 한다.
 - **문서를 개정하면 서버 상수와 앱 문서를 같은 작업 단위에서 올린다.** 서버만 올리면 기존 앱 사용자의 가입·동의가 전부 400이 된다.
 - 버전 포맷이 `kind`마다 다르다(`terms`·`privacy`는 `1.0`, `sensitive_health`는 `v1.0`). 기존 데이터가 그렇게 쌓여 있어 통일하려면 마이그레이션이 필요하다 — 검증은 `kind`별 비교라 지장이 없고, `tests/test_consent_version.py`가 이 사실을 고정한다.
+- **2026-09-13 (KCAL-22) 첫 개정**: `terms`·`privacy` `1.0`→`1.1`(생성형 AI 사전고지), `sensitive_health` `v1.0`→`v1.1`(검사 수치·진료 메모 항목, 경고·조언·리포트 목적). 포맷은 유지했다. 민감정보는 **재동의 전까지 무효**다 — 7장 "민감정보 동의는 버전이 바뀌면 재동의 전까지 무효다".
 
 **저장 시 암호화 (2026-07-12, 리비전 0013):** `user_health_profiles.blood_type`·`rh`는 앱 레이어 AES-256-GCM으로 암호화해 저장한다(`crypto.py`의 `EncryptedString` 타입, ORM이 write 시 암호화·read 시 복호화). DB·쿼리 로그에는 암호문(base64)만 남는다. 키는 `HEALTH_ENCRYPTION_KEY`(base64 32B), 운영 기본키 사용 시 기동 실패. **범위는 혈액형·Rh 두 컬럼뿐이다.** `condition`·`allergen`은 참조 테이블(`condition_types`/`allergen_types`) FK·DB JOIN(`meta_service`)·추천/경고 필터에 쓰이는 **기능 키**라 암호화하지 않고 평문 코드로 유지한다 — 암호화하면 JOIN·유니크·필터가 깨진다. (이 코드들은 표준 범주 코드라 자유 PII보다 민감도가 낮기도 하다.)
 
@@ -348,17 +356,77 @@ MVP 구현 기준:
 
 전부 `Authorization: Bearer` 필수. 상태코드 규약:
 - **401** — 미로그인 (기존과 동일)
-- **403** — 로그인했지만 `sensitive_health` 동의가 없거나 철회됨. 앱은 403을 받으면 동의 화면으로 보낸다.
+- **403** — 로그인했지만 `sensitive_health` 동의가 **유효하지 않음**(없음·철회·**버전이 낡음** — 아래 절). 앱은 403을 받으면 동의 화면으로 보낸다.
 - 오류 본문은 `{"detail": "<한국어>"}` 유지.
 
 | 메서드 | 경로 | 역할 | 동의 필요 |
 |---|---|---|:---:|
-| `GET` | `/api/me/consents` | 내 동의 이력 (최신 우선) | — |
+| `GET` | `/api/me/consents` | 내 동의 이력 (최신 우선). 각 항목에 `is_current: bool` (2026-09-13) | — |
 | `POST` | `/api/me/consents` | 동의 기록. body `{kind, version}` → 201 | — |
 | `POST` | `/api/me/consents/revoke` | 철회. body `{kind}` → 아래 파기 규칙 | — |
 | `GET` `PUT` | `/api/me/health-profile` | 혈액형·Rh. PUT body `{blood_type?, rh?}` | ✔ |
 | `GET` `PUT` | `/api/me/conditions` | 질병 목록. PUT은 **replace-all** `{conditions: string[]}` | ✔ |
 | `GET` `PUT` | `/api/me/allergies` | 알러지 목록. PUT은 **replace-all** `{allergies: [{allergen, severity?}]}` | ✔ |
+
+### 민감정보 동의는 버전이 바뀌면 재동의 전까지 무효다 (2026-09-13, KCAL-22)
+
+**유효 = 해당 kind 의 최신 행이 철회되지 않았고 AND `version` 이 현재 버전.** 판정은
+`consent_service.get_consent_state`/`has_active_consent` 한 곳이고, `require_sensitive_consent`
+(`api/consent_api.py`)와 진료 메모 가림(`api/visit_api.py`)이 그대로 따른다.
+
+**왜**: 개인정보보호법 제23조는 민감정보를 **알린 목적·항목 범위에서만** 처리하게 한다. v1.0 은
+혈액형·질병·알러지를 "식단 추천에서 거르는 데"만 알렸는데, 그 뒤 검사 수치(리비전 0027)와 진료
+메모(0028)를 같은 동의로 받고 경고·주간 조언·진료 리포트에도 썼다. 문구를 넓혀 v1.1 로 올려도
+판정이 버전을 보지 않으면 v1.0 동의자를 옛 동의로 계속 처리하게 된다 — 2026-09-13 이전의
+`has_active_consent` 가 그 상태였다.
+
+- **`is_current`** (`GET·POST /api/me/consents` 응답): 그 행의 `version` 이 그 kind 의 현재 버전인가.
+  컬럼이 아니라 응답 시 계산한다(`consent_service.serialize_consent`). 현재 버전을 모르는 kind 는 `true`.
+  옛 행은 이력으로 남으므로 한 kind 에 `false` 행과 `true` 행이 함께 있을 수 있다.
+- **403 문구가 둘이다.** 최신 행이 살아 있는데 버전만 낡았으면
+  `"건강 정보 동의 내용이 바뀌었어요. 내 정보 → 동의 관리에서 다시 동의해 주세요."`, 동의 이력이
+  없거나 철회됐으면 기존 `"건강 민감정보 이용 동의가 필요합니다. 동의 후 다시 시도해주세요."`.
+  이미 동의한 사람에게 "동의가 필요합니다"라고만 하면 왜 막히는지 알 수 없다. **철회를 버전보다
+  먼저 본다** — 철회한 사람에게 "바뀌었으니 다시 동의하라"고 하면 철회 의사를 무시하는 문구다.
+- **재동의** = 기존 `POST /api/me/consents {kind:"sensitive_health", version:"v1.1"}`. 새 행이 쌓이고
+  옛 행은 남는다. 옛 버전으로 보내면 기존대로 400.
+- **철회는 낡은 동의에도 된다** — 파기(아래)도 똑같이 일어난다. 효력이 멈춘 동의라도 그 동의로 모은
+  데이터는 남아 있고, 철회가 그것을 없애는 유일한 경로다.
+- **재동의 전까지 데이터는 지우지 않는다.** 가리기만 한다 — 다시 동의하면 그대로 보인다(진료 메모와
+  같은 규칙, 31장).
+- **terms·privacy·group_activity_share 는 버전으로 무효화하지 않는다** (`_VERSION_GATED_KINDS`).
+  약관은 기능 게이트가 아니라 가입 조건이라, 버전으로 무효화하면 개정마다 전 회원이 막힌다 — 그건
+  이 판정이 정할 일이 아니다. 가입 시 기록은 기존처럼 앱이 보낸 버전(없으면 서버 현재 버전)이다.
+- ⚠️ **`SENSITIVE_HEALTH_VERSION` 인상 = 기존 동의자 전원 재동의 필요.** 서버·앱을 **동시에 배포**한다.
+  서버만 먼저 나가면 구버전 앱 사용자는 403 을 받는데 재동의(POST)도 옛 버전이라 400 이 되어 빠져나갈
+  길이 없다.
+#### 읽기도 동의 상태를 따른다 — 라우트는 막지 않고 서비스가 거른다 (2026-09-13)
+
+**민감정보(질병·병기·알러지·검사 수치·진료 메모)는 `sensitive_health` 동의가 ACTIVE 일 때만 읽는다.**
+읽는 경로는 둘 중 하나여야 한다: 라우트에 `require_sensitive_consent` 를 걸거나, **읽는 서비스가**
+`consent_service.has_active_consent`/`get_consent_state` 로 확인한다.
+
+**왜 규약이 필요해졌나.** 그전에는 "동의가 없으면 데이터도 없다"(미동의는 입력 라우트가 전부 403,
+철회는 파기)가 성립해, 동의 없이 열리는 라우트가 질병을 읽어도 새지 않았다. 낡은 동의는 **데이터를
+가진 채 무효**라 그 전제가 깨졌다 — 실측으로 v1.0 사용자의 `/api/me/labs` 는 403 인데 같은 칼륨 수치가
+`/api/me/report` 에는 200 으로 실렸다.
+
+동의 없이도 열려 있어야 하는 라우트(칼로리 요약·끼니 리포트·가이드 목록)는 **403 으로 막지 않고
+민감정보 자리만 비운다.** 응답 형태는 그대로다(앱 계약 불변).
+
+| 라우트 | 동의가 ACTIVE 가 아닐 때 | 거르는 곳 |
+|---|---|---|
+| `GET /api/me/summary` · `GET /api/me/trends` | `nutrients: null` (질환 축 없음과 같은 모양) | `day_nutrition.get_day_nutrient_axes`·`get_period_nutrient_axes` |
+| `GET /api/me/report` | `conditions: []` · `ckd_stage_label: null` · `labs: []` · `nutrients: null`. **OUTDATED 일 때만** `notice` 끝에 "건강 정보 동의 내용이 바뀌어 다시 동의하기 전까지 질환·병기·검사 수치는 이 기록에 싣지 않았습니다." | `medical_report_service.build_report` |
+| `GET /api/guides` | `is_mine` 전부 false, 기본 순서 | `guide_service.list_guide_summaries` (라우트가 직접 읽던 것을 옮겼다) |
+| `GET /api/me/next-visit` | `outcome: null` | `api/visit_api.py` (31장) |
+
+- 리포트의 추가 문장을 **OUTDATED 에만** 붙이는 이유: 진료 문서에서 질환이 조용히 빠지면 "질환 없음"으로
+  읽힌다. MISSING·REVOKED 는 실을 데이터가 애초에 없어(입력 차단·파기) 빠진 것이 없다 — 빠졌다고 쓰면
+  그것도 틀린 기록이다.
+- 그 밖에 질병·병기·알러지·검사를 읽는 서비스(`nutrition_service` 경고, `recommendation_service`,
+  `coaching_service`, `lab_api` 의 `lab-panels`)는 전부 `require_sensitive_consent` 라우트에서만 불린다.
+- 규약은 `tests/test_sensitive_read_gating.py` 가 고정한다.
 
 ### 파기 규칙 — 민감정보는 soft delete가 아니다
 
@@ -369,6 +437,7 @@ MVP 구현 기준:
 | `user_health_profiles` · `user_conditions` · `user_allergies` | 행 삭제 | 혈액형·질병·알러지 |
 | `lab_results` (리비전 0027) | 행 삭제 | 검사 수치는 그 자체가 건강 민감정보다 |
 | `care_visits.outcome` (리비전 0028) | **컬럼만 NULL** | 진료 메모는 민감할 수 있으나 `scheduled_on`(날짜)은 아니다 — 철회했다고 진료 일정까지 잃게 하는 것은 필요 이상의 파기다(31장) |
+| `diet_recommendations` (리비전 0006, **2026-09-13 추가**) | 행 삭제 | **민감정보에서 파생된 값**을 저장한다 — `excluded`에 질병·알러지 코드·라벨, `items[].reason`에 질병 태그 문구. 파생 캐시라 다음 요청에 다시 계산되므로 JSONB 일부를 도려내지 않고 행째 지운다 |
 
 > ⚠️ **2026-08-19 정정.** 그전까지 이 목록은 앞의 셋에 멈춰 있었고, 리비전 0027·0028이
 > 민감정보 테이블을 추가할 때 갱신되지 않았다 — **철회해도 검사 수치가 남아 있었다.** 조회는
@@ -629,6 +698,8 @@ kcal/build-web.sh  →  npx expo export --platform web  →  kcalAI-model/webapp
 | `created_at` | server_default now |
 
 UNIQUE(`user_id`, `rec_date`, `meal_type`).
+
+⚠️ `excluded`(질병·알러지 코드·라벨)와 `items[].reason`(질병 태그 문구)은 **민감정보에서 파생된 값**이라 `sensitive_health` 철회 시 이 테이블의 행을 삭제한다 (2026-09-13, 7장 파기 규칙).
 
 ### API
 
@@ -1751,6 +1822,8 @@ curl 실측(중복 confirm): 구독을 `pro`·`active`·기간 한 달 남김으
 
 기존 필드는 그대로다. 옛 앱은 `nutrients`를 무시하면 그만이다.
 
+**민감정보 동의가 ACTIVE 가 아니면 `nutrients`는 null 이다** (2026-09-13). 질병·병기를 읽지 않으니 축이 없다 — 라우트는 칼로리 요약 때문에 막지 않고 `day_nutrition`이 거른다 (7장 "읽기도 동의 상태를 따른다").
+
 ### 판단 세 가지 (근거에서 온 것이라 임의로 바꾸지 않는다)
 
 **① 나트륨만 상한을 갖는다.** KDIGO 2024는 CKD 전반에 1일 2 g 미만(소금 5 g)을 권고하고(2C), 투석은 KSN2 기준 3,000 mg으로 완화된다. 반면 **KDOQI 2020은 칼륨·인을 혈청 수치 기반 개인화로 두고 하루 mg 상한을 권고하지 않는다.** KDIGO 2024는 한 발 더 나아가 보편적 칼륨 제한에서 물러섰다(가공식품의 칼륨은 줄이되 과일·채소는 제한하지 말 것). 그래서 칼륨·인에는 `limit_mg`를 만들지 않는다 — 없는 기준을 만들어내는 셈이 된다.
@@ -2085,6 +2158,8 @@ IAP는 그 위에 얹는 것이라, 2·3이 막히면 4~6은 시작도 못 한�
   반대로 날짜에까지 동의를 걸면 온보딩 직후 홈 D-day 가 사라진다.
 - **동의가 없을 때 GET 은 `outcome` 을 null 로 내린다.** 저장값을 지우지는 않는다 — 다시
   동의하면 그대로 보인다. 날짜는 계속 보여야 D-day 가 살아 있다.
+- **버전이 낡은 동의(v1.0)도 "동의 없음"이다** (2026-09-13, 7장). GET 은 null, 메모를 실은 PUT 은
+  403(`"건강 정보 동의 내용이 바뀌었어요. …"`), 날짜만 보낸 PUT 은 그대로 200.
 - `clinic_label`(병원 이름)은 **여전히 열지 않았다.** "OO신장내과"는 질환을 추론하게 해서,
   열려면 민감도 판단을 다시 해야 한다.
 

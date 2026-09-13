@@ -14,10 +14,13 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import func, select
 
 from models.auth_model import User
+from models.consent_model import UserCondition
 from models.health_model import CareVisit, LabResult
-from services import consent_service, lab_service, visit_service
+from models.recommendation_model import DietRecommendation
+from services import consent_service, lab_service, recommendation_service, visit_service
 
 TODAY = date(2026, 8, 19)
 
@@ -69,6 +72,31 @@ def test_revoke_clears_visit_note_but_keeps_the_date(db, consented):
     assert visit.scheduled_on == scheduled
 
 
+def _recommendation_count(db, user_id: int) -> int:
+    return db.scalar(
+        select(func.count()).select_from(DietRecommendation).where(DietRecommendation.user_id == user_id)
+    )
+
+
+def test_revoke_destroys_recommendation_cache(db, consented):
+    """추천 캐시는 민감정보에서 **파생된 값**을 저장한다 — 원본만 지우면 캐시에 질병이 남는다.
+
+    실제 저장 경로를 태워, `excluded` 에 질병 코드·라벨이 들어간다는 사실부터 확인한다(2026-09-13
+    까지 이 테이블은 파기 목록에 없었다).
+    """
+    db.add(UserCondition(user_id=consented.id, condition="ckd"))
+    db.flush()
+
+    result = recommendation_service.get_recommendation(db, consented.id, TODAY, "lunch")
+
+    assert {"type": "condition", "code": "ckd", "label": "신장 질환"} in result.recommendation.excluded
+    assert _recommendation_count(db, consented.id) == 1
+
+    consent_service.revoke_consent(db, consented.id, consent_service.SENSITIVE_HEALTH)
+
+    assert _recommendation_count(db, consented.id) == 0
+
+
 def test_revoke_leaves_other_users_alone(db, consented):
     """남의 민감정보가 함께 파기되지 않는다."""
     other = User(kakao_id="revoke-other", nickname="다른사람")
@@ -78,7 +106,10 @@ def test_revoke_leaves_other_users_alone(db, consented):
         db, other.id, consent_service.SENSITIVE_HEALTH, consent_service.SENSITIVE_HEALTH_VERSION
     )
     lab_service.save_result(db, other.id, TODAY, "hba1c", Decimal("6.8"))
+    db.add(DietRecommendation(user_id=other.id, rec_date=TODAY, meal_type="lunch", items=[], excluded=[]))
+    db.flush()
 
     consent_service.revoke_consent(db, consented.id, consent_service.SENSITIVE_HEALTH)
 
     assert db.query(LabResult).filter(LabResult.user_id == other.id).count() == 1
+    assert _recommendation_count(db, other.id) == 1

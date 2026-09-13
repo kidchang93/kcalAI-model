@@ -16,7 +16,7 @@ from timeutil import UTC
 from models.auth_model import User
 from models.consent_model import UserCondition, UserHealthProfile
 from models.health_model import FoodNutrition
-from services import day_nutrition, health_service
+from services import consent_service, day_nutrition, health_service
 
 TODAY = datetime.now(UTC).date()
 NOON = datetime.combine(TODAY, datetime.min.time(), tzinfo=UTC) + timedelta(hours=12)
@@ -27,6 +27,12 @@ def user(db):
     row = User(kakao_id="day-nutrition-test", nickname="축테스터")
     db.add(row)
     db.flush()
+    # 질병·병기는 민감정보 동의가 유효할 때만 읽힌다 (2026-09-13, DATA_MODEL 7장). 실제로도 동의
+    # 없이는 질병을 입력할 수 없으므로 동의한 사용자로 둔다. 동의가 없을 때의 동작은
+    # `tests/test_sensitive_read_gating.py` 가 고정한다.
+    consent_service.create_consent(
+        db, row.id, consent_service.SENSITIVE_HEALTH, consent_service.SENSITIVE_HEALTH_VERSION
+    )
     return row
 
 

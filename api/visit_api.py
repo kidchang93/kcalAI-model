@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from api.dependencies import get_current_user
@@ -28,7 +28,8 @@ _NOTICE = (
 def _to_response(visit, *, can_see_outcome: bool) -> NextVisitResponse:
     return NextVisitResponse(
         scheduled_on=visit.scheduled_on if visit is not None else None,
-        # 동의가 없으면 본문을 가린다. **지우지는 않는다** — 다시 동의하면 그대로 보인다.
+        # 동의가 없으면(버전이 낡은 동의 포함) 본문을 가린다. **지우지는 않는다** — 다시 동의하면
+        # 그대로 보인다.
         outcome=visit.outcome if visit is not None and can_see_outcome else None,
         notice=_NOTICE,
     )
@@ -58,14 +59,14 @@ def put_next_visit(
 ):
     # **날짜만 보내면 동의가 필요 없다.** 메모를 실어 보낼 때만 요구한다 — 자유 텍스트라
     # 질병 정보가 들어올 수 있기 때문이고, 반대로 날짜에까지 동의를 걸면 온보딩 직후
-    # 홈 D-day 가 사라진다.
-    has_consent = consent_service.has_active_consent(db, current_user.id)
+    # 홈 D-day 가 사라진다. 버전이 낡은 동의도 동의가 없는 것으로 본다(require_sensitive_consent 와 같은 판정).
+    if request.outcome is not None and request.outcome.strip():
+        try:
+            consent_service.ensure_sensitive_consent(db, current_user.id)
+        except consent_service.SensitiveConsentRequiredError as error:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
 
-    if request.outcome is not None and request.outcome.strip() and not has_consent:
-        raise HTTPException(
-            status_code=403,
-            detail="건강 민감정보 이용 동의가 필요합니다. 동의 후 다시 시도해주세요.",
-        )
+    has_consent = consent_service.has_active_consent(db, current_user.id)
 
     try:
         visit = visit_service.set_next_visit(

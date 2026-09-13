@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from timeutil import UTC
 from models.health_model import MealItem, MealLog
-from services import chronic_food_rules, ckd_food_rules, meta_service, nutrition_service
+from services import chronic_food_rules, ckd_food_rules, consent_service, meta_service, nutrition_service
 
 # 하루 누적 축 (tag, nutrient, label). **경고 축(`ckd_food_rules.WARNING_AXES`)과 같지 않다.**
 #
@@ -85,7 +85,16 @@ DAILY_NUTRIENT_NOTICE = (
 
 
 def get_day_nutrient_axes(db: Session, user_id: int, target_date: date) -> dict | None:
-    """오늘 먹은 음식의 질환 축 누적. 해당 질환이 없으면 None (앱은 카드를 그리지 않는다)."""
+    """오늘 먹은 음식의 질환 축 누적. 해당 질환이 없으면 None (앱은 카드를 그리지 않는다).
+
+    민감정보 동의가 유효하지 않아도 None 이다 — 질병·병기를 읽지 않으니 축이 없다.
+    """
+    # 질병·병기는 민감정보라 동의가 ACTIVE 일 때만 읽는다 (DATA_MODEL 7장). 라우트(summary·
+    # trends)는 칼로리 요약 때문에 동의 없이 열려 있어야 해서 막지 않고 **여기서 거른다.**
+    # 낡은 동의(v1.0)는 데이터를 가진 채 무효라, "동의가 없으면 질병도 없다"에 기대면 새어 나간다.
+    if not consent_service.has_active_consent(db, user_id):
+        return None
+
     axes = _axes_for_user(db, user_id)
 
     if not axes:
@@ -135,7 +144,12 @@ def get_period_nutrient_axes(
 
     평균은 **기록한 날만** 나눈다. 기록 없는 날을 0으로 넣어 평균을 내리면 "적게 먹었다"로
     읽히는데, 실제로는 기록을 안 한 것이다 (`measured_items` 를 숨기지 않는 것과 같은 이유).
+
+    민감정보 동의가 유효하지 않으면 None 이다 (`get_day_nutrient_axes` 와 같은 이유).
     """
+    if not consent_service.has_active_consent(db, user_id):
+        return None
+
     axes = _axes_for_user(db, user_id)
 
     if not axes:
