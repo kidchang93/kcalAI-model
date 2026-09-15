@@ -3,13 +3,14 @@
 카카오 회원번호는 다른 테스트와 겹치지 않도록 820000100x 대역을 쓴다.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 import pytest
 
 from factories import make_payment, make_user
 from models.subscription_model import Payment
 from services import payment_service
+from timeutil import UTC
 
 
 def _add_payment(db, user_id: int, order_id: str, **kwargs) -> Payment:

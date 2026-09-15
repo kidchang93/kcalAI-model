@@ -96,6 +96,9 @@ set -e
 cd "$REMOTE_DIR"
 ./venv/bin/pip install -q -r requirements.txt
 $MIGRATE_CMD
+# 재시작 전에 운영 파이썬(3.10)으로 import 해 본다 — 실패하면 set -e 로 여기서 멈춰 옛 프로세스가 계속 돈다.
+# 2026-09-15 StrEnum(3.11+) 이 재시작 뒤에야 드러나 502 가 났다.
+./venv/bin/python -c "import main"
 sudo systemctl restart kcalai
 # 기동에 몇 초 걸리므로 2초 간격으로 최대 15회 재시도한다(단일 sleep은 조기 오판을 유발).
 if curl -sf --retry 15 --retry-delay 2 --retry-all-errors -o /dev/null http://127.0.0.1:8000/openapi.json; then

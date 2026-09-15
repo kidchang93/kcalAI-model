@@ -1,5 +1,5 @@
 from datetime import datetime
-from enum import StrEnum
+from enum import Enum
 
 from timeutil import UTC
 
@@ -57,7 +57,8 @@ _SENSITIVE_CONSENT_OUTDATED_MESSAGE = (
 )
 
 
-class ConsentState(StrEnum):
+# StrEnum 은 3.11+ 이라 운영(Ubuntu 22.04, Python 3.10)에서 import 가 죽는다(2026-09-15 배포 장애).
+class ConsentState(str, Enum):
     ACTIVE = "active"
     # 동의한 적이 없다.
     MISSING = "missing"

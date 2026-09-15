@@ -92,6 +92,7 @@ open http://127.0.0.1:8000/docs
 | 목적 | 명령어 |
 |------|--------|
 | 테스트 | `venv/bin/python -m pytest` (의존성: `venv/bin/pip install -r requirements-dev.txt`) |
+| 운영 파이썬(3.10) 호환 | `uv run --no-project --python 3.10 --with-requirements requirements.txt --with-requirements requirements-dev.txt python -m pytest -q -p no:cacheprovider` — **배포 전 필수.** 로컬 venv 는 3.13 이라 `StrEnum`·`datetime.UTC` 같은 3.11+ 문법을 못 잡는다(2026-09-15 운영 502) |
 | 린트 | 없음 |
 | 포맷 | 없음 |
 
