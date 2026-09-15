@@ -7,41 +7,26 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from models.auth_model import User
+from factories import make_payment, make_user
 from models.subscription_model import Payment
 from services import payment_service
 
 
-def _make_user(db, kakao_id: str) -> User:
-    user = User(kakao_id=kakao_id, nickname="테스터")
-    db.add(user)
-    db.commit()
-    return user
-
-
 def _add_payment(db, user_id: int, order_id: str, **kwargs) -> Payment:
-    created_at = kwargs.pop("created_at", None)
-    payment = Payment(
-        user_id=user_id,
-        order_id=order_id,
-        plan_code=kwargs.pop("plan_code", "pro"),
-        amount=kwargs.pop("amount", 5000),
-        status=kwargs.pop("status", "done"),
-        method=kwargs.pop("method", "카드"),
-        approved_at=kwargs.pop("approved_at", None),
-        fail_reason=kwargs.pop("fail_reason", None),
-    )
     # server_default(func.now())는 트랜잭션 시작 시각으로 고정돼 같은 트랜잭션 내 행이 전부 동률이
-    # 된다. 최신순 정렬을 검증하려면 created_at 을 명시적으로 벌려야 한다.
+    # 된다. 최신순 정렬을 검증하려면 created_at 을 명시적으로 벌려야 한다 — make_payment는 모른다.
+    created_at = kwargs.pop("created_at", None)
+    kwargs.setdefault("approved_at", None)
+    kwargs.setdefault("fail_reason", None)
+    payment = make_payment(db, user_id, order_id, **kwargs)
     if created_at is not None:
         payment.created_at = created_at
-    db.add(payment)
-    db.commit()
+        db.flush()
     return payment
 
 
 def test_list_payments_newest_first(db):
-    user = _make_user(db, "8200001000")
+    user = make_user(db, "8200001000")
     now = datetime.now(UTC)
     _add_payment(db, user.id, "ord_old", created_at=now - timedelta(hours=2))
     _add_payment(db, user.id, "ord_new", created_at=now)
@@ -53,8 +38,8 @@ def test_list_payments_newest_first(db):
 
 
 def test_list_payments_only_returns_mine(db):
-    me = _make_user(db, "8200001001")
-    other = _make_user(db, "8200001002")
+    me = make_user(db, "8200001001")
+    other = make_user(db, "8200001002")
     _add_payment(db, me.id, "ord_mine")
     _add_payment(db, other.id, "ord_theirs")
 
@@ -64,7 +49,7 @@ def test_list_payments_only_returns_mine(db):
 
 
 def test_list_payments_empty_is_empty_list(db):
-    user = _make_user(db, "8200001003")
+    user = make_user(db, "8200001003")
 
     assert payment_service.list_payments_view(db, user.id)["payments"] == []
 
@@ -75,7 +60,7 @@ def test_plan_label_is_a_product_name_not_a_bare_code(db):
     `plans.label_ko` 를 그대로 쓰면 영수증에 "상품명: Pro" 로 찍혀 무엇을 샀는지 읽히지 않는다.
     결제창에 보내는 주문명(`billing_service._order_name`)과 같은 규칙을 따른다.
     """
-    user = _make_user(db, "8200001004")
+    user = make_user(db, "8200001004")
     _add_payment(db, user.id, "ord_pro", plan_code="pro")
 
     item = payment_service.list_payments_view(db, user.id)["payments"][0]
@@ -92,7 +77,7 @@ def test_plan_label_falls_back_to_bare_code_when_plan_missing(db):
 
 
 def test_get_payment_returns_own(db):
-    user = _make_user(db, "8200001005")
+    user = make_user(db, "8200001005")
     created = _add_payment(db, user.id, "ord_get", amount=10000, status="done")
 
     item = payment_service.get_payment_view(db, user.id, created.id)
@@ -103,8 +88,8 @@ def test_get_payment_returns_own(db):
 
 
 def test_get_others_payment_is_404(db):
-    me = _make_user(db, "8200001006")
-    other = _make_user(db, "8200001007")
+    me = make_user(db, "8200001006")
+    other = make_user(db, "8200001007")
     theirs = _add_payment(db, other.id, "ord_hidden")
 
     # 남의 것은 존재 자체를 숨긴다 (LookupError → api 가 404 로 변환).
@@ -113,7 +98,7 @@ def test_get_others_payment_is_404(db):
 
 
 def test_get_missing_payment_is_404(db):
-    user = _make_user(db, "8200001008")
+    user = make_user(db, "8200001008")
 
     with pytest.raises(LookupError):
         payment_service.get_payment_view(db, user.id, 999999999)

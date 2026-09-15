@@ -4,15 +4,17 @@
 남의 기록은 **404 존재 은닉**. 두 도메인이 다르게 동작하면 앱이 날짜 경계를 두 번 다뤄야 한다.
 """
 
+from collections import Counter
 from datetime import date, datetime, time, timedelta
 
-from timeutil import UTC
+from timeutil import UTC, day_bounds_utc
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from models.health_model import ExerciseGoal, ExerciseLog, UserProfile
 from services import fitness_rules
+from services.errors import BadRequestError, NotFoundError
 
 
 # 스트릭을 거슬러 볼 최대 주 수. 무한정 거슬러 올라가지 않는다(질의 비용·의미 둘 다).
@@ -77,11 +79,6 @@ def upsert_goal(
     return goal
 
 
-def _day_bounds(target_date: date) -> tuple[datetime, datetime]:
-    start = datetime.combine(target_date, time.min, tzinfo=UTC)
-    return start, start + timedelta(days=1)
-
-
 def _user_weight_kg(db: Session, user_id: int) -> float | None:
     # kcal 산출에 쓰는 체중. 프로필이 없으면 None → kcal 도 None 으로 남긴다(지어내지 않는다).
     profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
@@ -96,9 +93,9 @@ def _resolve_fields(
     intensity: str | None,
     kcal: int | None,
 ) -> tuple[str, int | None]:
-    """강도·kcal 을 확정한다. 알 수 없는 운동 종류는 ValueError → 400."""
+    """강도·kcal 을 확정한다. 알 수 없는 운동 종류는 BadRequestError → 400."""
     if exercise_type not in fitness_rules.EXERCISE_TYPES:
-        raise ValueError("선택할 수 없는 운동 종류입니다.")
+        raise BadRequestError("선택할 수 없는 운동 종류입니다.")
 
     resolved_intensity = intensity or fitness_rules.default_intensity(exercise_type)
 
@@ -142,7 +139,7 @@ def create_exercise(
 
 
 def list_exercises(db: Session, user_id: int, target_date: date) -> list[ExerciseLog]:
-    start, end = _day_bounds(target_date)
+    start, end = day_bounds_utc(target_date)
     return list(
         db.scalars(
             select(ExerciseLog)
@@ -167,7 +164,7 @@ def _get_owned(db: Session, user_id: int, exercise_id: int) -> ExerciseLog:
         )
     )
     if exercise is None:
-        raise LookupError("운동 기록을 찾을 수 없습니다.")
+        raise NotFoundError("운동 기록을 찾을 수 없습니다.")
     return exercise
 
 
@@ -241,10 +238,10 @@ def calculate_streak(db: Session, user_id: int, today: date, weekly_target: int)
         ).all()
     )
 
-    per_week: dict[date, int] = {}
+    per_week: Counter[date] = Counter()
     for row in rows:
         week_start, _ = week_bounds(row.performed_at.astimezone(UTC).date())
-        per_week[week_start] = per_week.get(week_start, 0) + equivalent_minutes(row)
+        per_week[week_start] += equivalent_minutes(row)
 
     streak = 0
     cursor = this_week_start
@@ -268,10 +265,10 @@ def get_summary(db: Session, user_id: int, start_date: date, end_date: date) -> 
     **고강도 1분 = 중강도 2분**(KPAG)으로 환산한 단일 축을 함께 준다.
     """
     if end_date < start_date:
-        raise ValueError("종료일이 시작일보다 빠릅니다. 날짜 범위를 확인해주세요.")
+        raise BadRequestError("종료일이 시작일보다 빠릅니다. 날짜 범위를 확인해주세요.")
 
-    start, _ = _day_bounds(start_date)
-    _, end = _day_bounds(end_date)
+    start, _ = day_bounds_utc(start_date)
+    _, end = day_bounds_utc(end_date)
 
     rows = list(
         db.scalars(

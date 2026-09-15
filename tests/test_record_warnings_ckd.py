@@ -7,6 +7,7 @@ docs/CKD_NUTRITION.md 3-3:
 
 import pytest
 
+from factories import make_user
 from models.auth_model import User
 from models.consent_model import UserCondition
 from services import ckd_food_rules
@@ -14,9 +15,7 @@ from services.nutrition_service import get_record_warnings
 
 
 def _user_with_condition(db, code: str, kakao: str) -> User:
-    user = User(kakao_id=kakao, nickname=code)
-    db.add(user)
-    db.flush()
+    user = make_user(db, kakao_id=kakao, nickname=code)
     db.add(UserCondition(user_id=user.id, condition=code))
     db.flush()
     return user

@@ -36,7 +36,7 @@
 | 3 | 코드에서 시간은 `datetime.now(UTC)`를 쓴다. `utcnow()` 금지 | `services/auth_service.py:92,108,133` |
 | 4 | 삭제·폐기·소비는 **nullable 타임스탬프**로 표현한다 (`revoked_at`, `consumed_at`) | `auth_model.py:34,45` |
 | 5 | **`Base.metadata.create_all`은 기존 테이블의 컬럼 추가를 반영하지 않는다** | `database.py:32` |
-| 6 | 새 `models/<domain>_model.py`는 `init_db()`의 지연 import 목록에 **반드시 추가**해야 `create_all` 대상이 된다 | `database.py:29-32` |
+| 6 | 새 `models/<domain>_model.py`는 `models/__init__.py`의 import 목록에 **반드시 추가**해야 `create_all` 대상이 된다 | `models/__init__.py` |
 | 7 | **세션 토큰 검증 코드가 전무하다.** `select(AuthSession)` 0건, `get_current_user`/`Authorization`/`Bearer` 0건 | `api/` 전수 grep |
 | 8 | 신규 Pydantic 스키마는 `auth_schema.py` 패턴을 따른다 (`str | None`, `XxxRequest`/`XxxResponse`) | `schemas/auth_schema.py:17,26` |
 
@@ -145,7 +145,7 @@
 
 ### `PUT /api/meals/{id}` — 전체 교체 (2026-07-11 확정)
 
-부분 수정(PATCH)이 아니라 **전체 교체**다 — 기존 `PUT /api/pets/{id}`(9장)와 같은 방식으로 통일한다. 요청 본문은 `POST /api/meals`와 동일 구조(`MealUpdateRequest`는 `MealCreateRequest` 상속), 응답은 `MealResponse`.
+부분 수정(PATCH)이 아니라 **전체 교체**다 — 기존 `PUT /api/pets/{id}`(9장)와 같은 방식으로 통일한다. 요청 본문은 `POST /api/meals`와 동일한 `MealCreateRequest`, 응답은 `MealResponse`.
 
 - `meal_items`는 기존 행을 지우고 다시 넣는다. `total_kcal`은 서버가 항목 합계로 **재계산**한다 (생성 로직 재사용 — 합계의 단일 진실은 `meal_items`).
 - **예외 1개**: `logged_at`을 생략(null)하면 기존 기록 시각을 **유지**한다. DB not-null 컬럼이라 null 교체가 불가능하고, 앱의 주 사용처가 "항목·끼니 종류만 고치기"이기 때문이다. `photo_s3_key`는 nullable이므로 생략 시 null로 교체된다 (전체 교체 원칙).
@@ -176,7 +176,7 @@
 
 목표(`PRODUCT_STRATEGY.md` §0-1)의 "판단에 쓸 근거를 정확하게 남긴다"에서 근거는 **기록된 시점의 것**이어야 한다. 진료에서 되짚거나 검사 수치 악화의 원인을 찾으려면 더욱 그렇다(§0-2 지표).
 
-- 스냅샷을 쓰는 곳: `day_nutrition._day_items` (하루 누적). 경고는 지금 먹으려는 음식을 판정하므로 현재 값을 그대로 쓴다 — 성격이 다르다.
+- 스냅샷을 쓰는 곳: `day_nutrition.get_period_nutrient_axes` (하루 누적은 그 하루짜리). 경고는 지금 먹으려는 음식을 판정하므로 현재 값을 그대로 쓴다 — 성격이 다르다.
 - **`MealItemResponse`에 4필드가 실린다 (2026-08-03 추가)** — `sodium_mg`·`potassium_mg`·`phosphorus_mg`·`sugar_g`, 전부 `float|null`. 기존 필드는 불변이고 앱은 없으면 `null`로 읽는다(옛 서버 호환).
 
   > ⚠️ **2026-08-03까지 이 필드들이 응답에 없었다.** 컬럼은 리비전 0025부터 있었는데 스키마에 안 넣어서 **저장은 되고 조회는 안 되는** 상태였고, 그래서 과거 기록 화면은 kcal만 그렸다. 목표(§0-1)의 "나중에 다시 꺼내 볼 수 있는가"가 반쪽만 충족된 채였다 — 실사용으로 발견됐다(`CARE_LOOP.md` §0-3).
@@ -394,7 +394,7 @@ MVP 구현 기준:
   데이터는 남아 있고, 철회가 그것을 없애는 유일한 경로다.
 - **재동의 전까지 데이터는 지우지 않는다.** 가리기만 한다 — 다시 동의하면 그대로 보인다(진료 메모와
   같은 규칙, 31장).
-- **terms·privacy·group_activity_share 는 버전으로 무효화하지 않는다** (`_VERSION_GATED_KINDS`).
+- **terms·privacy·group_activity_share 는 버전으로 무효화하지 않는다** (`has_active_consent`·`get_consent_state`는 민감정보만 판정한다).
   약관은 기능 게이트가 아니라 가입 조건이라, 버전으로 무효화하면 개정마다 전 회원이 막힌다 — 그건
   이 판정이 정할 일이 아니다. 가입 시 기록은 기존처럼 앱이 보낸 버전(없으면 서버 현재 버전)이다.
 - ⚠️ **`SENSITIVE_HEALTH_VERSION` 인상 = 기존 동의자 전원 재동의 필요.** 서버·앱을 **동시에 배포**한다.
@@ -734,7 +734,7 @@ UNIQUE(`user_id`, `rec_date`, `meal_type`).
 > - `tips: string[]` — 질병 기반 식이 안내. 비해당은 `[]`.
 > - `tier_notice: string|null` — 등급을 노출할 때만 채우는 고지.
 >
-> `tips`·`tier_notice`·두 `*_tier`는 **저장하지 않고 매 요청 계산**한다. 질병을 추가·삭제하면 캐시된 값이 거짓이 되기 때문이다. 그래서 `recommendation_service.get_recommendation`은 저장 행이 아니라 `RecommendationResult(recommendation, cached, tips, items, tier_notice)`를 반환하고, 라우터는 **`result.items`**(등급을 얹은 응답용)를 내보낸다 — `recommendation.items`(저장 원본)가 아니다.
+> `tips`·`tier_notice`·두 `*_tier`는 **저장하지 않고 매 요청 계산**한다. 질병을 추가·삭제하면 캐시된 값이 거짓이 되기 때문이다. 그래서 `recommendation_service.get_recommendation`은 저장 행이 아니라 응답 dict를 반환하고, 그 `items`는 **등급을 얹은 응답용 복사본**이다 — 저장 원본(`DietRecommendation.items`)이 아니다.
 
 ---
 
@@ -1014,7 +1014,7 @@ UNIQUE(`user_id`, `rec_date`, `meal_type`).
 
 - **Bearer 필수.** 성공 시 200 `{"message": "회원 탈퇴가 완료되었습니다. 모든 개인 데이터가 파기되었습니다."}`.
 - 세션 행을 파기하므로 해당 유저의 **모든 토큰이 즉시 무효(401)** 가 된다.
-- **트랜잭션 하나** — `commit`은 마지막 한 번이고, 중간 실패 시 전체 롤백된다 (api 레이어는 실패를 `error_logger`에만 남기고 500 한국어 메시지를 준다).
+- **트랜잭션 하나** — `commit`은 마지막 한 번이고, 중간 실패 시 전체 롤백된다 (api 레이어는 실패를 ERROR 로그에만 남기고 500 한국어 메시지를 준다).
 - 동의 이력(`user_consents`)도 함께 파기한다. 동의 증빙 보존(분쟁 대비)이 필요하다는 판단이 서면 별도 분리 보관을 도입한다 — **잠정 결정**.
 
 #### 삭제 연쇄 (FK 실측 기반 — 전 FK가 `ON DELETE NO ACTION`이라 자식 → 부모 순서가 강제된다)
@@ -1364,7 +1364,7 @@ RETURNING used_count
 }
 ```
 
-`PlanLimitError`는 **`ValueError`를 상속하지 않는다** — 각 api 모듈의 `except ValueError → 400`에 잡히면 업그레이드 유도가 일반 입력 오류로 뭉개진다.
+`PlanLimitError`는 **`ValueError`(`BadRequestError`)를 상속하지 않는다** — 400 전역 핸들러나 라우트의 `except ValueError`에 잡히면 업그레이드 유도가 일반 입력 오류로 뭉개진다.
 
 | 라우트 | 402가 나는 조건 | resource |
 |---|---|---|
@@ -1666,7 +1666,7 @@ CSRF 방어용 `state`는 `{platform, nonce, exp}`를 `AUTH_CODE_PEPPER`로 HMAC
 | **멱등 — 갱신 배치** | `payments.order_id` UNIQUE + `_mark_payment_done`이 이미 `done`인 주문을 재반영하지 않는다(기간 이중 연장 방지). 갱신 배치는 성공 시 `next_billing_at`이 한 달 뒤로 밀려 같은 날 재실행해도 대상에서 빠진다. ⚠️ **이 둘은 `confirm`을 덮지 못한다** — 주문번호가 같아야 걸리는데 `confirm`은 호출마다 새 `order_id`를 만든다 |
 | **멱등 — `confirm`** | **이미 낸 기간에 다시 청구하지 않는다** (`_is_duplicate_confirm`, 2026-07-16). 같은 플랜 + `active` + 기간이 남아 있으면 청구·토스 호출 없이 현재 구독을 **200**으로 돌려준다. 통과시키는 경우: 다른 플랜(업그레이드는 별개 결제) · `past_due`(카드 바꿔 재결제하려는 정당한 시도를 막으면 복구할 길이 사라진다) · `canceled`(재구독 의사표시) · 기간이 없거나 지난 경우 |
 | **결제 실패 시 구독 미활성화** | 청구 예외가 나면 구독 행을 건드리지 않는다 — 결제 안 된 Pro가 생기면 안 된다 |
-| **예외 원문 미노출** | `TossError.message`는 **우리가 만든 한국어 문구**다(토스 원문이 아니다). 원문·`fail_code`는 `error_logger`와 원장에만 남는다 |
+| **예외 원문 미노출** | `TossError.message`는 **우리가 만든 한국어 문구**다(토스 원문이 아니다). 원문·`fail_code`는 ERROR 로그와 원장에만 남는다 |
 
 ### 중복 `confirm` — 상태로 막는다 (2026-07-16)
 
@@ -1912,7 +1912,7 @@ POST /api/billing/webhook      (무인증 — 토스가 우리 Bearer 토큰을 
 
 **취소가 구독을 회수하지 않는 이유**는 `refund_payment`와 같다 — 환불과 이용권 회수는 다른 판단이라, 필요하면 운영자가 `cancel_billing`을 따로 부른다.
 
-**`DONE` 승격이 구독까지 살리는 이유**: 원장만 고치면 사용자는 돈을 내고도 무료로 남는다. 이미 반영됐는지는 confirm과 **같은 게이트**(`_is_duplicate_confirm` — 같은 플랜 + `active` + 기간 남음)로 판정해, 재전송이 기간을 두 번 늘리지 못하게 한다. 탈퇴로 익명화된 원장(`user_id`=NULL)은 붙일 구독이 없어 기록만 바로잡는다. 이 복구는 **`error_logger`에 남긴다** — 우리가 놓친 승인이라, 조용히 지나가면 청구 경로의 타임아웃 빈도를 알 길이 없다.
+**`DONE` 승격이 구독까지 살리는 이유**: 원장만 고치면 사용자는 돈을 내고도 무료로 남는다. 이미 반영됐는지는 confirm과 **같은 게이트**(`_is_duplicate_confirm` — 같은 플랜 + `active` + 기간 남음)로 판정해, 재전송이 기간을 두 번 늘리지 못하게 한다. 탈퇴로 익명화된 원장(`user_id`=NULL)은 붙일 구독이 없어 기록만 바로잡는다. 이 복구는 **ERROR 로그에 남긴다** — 우리가 놓친 승인이라, 조용히 지나가면 청구 경로의 타임아웃 빈도를 알 길이 없다.
 
 **부분 취소 금액은 `cancels` 배열을 더하지 않고 `totalAmount - balanceAmount`로 얻는다.** 잔액은 토스가 관리하는 값이라 부분 취소가 여러 번이어도 누계가 어긋나지 않는다. 원장의 `amount`(원래 받은 금액)는 그대로 두고 `refunded_amount`만 채운다.
 

@@ -9,15 +9,13 @@
 탈락한 추정은 **버리고** 404로 떨어뜨린다 — 엉터리 값을 남기느니 수동 입력이 정직하다.
 """
 
-import logging
 from dataclasses import dataclass
 from decimal import Decimal
 
-from log_utils import setup_level_logger
+from log_utils import get_logger
 from services.gemini_client import GEMINI_MODEL, GeminiError, generate_json
 
-info_logger = setup_level_logger(logging.INFO)
-error_logger = setup_level_logger(logging.ERROR)
+logger = get_logger(__name__)
 
 # 적재 게이트 — 1인분 kcal 허용 범위. 밖이면 추정 실패로 본다(음료 1kcal ~ 고열량 정식 2000kcal).
 _MIN_KCAL = 1
@@ -135,14 +133,14 @@ def estimate_by_label(food_label: str) -> EstimatedNutrition:
 
     if not _macros_consistent(kcal, carbs, protein, fat):
         # 매크로만 버리고 kcal은 살린다 — 사용자에게 kcal이 핵심이고, macros는 nullable이다.
-        error_logger.error(
+        logger.error(
             f"nutrition estimate 매크로 불일치 → macros 폐기 label={food_label} kcal={kcal}"
         )
         carbs = protein = fat = None
 
     serving_desc = str(data.get("serving_desc") or "1인분").strip()[:100]
 
-    info_logger.info(
+    logger.info(
         f"nutrition estimate ok model={GEMINI_MODEL} duration_ms={duration_ms:.1f} "
         f"label={food_label} kcal={kcal}"
     )

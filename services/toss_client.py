@@ -13,16 +13,15 @@
 """
 
 import base64
-import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
 
 import requests
 
-from log_utils import setup_level_logger
+from log_utils import get_logger
 
-error_logger = setup_level_logger(logging.ERROR)
+logger = get_logger(__name__)
 
 # 비밀값. 이 키 하나로 임의 금액을 청구할 수 있다 — 앱에 내려보내지 않는다.
 TOSS_SECRET_KEY = os.getenv("TOSS_SECRET_KEY", "")
@@ -52,7 +51,7 @@ STATUS_EXPIRED = "EXPIRED"
 
 # 토스 결제 실패 코드 → 사용자용 한국어 메시지. 토스 원문 메시지를 그대로 쓰지 않는 이유는,
 # 결제사 문구가 내부 사정(가맹점 설정·API 규격)을 담을 수 있고 우리가 통제할 수 없기 때문이다.
-# 원문은 error_logger 에만 남긴다.
+# 원문은 ERROR 로그에만 남긴다.
 _FAIL_MESSAGES = {
     "INVALID_CARD_NUMBER": "카드 정보가 올바르지 않습니다. 카드를 다시 등록해주세요.",
     "INVALID_CARD_EXPIRATION": "카드 유효기간이 올바르지 않습니다. 카드를 다시 등록해주세요.",
@@ -159,7 +158,7 @@ def _post(url: str, payload: dict, *, action: str, idempotency_key: str | None =
         #
         # 그래서 **예외 타입 이름만** 남긴다. action 이 어느 호출인지 알려주고 타입이 원인 범주를
         # (연결 거부·타임아웃·TLS) 알려주므로 진단에는 충분하다.
-        error_logger.error(f"toss {action} request fail: {type(error).__name__}")
+        logger.error(f"toss {action} request fail: {type(error).__name__}")
         # `from None` 으로 원인 체인을 끊는다 — 체인을 남기면 상위 어딘가가 트레이스백을 찍는
         # 순간(logger.exception, 미처리 예외) 같은 URL 이 그 경로로 다시 샌다.
         raise TossError("결제 서버와 통신하지 못했습니다. 잠시 후 다시 시도해주세요.") from None
@@ -180,7 +179,7 @@ def _get(url: str, *, action: str) -> dict:
         )
     except requests.RequestException as error:
         # `_post` 와 같은 이유로 타입 이름만 남기고 원인 체인을 끊는다 (URL 유출 방지).
-        error_logger.error(f"toss {action} request fail: {type(error).__name__}")
+        logger.error(f"toss {action} request fail: {type(error).__name__}")
         raise TossError("결제 서버와 통신하지 못했습니다. 잠시 후 다시 시도해주세요.") from None
 
     return _read_json(response, action=action)
@@ -191,7 +190,7 @@ def _read_json(response: requests.Response, *, action: str) -> dict:
     if response.status_code >= 400:
         code, raw_message = _read_error(response)
         # 원문은 서버에만 남긴다. 사용자에게는 우리가 통제하는 메시지를 준다.
-        error_logger.error(
+        logger.error(
             f"toss {action} fail status={response.status_code} code={code} message={raw_message}"
         )
         raise TossError(_FAIL_MESSAGES.get(code or "", _DEFAULT_FAIL_MESSAGE), code=code)
@@ -199,7 +198,7 @@ def _read_json(response: requests.Response, *, action: str) -> dict:
     try:
         return response.json()
     except ValueError as error:
-        error_logger.error(f"toss {action} returned non-json status={response.status_code}")
+        logger.error(f"toss {action} returned non-json status={response.status_code}")
         raise TossError(_DEFAULT_FAIL_MESSAGE) from error
 
 
@@ -223,7 +222,7 @@ def _parse_approved_at(value: object) -> datetime | None:
         # 토스는 ISO8601 오프셋 표기(+09:00)를 준다. Z 표기는 3.10 fromisoformat 이 못 읽어 치환한다.
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        error_logger.error("toss approvedAt 파싱 실패")
+        logger.error("toss approvedAt 파싱 실패")
         return None
 
 
@@ -238,7 +237,7 @@ def issue_billing_key(auth_key: str, customer_key: str) -> IssuedBillingKey:
     billing_key = payload.get("billingKey")
 
     if not billing_key:
-        error_logger.error("toss issue billing key returned no billingKey")
+        logger.error("toss issue billing key returned no billingKey")
         raise TossError("카드 등록에 실패했습니다. 다시 시도해주세요.")
 
     card = payload.get("card") or {}
@@ -274,7 +273,7 @@ def charge_billing(
     payment_key = payload.get("paymentKey")
 
     if not payment_key:
-        error_logger.error("toss charge returned no paymentKey")
+        logger.error("toss charge returned no paymentKey")
         raise TossError(_DEFAULT_FAIL_MESSAGE)
 
     return ChargeResult(

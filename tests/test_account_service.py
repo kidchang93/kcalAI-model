@@ -10,39 +10,24 @@
 카카오 회원번호는 다른 테스트와 겹치지 않도록 8400000xxx 대역을 쓴다.
 """
 
+from functools import partial
+
 import pytest
 from sqlalchemy import select, text
 
+from factories import make_payment, make_user
 from models.auth_model import User
 from models.subscription_model import BillingKey, Payment
 from services import account_service
+
+_make_user = partial(make_user, nickname="탈퇴테스터")
+_make_payment = make_payment
 
 
 @pytest.fixture(autouse=True)
 def _no_unlink(monkeypatch):
     """탈퇴는 카카오 unlink 를 부른다(의무). 테스트에서 실제 호출은 하지 않는다."""
     monkeypatch.setattr(account_service, "unlink", lambda kakao_id: None)
-
-
-def _make_user(db, kakao_id: str) -> User:
-    user = User(kakao_id=kakao_id, nickname="탈퇴테스터")
-    db.add(user)
-    db.commit()
-    return user
-
-
-def _make_payment(db, user_id: int, order_id: str, status: str = "done") -> Payment:
-    payment = Payment(
-        user_id=user_id,
-        order_id=order_id,
-        plan_code="pro",
-        amount=5000,
-        status=status,
-        method="카드",
-    )
-    db.add(payment)
-    db.commit()
-    return payment
 
 
 def _make_billing_key(db, user_id: int) -> BillingKey:

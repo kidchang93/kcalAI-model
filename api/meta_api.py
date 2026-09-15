@@ -1,10 +1,8 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from fastapi import APIRouter
 
-from api.dependencies import get_current_user
-from database import get_db
-from models.auth_model import User
-from schemas.meta_schema import MetaError, MetaOptionsResponse
+from api.dependencies import DB, CurrentUser
+from schemas.common_schema import ErrorResponse
+from schemas.meta_schema import MetaOptionsResponse
 from services import ckd_food_rules, meta_service
 
 router = APIRouter()
@@ -13,13 +11,13 @@ router = APIRouter()
 @router.get(
     "/meta/options",
     response_model=MetaOptionsResponse,
-    responses={401: {"model": MetaError}},
+    responses={401: {"model": ErrorResponse}},
 )
 def read_options(
     # Bearer 필수(7장 규약 일관). 동의 화면 다음이 질병 선택이므로
     # sensitive_health 동의는 요구하지 않는다 (DATA_MODEL.md 10장).
-    _current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    _current_user: CurrentUser,
+    db: DB,
 ):
     # dietary_tags · exclude_keywords 는 추천 엔진 내부용이라 노출하지 않는다.
     return {

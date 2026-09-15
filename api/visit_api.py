@@ -1,9 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from fastapi import APIRouter
 
-from api.dependencies import get_current_user
-from database import get_db
-from models.auth_model import User
+from api.dependencies import DB, CurrentUser
 from schemas.visit_schema import NextVisitRequest, NextVisitResponse
 from services import consent_service, visit_service
 from timeutil import today_kst
@@ -36,10 +33,7 @@ def _to_response(visit, *, can_see_outcome: bool) -> NextVisitResponse:
 
 
 @router.get("/me/next-visit", response_model=NextVisitResponse)
-def get_next_visit(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def get_next_visit(current_user: CurrentUser, db: DB):
     """다음 진료 예정일. 없으면 `scheduled_on` 이 null 이다 (404 가 아니다).
 
     404 로 두면 앱이 "없음"과 "실패"를 구분하려고 예외 처리를 하게 된다. 등록하지 않은
@@ -52,40 +46,22 @@ def get_next_visit(
 
 
 @router.put("/me/next-visit", response_model=NextVisitResponse)
-def put_next_visit(
-    request: NextVisitRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def put_next_visit(request: NextVisitRequest, current_user: CurrentUser, db: DB):
     # **날짜만 보내면 동의가 필요 없다.** 메모를 실어 보낼 때만 요구한다 — 자유 텍스트라
     # 질병 정보가 들어올 수 있기 때문이고, 반대로 날짜에까지 동의를 걸면 온보딩 직후
     # 홈 D-day 가 사라진다. 버전이 낡은 동의도 동의가 없는 것으로 본다(require_sensitive_consent 와 같은 판정).
     if request.outcome is not None and request.outcome.strip():
-        try:
-            consent_service.ensure_sensitive_consent(db, current_user.id)
-        except consent_service.SensitiveConsentRequiredError as error:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+        consent_service.ensure_sensitive_consent(db, current_user.id)
 
     has_consent = consent_service.has_active_consent(db, current_user.id)
 
-    try:
-        visit = visit_service.set_next_visit(
-            db,
-            user_id=current_user.id,
-            scheduled_on=request.scheduled_on,
-            today=today_kst(),
-            outcome=request.outcome,
-        )
-    except visit_service.ScheduleOutOfRangeError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
+    visit = visit_service.set_next_visit(
+        db, user_id=current_user.id, today=today_kst(), **request.model_dump()
+    )
     return _to_response(visit, can_see_outcome=has_consent)
 
 
 @router.delete("/me/next-visit", status_code=204)
-def delete_next_visit(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def delete_next_visit(current_user: CurrentUser, db: DB):
     """예정을 지운다. 지울 것이 없어도 204 다 — 삭제는 멱등해야 한다."""
     visit_service.clear_next_visit(db, current_user.id)

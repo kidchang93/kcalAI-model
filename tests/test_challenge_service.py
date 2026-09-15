@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 import pytest
 from timeutil import UTC
 
+from factories import make_user
 from models.auth_model import User
 from services import challenge_service, consent_service, exercise_service, group_service
 
@@ -18,10 +19,7 @@ PERIOD_END = TODAY + timedelta(days=3)
 
 
 def _user(db, suffix: str) -> User:
-    row = User(kakao_id=f"challenge-{suffix}", nickname=f"챌린지{suffix}")
-    db.add(row)
-    db.flush()
-    return row
+    return make_user(db, kakao_id=f"challenge-{suffix}", nickname=f"챌린지{suffix}")
 
 
 def _share(db, user: User) -> None:

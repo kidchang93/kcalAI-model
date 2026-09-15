@@ -2,22 +2,18 @@ from datetime import date, datetime
 
 from timeutil import UTC
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Query, status
 
-from api.dependencies import get_current_user
-from database import get_db
-from models.auth_model import User
+from api.dependencies import DB, CurrentUser
+from schemas.common_schema import ErrorResponse
 from schemas.exercise_schema import (
     ExerciseCreateRequest,
-    ExerciseError,
     ExerciseGoalRequest,
     ExerciseGoalResponse,
     ExerciseListResponse,
     ExerciseResponse,
     ExerciseSummaryResponse,
     ExerciseTypeOption,
-    ExerciseUpdateRequest,
 )
 from services import exercise_service
 
@@ -27,9 +23,9 @@ router = APIRouter()
 @router.get(
     "/exercise-types",
     response_model=list[ExerciseTypeOption],
-    responses={401: {"model": ExerciseError}},
+    responses={401: {"model": ErrorResponse}},
 )
-def read_exercise_types(_current_user: User = Depends(get_current_user)):
+def read_exercise_types(_current_user: CurrentUser):
     # 선택지는 fitness_rules 가 단일 진실이다 — 앱이 목록을 하드코딩하지 않게 서버가 준다.
     return exercise_service.list_exercise_types()
 
@@ -38,41 +34,22 @@ def read_exercise_types(_current_user: User = Depends(get_current_user)):
     "/exercises",
     response_model=ExerciseResponse,
     status_code=status.HTTP_201_CREATED,
-    responses={400: {"model": ExerciseError}, 401: {"model": ExerciseError}},
+    responses={400: {"model": ErrorResponse}, 401: {"model": ErrorResponse}},
 )
-def create_exercise(
-    request: ExerciseCreateRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    try:
-        exercise = exercise_service.create_exercise(
-            db,
-            current_user.id,
-            exercise_type=request.exercise_type,
-            duration_minutes=request.duration_minutes,
-            intensity=request.intensity,
-            kcal=request.kcal,
-            performed_at=request.performed_at,
-            memo=request.memo,
-        )
-    except ValueError as error:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
-        ) from error
-
+def create_exercise(request: ExerciseCreateRequest, current_user: CurrentUser, db: DB):
+    exercise = exercise_service.create_exercise(db, current_user.id, **request.model_dump())
     return exercise_service.to_response(exercise)
 
 
 @router.get(
     "/exercises",
     response_model=ExerciseListResponse,
-    responses={401: {"model": ExerciseError}},
+    responses={401: {"model": ErrorResponse}},
 )
 def read_exercises(
+    current_user: CurrentUser,
+    db: DB,
     target_date: date | None = Query(default=None, alias="date"),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
     resolved_date = target_date if target_date is not None else datetime.now(UTC).date()
     exercises = exercise_service.list_exercises(db, current_user.id, resolved_date)
@@ -84,88 +61,54 @@ def read_exercises(
     "/exercises/{exercise_id}",
     response_model=ExerciseResponse,
     responses={
-        400: {"model": ExerciseError},
-        401: {"model": ExerciseError},
-        404: {"model": ExerciseError},
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
     },
 )
 def update_exercise(
     exercise_id: int,
-    request: ExerciseUpdateRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    request: ExerciseCreateRequest,
+    current_user: CurrentUser,
+    db: DB,
 ):
-    try:
-        exercise = exercise_service.update_exercise(
-            db,
-            current_user.id,
-            exercise_id,
-            exercise_type=request.exercise_type,
-            duration_minutes=request.duration_minutes,
-            intensity=request.intensity,
-            kcal=request.kcal,
-            performed_at=request.performed_at,
-            memo=request.memo,
-        )
-    except LookupError as error:
-        # 남의 기록·삭제된 기록·없는 기록 전부 404 — 존재를 알려주지 않는다 (끼니와 같은 규칙).
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
-        ) from error
-    except ValueError as error:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
-        ) from error
-
+    # 전체 교체 수정. 끼니 PUT 과 같은 방식이다. 남의 기록·삭제된 기록·없는 기록은 전부 404 —
+    # 존재를 알려주지 않는다 (끼니와 같은 규칙).
+    exercise = exercise_service.update_exercise(
+        db, current_user.id, exercise_id, **request.model_dump()
+    )
     return exercise_service.to_response(exercise)
 
 
 @router.delete(
     "/exercises/{exercise_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    responses={401: {"model": ExerciseError}, 404: {"model": ExerciseError}},
+    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
 )
-def delete_exercise(
-    exercise_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    try:
-        exercise_service.delete_exercise(db, current_user.id, exercise_id)
-    except LookupError as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
-        ) from error
+def delete_exercise(exercise_id: int, current_user: CurrentUser, db: DB):
+    exercise_service.delete_exercise(db, current_user.id, exercise_id)
 
 
 @router.get(
     "/me/exercise-summary",
     response_model=ExerciseSummaryResponse,
-    responses={400: {"model": ExerciseError}, 401: {"model": ExerciseError}},
+    responses={400: {"model": ErrorResponse}, 401: {"model": ErrorResponse}},
 )
 def read_exercise_summary(
+    current_user: CurrentUser,
+    db: DB,
     start_date: date = Query(...),
     end_date: date = Query(...),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
-    try:
-        return exercise_service.get_summary(db, current_user.id, start_date, end_date)
-    except ValueError as error:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
-        ) from error
+    return exercise_service.get_summary(db, current_user.id, start_date, end_date)
 
 
 @router.get(
     "/me/exercise-goal",
     response_model=ExerciseGoalResponse,
-    responses={401: {"model": ExerciseError}},
+    responses={401: {"model": ErrorResponse}},
 )
-def read_exercise_goal(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def read_exercise_goal(current_user: CurrentUser, db: DB):
     # 목표를 설정하지 않았으면 지침 권장량이 기본값으로 내려간다 (is_default=true).
     return exercise_service.resolve_goal(db, current_user.id)
 
@@ -173,17 +116,8 @@ def read_exercise_goal(
 @router.put(
     "/me/exercise-goal",
     response_model=ExerciseGoalResponse,
-    responses={401: {"model": ExerciseError}},
+    responses={401: {"model": ErrorResponse}},
 )
-def update_exercise_goal(
-    request: ExerciseGoalRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    exercise_service.upsert_goal(
-        db,
-        current_user.id,
-        weekly_minutes=request.weekly_minutes,
-        weekly_strength_days=request.weekly_strength_days,
-    )
+def update_exercise_goal(request: ExerciseGoalRequest, current_user: CurrentUser, db: DB):
+    exercise_service.upsert_goal(db, current_user.id, **request.model_dump())
     return exercise_service.resolve_goal(db, current_user.id)

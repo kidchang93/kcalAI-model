@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from models.auth_model import User
 from models.group_model import Group, GroupMember, GroupPet
 from models.pet_model import Pet
+from services.errors import BadRequestError, ForbiddenError, NotFoundError
 from services.subscription_service import (
     ensure_can_add_member,
     ensure_can_attach_pet,
@@ -91,10 +92,10 @@ def list_my_groups(db: Session, user_id: int) -> list[dict]:
 def join_group(db: Session, user_id: int, invite_code: str) -> dict:
     group = db.scalar(select(Group).where(Group.invite_code == invite_code.strip().upper()))
     if group is None:
-        raise LookupError("초대 코드에 해당하는 그룹이 없습니다. 코드를 다시 확인해주세요.")
+        raise NotFoundError("초대 코드에 해당하는 그룹이 없습니다. 코드를 다시 확인해주세요.")
 
     if get_membership(db, group.id, user_id) is not None:
-        raise ValueError("이미 참여한 그룹입니다.")
+        raise BadRequestError("이미 참여한 그룹입니다.")
 
     # 정원은 참여자가 아니라 **그룹 소유자의 요금제**로 판정한다 — 정원을 결제한 사람은 소유자다.
     ensure_can_add_member(db, group)
@@ -107,10 +108,10 @@ def join_group(db: Session, user_id: int, invite_code: str) -> dict:
 def get_group_detail(db: Session, user_id: int, group_id: int) -> dict:
     group = db.scalar(select(Group).where(Group.id == group_id))
     if group is None:
-        raise LookupError("그룹을 찾을 수 없습니다.")
+        raise NotFoundError("그룹을 찾을 수 없습니다.")
 
     if get_membership(db, group_id, user_id) is None:
-        raise PermissionError("그룹 멤버만 조회할 수 있습니다.")
+        raise ForbiddenError("그룹 멤버만 조회할 수 있습니다.")
 
     member_rows = db.execute(
         select(GroupMember, User.nickname)
@@ -157,21 +158,21 @@ def get_group_detail(db: Session, user_id: int, group_id: int) -> dict:
 def attach_pet(db: Session, user_id: int, group_id: int, pet_id: int) -> None:
     group = db.scalar(select(Group).where(Group.id == group_id))
     if group is None:
-        raise LookupError("그룹을 찾을 수 없습니다.")
+        raise NotFoundError("그룹을 찾을 수 없습니다.")
 
     if get_membership(db, group_id, user_id) is None:
-        raise PermissionError("그룹 멤버만 반려동물을 참여시킬 수 있습니다.")
+        raise ForbiddenError("그룹 멤버만 반려동물을 참여시킬 수 있습니다.")
 
     pet = db.scalar(select(Pet).where(Pet.id == pet_id, Pet.deleted_at.is_(None)))
     # 존재하지 않거나 남의 소유면 존재 자체를 숨긴다 (정보 노출 방지).
     if pet is None or pet.owner_id != user_id:
-        raise LookupError("반려동물을 찾을 수 없습니다.")
+        raise NotFoundError("반려동물을 찾을 수 없습니다.")
 
     exists = db.scalar(
         select(GroupPet.id).where(GroupPet.group_id == group_id, GroupPet.pet_id == pet_id)
     )
     if exists is not None:
-        raise ValueError("이미 그룹에 참여한 반려동물입니다.")
+        raise BadRequestError("이미 그룹에 참여한 반려동물입니다.")
 
     # 그룹에 들어올 수 있는 펫 수도 소유자 요금제로 판정한다 (멤버 정원과 같은 규칙).
     ensure_can_attach_pet(db, group)
@@ -190,7 +191,7 @@ def _get_group_membership_or_hide(
     membership = get_membership(db, group_id, user_id) if group is not None else None
 
     if group is None or membership is None:
-        raise LookupError("그룹을 찾을 수 없습니다.")
+        raise NotFoundError("그룹을 찾을 수 없습니다.")
 
     return group, membership
 
@@ -208,7 +209,7 @@ def leave_group(db: Session, user_id: int, group_id: int) -> None:
     group, membership = _get_group_membership_or_hide(db, user_id, group_id)
 
     if group.owner_id == user_id:
-        raise ValueError("소유자는 탈퇴할 수 없습니다. 그룹 삭제로 진행해주세요.")
+        raise BadRequestError("소유자는 탈퇴할 수 없습니다. 그룹 삭제로 진행해주세요.")
 
     _detach_pets_owned_by(db, group_id, user_id)
     db.delete(membership)
@@ -219,7 +220,7 @@ def delete_group(db: Session, user_id: int, group_id: int) -> None:
     group, _ = _get_group_membership_or_hide(db, user_id, group_id)
 
     if group.owner_id != user_id:
-        raise PermissionError("그룹 소유자만 삭제할 수 있습니다.")
+        raise ForbiddenError("그룹 소유자만 삭제할 수 있습니다.")
 
     # 멤버십·펫 참여 연결만 지운다. 펫과 급여 기록은 그룹이 아니라 소유자·펫에 귀속되므로 남긴다.
     db.execute(delete(GroupPet).where(GroupPet.group_id == group_id))
@@ -232,14 +233,14 @@ def remove_member(db: Session, user_id: int, group_id: int, target_user_id: int)
     group, _ = _get_group_membership_or_hide(db, user_id, group_id)
 
     if group.owner_id != user_id:
-        raise PermissionError("그룹 소유자만 멤버를 제거할 수 있습니다.")
+        raise ForbiddenError("그룹 소유자만 멤버를 제거할 수 있습니다.")
 
     if target_user_id == user_id:
-        raise ValueError("소유자 자신은 제거할 수 없습니다. 그룹 삭제로 진행해주세요.")
+        raise BadRequestError("소유자 자신은 제거할 수 없습니다. 그룹 삭제로 진행해주세요.")
 
     target = get_membership(db, group_id, target_user_id)
     if target is None:
-        raise LookupError("그룹에서 해당 멤버를 찾을 수 없습니다.")
+        raise NotFoundError("그룹에서 해당 멤버를 찾을 수 없습니다.")
 
     _detach_pets_owned_by(db, group_id, target_user_id)
     db.delete(target)
@@ -259,11 +260,11 @@ def detach_pet(db: Session, user_id: int, group_id: int, pet_id: int) -> None:
         )
     ).first()
     if row is None:
-        raise LookupError("그룹에 참여한 반려동물을 찾을 수 없습니다.")
+        raise NotFoundError("그룹에 참여한 반려동물을 찾을 수 없습니다.")
 
     group_pet, pet = row
     if pet.owner_id != user_id and group.owner_id != user_id:
-        raise PermissionError("반려동물 소유자 또는 그룹 소유자만 참여를 해제할 수 있습니다.")
+        raise ForbiddenError("반려동물 소유자 또는 그룹 소유자만 참여를 해제할 수 있습니다.")
 
     # 급여 기록은 pet_id 에 귀속되므로 보존된다 (펫 soft delete 때와 같은 규칙).
     db.delete(group_pet)

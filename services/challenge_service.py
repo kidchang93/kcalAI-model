@@ -9,6 +9,7 @@
 개별 운동 기록·종류·메모·칼로리는 남에게 보이지 않는다.
 """
 
+from collections import Counter
 from datetime import date, datetime
 
 from timeutil import UTC
@@ -21,6 +22,7 @@ from models.consent_model import UserConsent
 from models.group_model import GroupChallenge, GroupMember
 from models.health_model import ExerciseLog
 from services import consent_service, exercise_service, group_service
+from services.errors import BadRequestError, ForbiddenError, NotFoundError
 
 MAX_TITLE_LENGTH = 60
 
@@ -29,7 +31,7 @@ def _ensure_member(db: Session, user_id: int, group_id: int) -> GroupMember:
     """그룹 멤버가 아니면 **존재를 숨긴다** — 그룹 라우트의 404 은닉 규칙과 같다."""
     membership = group_service.get_membership(db, group_id, user_id)
     if membership is None:
-        raise LookupError("그룹을 찾을 수 없습니다.")
+        raise NotFoundError("그룹을 찾을 수 없습니다.")
     return membership
 
 
@@ -60,11 +62,11 @@ def create_challenge(
     _ensure_member(db, user_id, group_id)
 
     if end_date < start_date:
-        raise ValueError("종료일이 시작일보다 빠릅니다.")
+        raise BadRequestError("종료일이 시작일보다 빠릅니다.")
 
     clean_title = title.strip()
     if not clean_title:
-        raise ValueError("챌린지 이름을 입력해주세요.")
+        raise BadRequestError("챌린지 이름을 입력해주세요.")
 
     challenge = GroupChallenge(
         group_id=group_id,
@@ -106,7 +108,7 @@ def _get_challenge(db: Session, user_id: int, group_id: int, challenge_id: int) 
         )
     )
     if challenge is None:
-        raise LookupError("챌린지를 찾을 수 없습니다.")
+        raise NotFoundError("챌린지를 찾을 수 없습니다.")
     return challenge
 
 
@@ -116,7 +118,7 @@ def delete_challenge(db: Session, user_id: int, group_id: int, challenge_id: int
     membership = _ensure_member(db, user_id, group_id)
 
     if challenge.created_by != user_id and membership.role != "owner":
-        raise PermissionError("챌린지를 삭제할 권한이 없습니다.")
+        raise ForbiddenError("챌린지를 삭제할 권한이 없습니다.")
 
     challenge.deleted_at = datetime.now(UTC)
     db.commit()
@@ -150,11 +152,9 @@ def get_challenge_detail(db: Session, user_id: int, group_id: int, challenge_id:
         ).all()
     )
 
-    minutes_by_user: dict[int, int] = {}
+    minutes_by_user: Counter[int] = Counter()
     for row in rows:
-        minutes_by_user[row.user_id] = minutes_by_user.get(row.user_id, 0) + (
-            exercise_service.equivalent_minutes(row)
-        )
+        minutes_by_user[row.user_id] += exercise_service.equivalent_minutes(row)
 
     entries = []
     for member, nickname in members:

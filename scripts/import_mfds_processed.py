@@ -22,18 +22,15 @@ from decimal import Decimal
 from pathlib import Path
 
 import openpyxl
-from sqlalchemy.dialects.postgresql import insert
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from database import SessionLocal  # noqa: E402
-from models.health_model import FoodNutrition  # noqa: E402
+from food_upsert import to_float, upsert  # noqa: E402
 from services.serving_size import parse_serving_size_g  # noqa: E402
 
 SOURCE_PROCESSED = "mfds_processed"
+# mfds(요리 실측)·curated 는 절대 덮지 않는다.
 OVERWRITABLE_SOURCES = ("llm", SOURCE_PROCESSED)
-BATCH_SIZE = 1000
 
 # 열 인덱스 (0-기준, 2026-06-26 배포본 실측).
 COL_GROUP = 7  # 식품대분류명
@@ -68,15 +65,6 @@ def parse_serving(raw) -> tuple[float, str] | None:
     if value <= 0:
         return None
     return value, (match.group(2) or "g").lower()
-
-
-def to_float(raw) -> float | None:
-    if raw is None or str(raw).strip() == "":
-        return None
-    try:
-        return float(raw)
-    except ValueError:
-        return None
 
 
 def median_or_none(values: list[float]) -> Decimal | None:
@@ -179,33 +167,6 @@ def build_records(buckets: dict[str, dict]) -> list[dict]:
     return [record for _, record in picked.values()]
 
 
-def upsert(records: list[dict]) -> None:
-    table = FoodNutrition.__table__
-    session = SessionLocal()
-    try:
-        for start in range(0, len(records), BATCH_SIZE):
-            batch = records[start : start + BATCH_SIZE]
-            statement = insert(table).values(batch)
-            statement = statement.on_conflict_do_update(
-                index_elements=[table.c.food_label],
-                set_={
-                    column: statement.excluded[column]
-                    for column in (
-                        "kcal_per_serving", "serving_desc", "serving_size_g",
-                        "carbs_g", "protein_g", "fat_g",
-                        "sugar_g", "sodium_mg", "potassium_mg", "phosphorus_mg",
-                        "food_group", "source",
-                    )
-                },
-                # mfds(요리 실측)·curated 는 절대 덮지 않는다.
-                where=table.c.source.in_(OVERWRITABLE_SOURCES),
-            )
-            session.execute(statement)
-        session.commit()
-    finally:
-        session.close()
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="식약처 가공식품 xlsx 를 food_nutrition 에 선별 적재한다.")
     parser.add_argument("xlsx_path", type=Path, help="식약처 가공식품 DB xlsx 경로")
@@ -215,7 +176,7 @@ def main() -> None:
         parser.error(f"xlsx 파일을 찾을 수 없습니다: {args.xlsx_path}")
 
     records = build_records(collect(args.xlsx_path))
-    upsert(records)
+    upsert(records, OVERWRITABLE_SOURCES)
     print(f"upsert 완료: {len(records)}건 (source={SOURCE_PROCESSED})")
 
 

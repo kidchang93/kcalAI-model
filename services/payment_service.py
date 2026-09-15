@@ -2,6 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from models.subscription_model import Payment, Plan
+from services.errors import NotFoundError
 
 
 # ---- 조회 ----
@@ -22,7 +23,7 @@ def get_payment(db: Session, user_id: int, payment_id: int) -> Payment:
 
     # 없거나 남의 것이면 존재 자체를 숨긴다 (meal_logs·pets 삭제와 같은 존재 은닉 규칙).
     if payment is None or payment.user_id != user_id:
-        raise LookupError("결제 내역을 찾을 수 없습니다.")
+        raise NotFoundError("결제 내역을 찾을 수 없습니다.")
 
     return payment
 

@@ -8,18 +8,10 @@ from datetime import date, timedelta
 
 import pytest
 
-from models.auth_model import User
+from factories import make_user
 from services import visit_service
 
 TODAY = date(2026, 8, 19)
-
-
-@pytest.fixture
-def user(db):
-    row = User(kakao_id="visit-test", nickname="진료테스터")
-    db.add(row)
-    db.flush()
-    return row
 
 
 def test_no_schedule_is_not_an_error(db, user):
@@ -82,9 +74,7 @@ def test_clear_is_idempotent(db, user):
 
 def test_schedules_are_per_user(db, user):
     """남의 예정이 내 '다음 진료'로 새지 않는다."""
-    other = User(kakao_id="visit-other", nickname="다른사람")
-    db.add(other)
-    db.flush()
+    other = make_user(db, kakao_id="visit-other", nickname="다른사람")
 
     visit_service.set_next_visit(db, other.id, TODAY + timedelta(days=5), today=TODAY)
 

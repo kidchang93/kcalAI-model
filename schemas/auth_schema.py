@@ -39,11 +39,3 @@ class AuthTokenResponse(BaseModel):
     token_type: str = "bearer"
     expires_at: datetime
     user: AuthUser
-
-
-class LogoutResponse(BaseModel):
-    message: str
-
-
-class AuthError(BaseModel):
-    detail: str

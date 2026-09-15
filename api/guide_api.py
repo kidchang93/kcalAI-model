@@ -1,9 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from dataclasses import asdict
 
-from api.dependencies import get_current_user
-from database import get_db
-from models.auth_model import User
+from fastapi import APIRouter, HTTPException
+
+from api.dependencies import DB, CurrentUser
 from schemas.guide_schema import (
     ConditionGuideResponse,
     GuideListResponse,
@@ -25,10 +24,7 @@ router = APIRouter()
 
 
 @router.get("/guides", response_model=GuideListResponse)
-def list_guides(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def list_guides(current_user: CurrentUser, db: DB):
     """가이드가 있는 질환 목록. 앱이 진입점을 그릴지 판단하는 데 쓴다.
 
     근거 문서가 없는 질환(임신·암)은 여기 없다 — 목록에 없으면 앱은 진입점을 그리지 않는다.
@@ -47,7 +43,7 @@ def list_guides(
     response_model=ConditionGuideResponse,
     responses={404: {"description": "가이드가 없는 질환"}},
 )
-def read_guide(condition: str, _: User = Depends(get_current_user)):
+def read_guide(condition: str, _: CurrentUser):
     guide = nutrition_guide.get_guide(condition)
 
     if guide is None:
@@ -55,23 +51,5 @@ def read_guide(condition: str, _: User = Depends(get_current_user)):
         # 보여줄 것이 없다는 점에서 같고, 앱은 진입점을 숨기면 된다.
         raise HTTPException(status_code=404, detail="아직 준비된 식이 가이드가 없습니다.")
 
-    return ConditionGuideResponse(
-        condition=guide.condition,
-        label=guide.label,
-        intro=guide.intro,
-        axes=[
-            {
-                "axis": axis.axis,
-                "label": axis.label,
-                "summary": axis.summary,
-                "sections": [
-                    {"title": section.title, "paragraphs": list(section.paragraphs)}
-                    for section in axis.sections
-                ],
-                "sources": list(axis.sources),
-                "caution": axis.caution,
-            }
-            for axis in guide.axes
-        ],
-        notice=nutrition_guide.GUIDE_NOTICE,
-    )
+    # asdict 는 중첩 dataclass 까지 dict 로 풀고, tuple 필드는 스키마의 list[...] 로 검증된다.
+    return ConditionGuideResponse(**asdict(guide), notice=nutrition_guide.GUIDE_NOTICE)

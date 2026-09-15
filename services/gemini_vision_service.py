@@ -10,19 +10,14 @@ YOLO/torch는 제거됐고 폴백이 없다. 호출·재시도·파싱은 gemini
 절대 노출하지 않는다.
 """
 
-import logging
-
 from google.genai import types
 
-from log_utils import setup_level_logger
 from schemas.predict_schema import DetectedFood
-from services.gemini_client import GEMINI_MODEL, GeminiError, ensure_api_key, generate_json
+from services.gemini_client import GeminiError, generate_json
 
 # 한 사진에서 반환할 서로 다른 음식의 상한. 한 상 차림도 이 정도면 충분하고,
 # 폭주 응답이 쿼터 없이 prewarm 부하로 번지는 것을 막는다.
 _MAX_FOODS = 10
-
-info_logger = setup_level_logger(logging.INFO)
 
 _PROMPT = (
     "이 사진에 있는 '음식'을 식별하세요. 규칙:\n"
@@ -61,11 +56,6 @@ class VisionError(Exception):
     """Gemini 비전 호출/파싱 실패(재시도 소진 포함). predict 라우트가 503으로 처리한다."""
 
 
-def ensure_production_vision_config() -> None:
-    # APP_ENV=production 일 때 main.py가 호출한다 — 폴백이 없으므로 키는 필수다.
-    ensure_api_key()
-
-
 def _as_portion(value: object) -> int | None:
     # structured output이 정수를 주게 돼 있으나, JSON 수치가 float로 올 여지를 방어한다.
     if value is None:
@@ -84,7 +74,7 @@ def identify_food(image_bytes: bytes, mime_type: str | None = None) -> list[Dete
     키는 로그에 남기지 않는다.
     """
     try:
-        data, duration_ms = generate_json(
+        data, _duration_ms = generate_json(
             contents=[
                 types.Part.from_bytes(data=image_bytes, mime_type=mime_type or "image/jpeg"),
                 _PROMPT,
@@ -107,11 +97,5 @@ def identify_food(image_bytes: bytes, mime_type: str | None = None) -> list[Dete
     if not foods:
         raise VisionError("Gemini가 음식을 인식하지 못했습니다.")
 
-    top = foods[0]
-    # 관측 로그(B9): 키·이미지 미노출, 결과만.
-    info_logger.info(
-        f"vision ok backend=gemini model={GEMINI_MODEL} duration_ms={duration_ms:.1f} "
-        f"food_count={len(foods)} top_label={top.label} top_score={float(top.score):.4f} "
-        f"top_portion_g={top.portion_g}"
-    )
+    # 성공 관측 로그는 predict 라우트의 `predict ok` 한 줄이다(쿼터까지 담는다).
     return foods

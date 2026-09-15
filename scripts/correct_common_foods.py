@@ -135,8 +135,7 @@ def correct() -> None:
         for label, kcal, serving_desc in CORRECTIONS
     ]
 
-    session = SessionLocal()
-    try:
+    with SessionLocal() as session:
         statement = insert(FoodNutrition).values(rows)
         set_ = {
             "kcal_per_serving": statement.excluded.kcal_per_serving,
@@ -162,8 +161,6 @@ def correct() -> None:
         session.commit()
         print(f"1인분 보정 {len(rows)}건 upsert 완료 (source={SOURCE_CURATED}).")
         print(f"영양소 수동 교정 {len(NUTRIENT_OVERRIDES)}건 적용.")
-    finally:
-        session.close()
 
 
 if __name__ == "__main__":

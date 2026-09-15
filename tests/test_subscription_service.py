@@ -8,18 +8,12 @@ from datetime import datetime, timedelta
 import pytest
 from sqlalchemy import select
 
+from factories import make_user
 from models.auth_model import User
 from models.subscription_model import Plan, UserSubscription, VisionUsageDaily
 from services import auth_service, group_service, pet_service, subscription_service
 from services.subscription_service import PlanLimitError
 from timeutil import UTC, today_kst
-
-
-def _make_user(db, kakao_id: str) -> User:
-    user = User(kakao_id=kakao_id, nickname="테스터")
-    db.add(user)
-    db.commit()
-    return user
 
 
 def _grant_paid_plan(db, user_id: int, plan_code: str) -> None:
@@ -69,7 +63,7 @@ def test_signup_with_unknown_plan_is_rejected(db):
 
 def test_missing_subscription_self_heals_to_free_plan(db):
     # 0014 이전 가입자(구독 행 없음)도 한도 판정이 500 으로 죽지 않는다.
-    user = _make_user(db, "82000000005")
+    user = make_user(db, "82000000005")
 
     assert subscription_service.get_user_plan(db, user.id).code == "lite"
 
@@ -82,7 +76,7 @@ def test_missing_subscription_self_heals_to_free_plan(db):
 # ---- 비전 일일 쿼터 ----
 
 def test_free_plan_allows_five_vision_calls_then_402(db):
-    user = _make_user(db, "82000000010")
+    user = make_user(db, "82000000010")
 
     for expected in (1, 2, 3, 4, 5):
         used, limit, _ = subscription_service.consume_vision_quota(db, user.id)
@@ -97,7 +91,7 @@ def test_free_plan_allows_five_vision_calls_then_402(db):
 
 
 def test_refund_returns_the_reserved_call(db):
-    user = _make_user(db, "82000000011")
+    user = make_user(db, "82000000011")
 
     subscription_service.consume_vision_quota(db, user.id)
     _, _, usage_date = subscription_service.consume_vision_quota(db, user.id)
@@ -110,7 +104,7 @@ def test_refund_returns_the_reserved_call(db):
 
 def test_refund_targets_the_consumed_day_not_today(db):
     # 자정을 걸친 요청: 어제 차감한 건은 어제 카운터에서 빠져야 한다.
-    user = _make_user(db, "82000000013")
+    user = make_user(db, "82000000013")
     yesterday = today_kst() - timedelta(days=1)
 
     db.add(VisionUsageDaily(user_id=user.id, usage_date=yesterday, used_count=2))
@@ -125,7 +119,7 @@ def test_refund_targets_the_consumed_day_not_today(db):
 
 
 def test_upgrade_raises_the_daily_quota(db):
-    user = _make_user(db, "82000000012")
+    user = make_user(db, "82000000012")
 
     for _ in range(5):
         subscription_service.consume_vision_quota(db, user.id)
@@ -144,7 +138,7 @@ def test_upgrade_raises_the_daily_quota(db):
 
 def test_deactivated_plan_still_serves_existing_subscribers(db):
     """판매 중단은 '신규 선택 차단'이지 '기존 구독 무효화'가 아니다."""
-    user = _make_user(db, "82000000050")
+    user = make_user(db, "82000000050")
     _grant_paid_plan(db, user.id, "pro")
 
     plan = db.get(Plan, "pro")
@@ -167,7 +161,7 @@ def test_deactivated_plan_still_serves_existing_subscribers(db):
 # ---- 그룹·반려동물 한도 ----
 
 def test_free_plan_allows_one_owned_group(db):
-    owner = _make_user(db, "82000000020")
+    owner = make_user(db, "82000000020")
     group_service.create_group(db, owner.id, "우리집", "family")
 
     with pytest.raises(PlanLimitError) as raised:
@@ -177,9 +171,9 @@ def test_free_plan_allows_one_owned_group(db):
 
 
 def test_group_capacity_is_judged_by_owner_plan(db):
-    owner = _make_user(db, "82000000021")
-    first = _make_user(db, "82000000022")
-    second = _make_user(db, "82000000023")
+    owner = make_user(db, "82000000021")
+    first = make_user(db, "82000000022")
+    second = make_user(db, "82000000023")
 
     summary = group_service.create_group(db, owner.id, "우리집", "family")
     invite_code = summary["invite_code"]
@@ -200,7 +194,7 @@ def test_group_capacity_is_judged_by_owner_plan(db):
 
 
 def test_free_plan_allows_one_pet(db):
-    owner = _make_user(db, "82000000030")
+    owner = make_user(db, "82000000030")
     pet_service.create_pet(db, owner.id, "콩이", "dog", None, None, None, None)
 
     with pytest.raises(PlanLimitError) as raised:
@@ -210,7 +204,7 @@ def test_free_plan_allows_one_pet(db):
 
 
 def test_soft_deleted_pet_frees_a_slot(db):
-    owner = _make_user(db, "82000000031")
+    owner = make_user(db, "82000000031")
     pet = pet_service.create_pet(db, owner.id, "콩이", "dog", None, None, None, None)
 
     pet_service.soft_delete_pet(db, owner.id, pet["id"])
@@ -220,7 +214,7 @@ def test_soft_deleted_pet_frees_a_slot(db):
 
 
 def test_downgrade_keeps_existing_data_and_only_blocks_additions(db):
-    owner = _make_user(db, "82000000040")
+    owner = make_user(db, "82000000040")
     _grant_paid_plan(db, owner.id, "pro")
 
     pet_service.create_pet(db, owner.id, "콩이", "dog", None, None, None, None)

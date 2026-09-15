@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 # create_all이 다른 모델(JSONB 등)을 건드리지 않는다.
 import models.auth_model  # noqa: F401
 from database import Base
+from factories import make_user
 
 TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",
@@ -70,5 +71,8 @@ def db(_engine):
         connection.close()
 
 
-
+@pytest.fixture
+def user(db):
+    """기본 kakao_id/nickname의 테스트 유저. 다른 값이 필요하면 `factories.make_user`를 직접 쓴다."""
+    return make_user(db)
 

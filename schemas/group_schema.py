@@ -56,11 +56,3 @@ class GroupDetailResponse(BaseModel):
     created_at: datetime
     members: list[GroupMemberItem]
     pets: list[GroupPetItem]
-
-
-class MessageResponse(BaseModel):
-    message: str
-
-
-class GroupError(BaseModel):
-    detail: str

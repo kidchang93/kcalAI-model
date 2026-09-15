@@ -1,5 +1,3 @@
-
-import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -31,15 +29,16 @@ from api.recommendation_api import router as recommendation_router
 from api.subscription_api import router as subscription_router
 from crypto import ensure_production_crypto_config
 from database import init_db
-from log_utils import setup_level_logger
+from log_utils import get_logger
 from services.auth_service import ensure_production_auth_config
-from services.gemini_vision_service import ensure_production_vision_config
+from services.errors import BadRequestError, ForbiddenError, NotFoundError
+from services.gemini_client import ensure_api_key
 from services.kakao_client import ensure_production_kakao_config
 from services.subscription_service import PlanLimitError
 from services.toss_client import ensure_production_toss_config
 
 # 관측 지표: 모든 요청의 경로·상태·응답시간을 구조적으로 남긴다.
-request_logger = setup_level_logger(logging.INFO)
+logger = get_logger(__name__)
 
 # database·crypto가 import 시점에 load_dotenv()를 수행하므로 .env 값이 반영돼 있다.
 APP_ENV = os.getenv("APP_ENV", "development")
@@ -51,7 +50,7 @@ APP_ENV = os.getenv("APP_ENV", "development")
 if APP_ENV == "production":
     ensure_production_auth_config()
     ensure_production_crypto_config()
-    ensure_production_vision_config()
+    ensure_api_key()
     ensure_production_kakao_config()
     ensure_production_toss_config()
 
@@ -110,12 +109,30 @@ async def handle_plan_limit(request: Request, error: PlanLimitError) -> JSONResp
     )
 
 
+def _detail_handler(status_code: int):
+    async def handle(request: Request, error: Exception) -> JSONResponse:
+        # 메시지는 서비스가 만든 한국어 사용자 문구다 (services/errors.py). HTTPException 과 같은 본문.
+        return JSONResponse(status_code=status_code, content={"detail": str(error)})
+
+    return handle
+
+
+def add_service_error_handlers(target: FastAPI) -> None:
+    """서비스 예외 → 400·403·404. 라우터만 올린 테스트 앱도 이 함수로 같은 변환을 건다."""
+    target.add_exception_handler(BadRequestError, _detail_handler(status.HTTP_400_BAD_REQUEST))
+    target.add_exception_handler(ForbiddenError, _detail_handler(status.HTTP_403_FORBIDDEN))
+    target.add_exception_handler(NotFoundError, _detail_handler(status.HTTP_404_NOT_FOUND))
+
+
+add_service_error_handlers(app)
+
+
 @app.middleware("http")
 async def log_request_metrics(request: Request, call_next):
     started = time.perf_counter()
     response = await call_next(request)
     duration_ms = (time.perf_counter() - started) * 1000
-    request_logger.info(
+    logger.info(
         f"request method={request.method} path={request.url.path} "
         f"status={response.status_code} duration_ms={duration_ms:.1f}"
     )

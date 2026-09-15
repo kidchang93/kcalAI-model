@@ -1,10 +1,10 @@
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, func, text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from crypto import EncryptedString
-from database import Base
+from database import Base, CreatedAt, UpdatedAt
 
 
 class Plan(Base):
@@ -50,15 +50,8 @@ class UserSubscription(Base):
     cancel_at_period_end: Mapped[bool] = mapped_column(
         Boolean, server_default="false", nullable=False
     )
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
+    started_at: Mapped[CreatedAt]
+    updated_at: Mapped[UpdatedAt]
 
 
 class VisionUsageDaily(Base):
@@ -74,12 +67,7 @@ class VisionUsageDaily(Base):
     # KST 기준 날짜. UTC 로 저장하면 한국 사용자의 자정 리셋 체감과 9시간 어긋난다.
     usage_date: Mapped[date] = mapped_column(Date, primary_key=True)
     used_count: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
+    updated_at: Mapped[UpdatedAt]
 
 
 class BillingKey(Base):
@@ -99,15 +87,8 @@ class BillingKey(Base):
     # 마스킹된 카드번호(토스가 마스킹해 준다). 앞6·뒤4만.
     card_number: Mapped[str | None] = mapped_column(String(30), nullable=True)
     card_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
+    created_at: Mapped[CreatedAt]
+    updated_at: Mapped[UpdatedAt]
 
 
 class Payment(Base):
@@ -148,6 +129,4 @@ class Payment(Base):
 
     fail_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
     fail_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    created_at: Mapped[CreatedAt]

@@ -1,4 +1,4 @@
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 
 from timeutil import UTC
 from decimal import Decimal
@@ -7,7 +7,9 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from models.health_model import MealItem, MealLog, UserGoal, UserProfile, WeightLog
-from services import day_nutrition, fitness_rules
+from schemas.health_schema import ProfileResponse
+from services import day_nutrition, fitness_rules, nutrition_service
+from services.errors import BadRequestError, NotFoundError
 
 ACTIVITY_FACTORS: dict[str, float] = {
     "sedentary": 1.2,
@@ -57,15 +59,7 @@ def build_profile_response(profile: UserProfile) -> dict:
     age = datetime.now(UTC).year - profile.birth_year
 
     return {
-        "id": profile.id,
-        "user_id": profile.user_id,
-        "sex": profile.sex,
-        "birth_year": profile.birth_year,
-        "height_cm": float(profile.height_cm),
-        "weight_kg": float(profile.weight_kg),
-        "activity_level": profile.activity_level,
-        "created_at": profile.created_at,
-        "updated_at": profile.updated_at,
+        **ProfileResponse.model_validate(profile).model_dump(),
         "bmi": bmi,
         "bmi_category": category,
         "bmi_category_label": fitness_rules.bmi_category_label(category),
@@ -79,7 +73,7 @@ def build_profile_response(profile: UserProfile) -> dict:
 def get_profile(db: Session, user_id: int) -> UserProfile:
     profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
     if profile is None:
-        raise ValueError("신체 정보가 없습니다. 프로필을 먼저 등록해주세요.")
+        raise NotFoundError("신체 정보가 없습니다. 프로필을 먼저 등록해주세요.")
     return profile
 
 
@@ -106,7 +100,7 @@ AGE_RESTRICTION_MESSAGE = (
 def _ensure_minimum_age(birth_year: int) -> None:
     """연 나이가 기준 미만이면 거부한다 (`MIN_SIGNUP_AGE` 주석의 근거)."""
     if datetime.now(UTC).year - birth_year < MIN_SIGNUP_AGE:
-        raise ValueError(AGE_RESTRICTION_MESSAGE)
+        raise BadRequestError(AGE_RESTRICTION_MESSAGE)
 
 
 def upsert_profile(
@@ -151,7 +145,7 @@ def get_open_goal(db: Session, user_id: int) -> UserGoal | None:
 def get_goal(db: Session, user_id: int) -> UserGoal:
     goal = get_open_goal(db, user_id)
     if goal is None:
-        raise ValueError("설정된 목표가 없습니다. 목표를 먼저 등록해주세요.")
+        raise NotFoundError("설정된 목표가 없습니다. 목표를 먼저 등록해주세요.")
     return goal
 
 
@@ -166,7 +160,7 @@ def upsert_goal(
         # 산출식은 프로필 입력값에 의존한다. 프로필이 없으면 산출할 수 없다.
         profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
         if profile is None:
-            raise ValueError("신체 정보가 없어 목표 칼로리를 산출할 수 없습니다. 프로필을 먼저 등록해주세요.")
+            raise BadRequestError("신체 정보가 없어 목표 칼로리를 산출할 수 없습니다. 프로필을 먼저 등록해주세요.")
         target_kcal = calculate_target_kcal(profile, goal_type)
 
     now = datetime.now(UTC)
@@ -191,22 +185,10 @@ def upsert_goal(
 
 # ---- 홈 진행률 요약 ----
 
-def _day_bounds(target_date: date) -> tuple[datetime, datetime]:
-    start = datetime.combine(target_date, time.min, tzinfo=UTC)
-    return start, start + timedelta(days=1)
-
-
 def get_summary(db: Session, user_id: int, target_date: date) -> dict:
-    start, end = _day_bounds(target_date)
-
     rows = db.execute(
         select(MealLog.meal_type, func.coalesce(func.sum(MealLog.total_kcal), 0))
-        .where(
-            MealLog.user_id == user_id,
-            MealLog.deleted_at.is_(None),
-            MealLog.logged_at >= start,
-            MealLog.logged_at < end,
-        )
+        .where(*MealLog.live_between(user_id, target_date, target_date))
         .group_by(MealLog.meal_type)
     ).all()
 
@@ -238,14 +220,11 @@ def get_summary(db: Session, user_id: int, target_date: date) -> dict:
 
 def get_trends(db: Session, user_id: int, start_date: date, end_date: date) -> dict:
     if end_date < start_date:
-        raise ValueError("종료일이 시작일보다 빠릅니다. 날짜 범위를 확인해주세요.")
+        raise BadRequestError("종료일이 시작일보다 빠릅니다. 날짜 범위를 확인해주세요.")
 
     total_days = (end_date - start_date).days + 1
     if total_days > TRENDS_MAX_DAYS:
-        raise ValueError(f"조회 범위는 최대 {TRENDS_MAX_DAYS}일입니다. 범위를 줄여 다시 시도해주세요.")
-
-    start, _ = _day_bounds(start_date)
-    _, end = _day_bounds(end_date)
+        raise BadRequestError(f"조회 범위는 최대 {TRENDS_MAX_DAYS}일입니다. 범위를 줄여 다시 시도해주세요.")
 
     # 세션 타임존과 무관하게 summary 와 같은 UTC 날짜 경계로 절단해 GROUP BY 한다.
     # 날짜 수만큼 쿼리를 반복하지 않는다 — 단일 쿼리 집계.
@@ -256,12 +235,7 @@ def get_trends(db: Session, user_id: int, start_date: date, end_date: date) -> d
             func.coalesce(func.sum(MealLog.total_kcal), 0),
             func.count(MealLog.id),
         )
-        .where(
-            MealLog.user_id == user_id,
-            MealLog.deleted_at.is_(None),
-            MealLog.logged_at >= start,
-            MealLog.logged_at < end,
-        )
+        .where(*MealLog.live_between(user_id, start_date, end_date))
         .group_by(day_column)
     ).all()
 
@@ -283,9 +257,6 @@ def get_trends(db: Session, user_id: int, start_date: date, end_date: date) -> d
     # 열린 목표가 없으면 null 이다. 목표 없음과 목표 0kcal 은 다르다 (summary 와 동일 규칙).
     goal = get_open_goal(db, user_id)
     target = int(goal.target_kcal) if goal is not None else None
-
-    # 질환 축 추이. import 를 함수 안에 두는 이유는 day_nutrition 이 이 모듈을 참조하기 때문이다.
-    from services import day_nutrition
 
     return {
         "start_date": start_date.isoformat(),
@@ -316,12 +287,7 @@ def _nutrient_snapshot(db: Session, food_label: str, serving_ratio: Decimal) -> 
 
     조회 규약은 경고 판정과 같다 — 정확·공백무시 일치만 쓰고 유사도는 쓰지 않는다. 두 곳이
     다른 방식으로 찾으면 "경고는 떴는데 합계에는 안 잡히는" 음식이 생긴다.
-
-    import 를 함수 안에서 하는 이유는 `nutrition_service`가 이 모듈을 쓰지 않지만 순환을
-    피하기 위해서다(경고·추천이 health_service 를 참조한다).
     """
-    from services import nutrition_service
-
     row = nutrition_service.measured_nutrition_for(db, food_label)
 
     if row is None:
@@ -389,16 +355,7 @@ def update_meal(
     photo_s3_key: str | None,
     items: list[dict],
 ) -> MealLog:
-    meal = db.scalar(
-        select(MealLog).where(
-            MealLog.id == meal_id,
-            MealLog.deleted_at.is_(None),
-        )
-    )
-
-    # 존재하지 않거나 남의 소유면 존재 자체를 숨긴다 (soft_delete_meal 과 같은 규칙).
-    if meal is None or meal.user_id != user_id:
-        raise LookupError("끼니 기록을 찾을 수 없습니다.")
+    meal = _get_own_meal(db, user_id, meal_id)
 
     meal.meal_type = meal_type
     # 전체 교체지만 logged_at 은 not-null 컬럼이므로 생략 시 기존 기록 시각을 유지한다.
@@ -417,17 +374,10 @@ def update_meal(
 
 
 def list_meals(db: Session, user_id: int, target_date: date) -> list[MealLog]:
-    start, end = _day_bounds(target_date)
-
     return list(
         db.scalars(
             select(MealLog)
-            .where(
-                MealLog.user_id == user_id,
-                MealLog.deleted_at.is_(None),
-                MealLog.logged_at >= start,
-                MealLog.logged_at < end,
-            )
+            .where(*MealLog.live_between(user_id, target_date, target_date))
             # id 를 두 번째 키로 둔다 — 같은 날 기록은 `logged_at` 이 **같은 값으로 몰린다**
             # (앱이 과거 날짜를 UTC 정오로 앵커한다, DATA_MODEL 4장). 시각만으로 정렬하면
             # 순서가 DB 물리 순서에 맡겨져, 항목을 더한 끼니(UPDATE)가 목록 맨 뒤로 밀린다 —
@@ -438,6 +388,12 @@ def list_meals(db: Session, user_id: int, target_date: date) -> list[MealLog]:
 
 
 def soft_delete_meal(db: Session, user_id: int, meal_id: int) -> None:
+    meal = _get_own_meal(db, user_id, meal_id)
+    meal.deleted_at = datetime.now(UTC)
+    db.commit()
+
+
+def _get_own_meal(db: Session, user_id: int, meal_id: int) -> MealLog:
     meal = db.scalar(
         select(MealLog).where(
             MealLog.id == meal_id,
@@ -447,10 +403,9 @@ def soft_delete_meal(db: Session, user_id: int, meal_id: int) -> None:
 
     # 존재하지 않거나 남의 소유면 존재 자체를 숨긴다 (정보 노출 방지).
     if meal is None or meal.user_id != user_id:
-        raise LookupError("끼니 기록을 찾을 수 없습니다.")
+        raise NotFoundError("끼니 기록을 찾을 수 없습니다.")
 
-    meal.deleted_at = datetime.now(UTC)
-    db.commit()
+    return meal
 
 
 # ---- 체중 ----

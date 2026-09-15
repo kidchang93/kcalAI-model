@@ -1,10 +1,10 @@
-from datetime import date, datetime
+from datetime import date
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import Date, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from database import Base
+from database import Base, CreatedAt
 
 
 class DietRecommendation(Base):
@@ -24,6 +24,4 @@ class DietRecommendation(Base):
     excluded: Mapped[list[dict]] = mapped_column(JSONB, nullable=False)
     # 13장부터 항상 rule (순수 규칙 선정). llm 은 12장 이전 생성분의 레거시 값.
     source: Mapped[str] = mapped_column(String(20), server_default="llm", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    created_at: Mapped[CreatedAt]

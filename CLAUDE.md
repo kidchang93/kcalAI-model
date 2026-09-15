@@ -95,9 +95,9 @@ open http://127.0.0.1:8000/docs
 | 린트 | 없음 |
 | 포맷 | 없음 |
 
-테스트는 Postgres에 붙습니다 (인증 로직의 tz-aware datetime 충실도). 각 테스트는 외부 트랜잭션 + SAVEPOINT 롤백으로 격리되어 대상 DB를 오염시키지 않습니다. 공유 DB의 기존 데이터와 번호가 겹칠 수 있으니, 깔끔한 격리가 필요하면 `TEST_DATABASE_URL`로 전용 DB를 지정하세요. 현재 **396건**(2026-09-13)이며 커버리지는 `test_diabetes_food_rules.py`(당뇨 — 첨가당 이름 축·등급 부재·단위, 16장), `test_meal_ordering.py`(하루 끼니 목록 순서 — 같은 시각이면 만든 순, 4장), `test_auth_service.py`·`test_auth_api.py`(카카오 로그인, 21장), `test_subscription_service.py`(요금제·쿼터, 20장), `test_billing_service.py`(자동결제, 24장), `test_billing_webhook.py`(**웹훅 본문으로는 원장을 바꿀 수 없다**, 29장), `test_toss_client.py`(**토스 어댑터의 비밀값 미유출**, 2026-07-16), `test_payment_service.py`(결제 내역, 23장), `test_crypto.py`, `test_upload_validation.py`, `test_web_spa.py`, `test_day_nutrition.py`(하루 질환 축 — 병기별 기준선, 28장)입니다.
+테스트는 Postgres에 붙습니다 (인증 로직의 tz-aware datetime 충실도). 각 테스트는 외부 트랜잭션 + SAVEPOINT 롤백으로 격리되어 대상 DB를 오염시키지 않습니다. 공유 DB의 기존 데이터와 번호가 겹칠 수 있으니, 깔끔한 격리가 필요하면 `TEST_DATABASE_URL`로 전용 DB를 지정하세요. 현재 **395건**(2026-09-14)이며 커버리지는 `test_diabetes_food_rules.py`(당뇨 — 첨가당 이름 축·등급 부재·단위, 16장), `test_meal_ordering.py`(하루 끼니 목록 순서 — 같은 시각이면 만든 순, 4장), `test_auth_service.py`·`test_auth_api.py`(카카오 로그인, 21장), `test_subscription_service.py`(요금제·쿼터, 20장), `test_billing_service.py`(자동결제, 24장), `test_billing_webhook.py`(**웹훅 본문으로는 원장을 바꿀 수 없다**, 29장), `test_toss_client.py`(**토스 어댑터의 비밀값 미유출**, 2026-07-16), `test_payment_service.py`(결제 내역, 23장), `test_crypto.py`, `test_upload_validation.py`, `test_web_spa.py`, `test_day_nutrition.py`(하루 질환 축 — 병기별 기준선, 28장)입니다.
 | 카카오 설정 진단 | `venv/bin/python scripts/check_kakao_config.py` (읽기 전용. 로그인 실패 시 **원인 판정** — 허용 IP 미등록/키 종류 혼동) |
-| 수동 검증 | `uvicorn main:app` 기동 + `/docs` 200 + `http/*.http` 요청 |
+| 수동 검증 | `uvicorn main:app` 기동 + `/docs` 200 + `curl` 요청 |
 
 ---
 
@@ -114,7 +114,7 @@ open http://127.0.0.1:8000/docs
 | `CORS_ALLOW_ORIGINS` | 아니오 | localhost:3000,5173 | `main.py` — production에서는 이 명시 목록만 허용 |
 | `PREDICT_MAX_UPLOAD_MB` | 아니오 | `10` | `api/predict_api.py` — 업로드 상한(초과 시 413). 리버스 프록시 `client_max_body_size`와 함께 방어 |
 | `HEALTH_ENCRYPTION_KEY` | 아니오 | 개발 기본키 | `crypto.py` — 민감정보(혈액형·질병·알러지) AES-256-GCM 키(base64 32B). `APP_ENV=production`이면 기본키일 때 기동 실패 |
-| `GEMINI_API_KEY` | 사실상 예 | 없음 | `services/gemini_vision_service.py` — 이미지 인식(단일 백엔드)에 필요. `APP_ENV=production`이면 없을 때 기동 실패. **로그·응답에 미노출** |
+| `GEMINI_API_KEY` | 사실상 예 | 없음 | `services/gemini_client.py` — 이미지 인식(단일 백엔드)에 필요. `APP_ENV=production`이면 없을 때 기동 실패. **로그·응답에 미노출** |
 | `GEMINI_MODEL` | 아니오 | `gemini-flash-latest` | 〃 — 재현성 필요 시 핀 버전(예: `gemini-3.5-flash`) |
 | `GEMINI_TIMEOUT_MS` | 아니오 | `15000` | 〃 — Gemini 호출 타임아웃(ms) |
 | `TOSS_SECRET_KEY` | production 예 | 없음 | `services/toss_client.py` — 자동결제. **비밀값.** 이 값만으로 임의 청구가 가능하다. Basic `base64("{키}:")` 인증. `APP_ENV=production`이면 없을 때 기동 실패. **로그·응답에 미노출** |
@@ -205,9 +205,9 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 - **저장소 루트가 아닌 곳에서 서버를 실행하지 않는다.** `load_dotenv()`가 cwd 기준으로 `.env`를 찾습니다.
 - **`AUTH_CODE_PEPPER` 기본값을 그대로 배포하지 않는다.**
 - **`.env`를 커밋하지 않는다.** `HF_TOKEN`과 NCP 자격증명이 들어 있습니다.
-- **예외 메시지를 그대로 클라이언트에 반환하지 않는다.** 내부 예외는 `error_logger`에만 남기고, 클라이언트에는 사용자용 한국어 메시지를 줍니다. `detail=f"...: {str(e)}"` 패턴(삭제된 `api/file_upload_api.py`에 있던 안티패턴)을 복제하지 마세요.
+- **예외 메시지를 그대로 클라이언트에 반환하지 않는다.** 내부 예외는 로그(`logger.error`)에만 남기고, 클라이언트에는 사용자용 한국어 메시지를 줍니다. `detail=f"...: {str(e)}"` 패턴(삭제된 `api/file_upload_api.py`에 있던 안티패턴)을 복제하지 마세요.
 - **`response_model`이 걸린 라우트에서 실패를 `return`하지 않는다.** 검증에 걸려 500 평문이 나갑니다. `raise HTTPException(...)`을 씁니다.
-- **INFO 로거로 `.error()`를 호출하지 않는다.** `setup_level_logger`의 `LevelFilter`가 레코드를 버립니다. `error_logger = setup_level_logger(logging.ERROR)`를 따로 만듭니다.
+- **로거를 직접 구성하지 않는다.** 모듈마다 `logger = log_utils.get_logger(__name__)` 하나를 씁니다 — `logger.info`는 `task-logs/info_log.txt`, `logger.error`는 `task-logs/error_log.txt`로 갈립니다(콘솔에도 나감). 핸들러는 공통 상위 로거 `kcal`에 한 번만 붙습니다. `logging.getLogger(__name__)`를 그대로 쓰면 핸들러가 없어 **파일에 남지 않고**(INFO는 아예 사라진다), root에 핸들러를 달면 httpx·urllib3 로그(토스 URL에 빌링키)까지 파일로 샙니다. (2026-09-14 이전의 `setup_level_logger`·`LevelFilter`는 제거됐습니다.)
 - **`api` 레이어에 비즈니스 로직이나 `os.getenv`를 넣지 않는다.** HTTP 입출력과 예외 변환만 담당합니다.
 - **DB 스키마를 변경할 때 마이그레이션 없이 진행하지 않는다.**
 - **모델 성능 실험과 제품 API 안정화를 같은 커밋에 섞지 않는다.**
@@ -230,7 +230,8 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 - **결제 실패 시 구독을 활성화하지 않는다.** 청구 예외가 나면 구독 행을 건드리지 않습니다 — 결제 안 된 Pro가 생기면 안 됩니다.
 - **`confirm`의 중복 방어를 `order_id`·`_mark_payment_done`에 기대지 않는다.** 그 둘은 **주문번호가 같아야** 걸리는 갱신 배치의 방어선인데, `confirm`은 호출마다 새 `order_id`를 만듭니다. 중복은 **구독 상태**로 판정합니다 (`_is_duplicate_confirm` — 같은 플랜 + `active` + 기간 남음이면 청구 없이 200). 이 게이트를 지우면 새로고침·502 후 재시도·결제창 2회 완주가 그대로 이중 결제가 됩니다(방어 전 실측: 5,000원 2회 청구). 단 `past_due`·`canceled`·다른 플랜은 **통과시켜야** 합니다 — 카드를 바꿔 복구하거나 업그레이드하는 정당한 경로입니다 (24장).
 - **만료 강등에서 `plan_code`를 덮어쓰지 않는다.** 만료는 **읽을 때 해석**합니다 (`get_effective_plan`). 행을 lite로 쓰면 갱신 배치가 청구 대상을 잃고 이력이 사라집니다 (24장).
-- **`PlanLimitError`를 `ValueError`로 바꾸지 않는다.** api 모듈의 `except ValueError → 400`에 잡혀 업그레이드 유도가 일반 입력 오류로 뭉개집니다.
+- **`PlanLimitError`를 `ValueError`(`BadRequestError`)로 바꾸지 않는다.** 400 핸들러나 라우트의 `except ValueError`에 잡혀 업그레이드 유도가 일반 입력 오류로 뭉개집니다.
+- **서비스의 사용자 오류는 `services/errors.py`의 `BadRequestError`(400)·`ForbiddenError`(403)·`NotFoundError`(404)로 던진다.** `main.py`의 전역 핸들러가 `{"detail": str(error)}`로 바꾸므로 라우트에 `try/except → HTTPException`을 반복하지 않습니다. 메시지는 그대로 사용자에게 보이니 한국어 사용자 문구만 담습니다. **내장 `ValueError`·`LookupError`는 매핑되지 않아 500이 됩니다**(버그를 4xx로 덮지 않기 위해서). 라우터만 올린 테스트 앱은 `main.add_service_error_handlers(app)`를 불러야 같은 응답이 나옵니다.
 - **비전 쿼터를 Gemini 호출 성공 후에 차감하지 않는다.** 동시 요청이 전부 한도를 통과합니다. 선차감 → 실패 시 환불이 규약입니다.
 - **`estimate` 조회 경로에 LLM을 넣지 않는다.** LLM은 **미등록 라벨을 1회 적재할 때만** 씁니다. 조회는 항상 DB를 읽습니다 — 같은 음식이 요청마다 다른 kcal을 내면 안 됩니다 (`docs/DATA_MODEL.md` 13·19장).
 - **`source='llm'` 행에 유사도(trgm) 매칭을 허용하지 않는다.** 추정값에 유사도를 얹으면 한 번의 오추정이 이름이 비슷한 다른 음식들로 번집니다. llm 행은 **정확·공백무시 일치만** 반환합니다.
@@ -268,7 +269,7 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 |--------|------|
 | `master` | 기본 브랜치(`origin/HEAD`)이자 **배포 기준**. 작업 브랜치를 여기 머지한 뒤 배포합니다 |
 | `dev` | ~~배포 트리거(NCP)~~ **사문화.** `deploy.yml`이 `dev` push → NCP 배포로 남아 있으나 dev를 push하지 않으므로 아무 일도 하지 않습니다. NCP Object Storage도 중단됐습니다 |
-| `release` | ~~배포 브랜치~~ **방치됨** (2026-07-12에 멈춤, master보다 22커밋 뒤). 쓰지 마세요 — 이걸 pull하던 `deploy/redeploy.sh`는 2026-07-16에 `master` 기준으로 고쳤습니다 |
+| `release` | ~~배포 브랜치~~ **방치됨** (2026-07-12에 멈춤, master보다 22커밋 뒤). 쓰지 마세요 (서버 git pull 방식이던 `deploy/redeploy.sh`는 2026-09-14에 삭제 — 운영 서버 트리에 `.git`이 없습니다) |
 | `ck-local` | 로컬 작업 브랜치 |
 
 **배포는 `bash deploy/local_deploy.sh --web --migrate`** (Lightsail, 운영 `https://api.kcalai.link`). SSH 설정은 `deploy/deploy.local.env`에 있습니다. 절차·주의는 **`deploy/DEPLOY.md`가 정본**입니다.

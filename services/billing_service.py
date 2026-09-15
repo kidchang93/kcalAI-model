@@ -16,7 +16,6 @@
 복호화해 쓴다. 로그·응답에 실어 나르지 않는다.
 """
 
-import logging
 import uuid
 from calendar import monthrange
 from datetime import datetime, timedelta
@@ -24,9 +23,10 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from log_utils import setup_level_logger
+from log_utils import get_logger
 from models.subscription_model import BillingKey, Payment, Plan, UserSubscription
 from services import toss_client
+from services.errors import BadRequestError
 from services.subscription_service import (
     STATUS_ACTIVE,
     STATUS_CANCELED,
@@ -38,8 +38,7 @@ from services.subscription_service import (
 from services.toss_client import TossError
 from timeutil import UTC
 
-info_logger = setup_level_logger(logging.INFO)
-error_logger = setup_level_logger(logging.ERROR)
+logger = get_logger(__name__)
 
 # user_subscriptions.status 는 subscription_service 가 정의한다 (위 import).
 # payments.status
@@ -125,7 +124,7 @@ def _ensure_paid_plan(db: Session, plan_code: str) -> Plan:
     plan = get_purchasable_plan(db, plan_code)
 
     if plan.price_krw <= 0:
-        raise ValueError("무료 요금제는 결제가 필요하지 않습니다.")
+        raise BadRequestError("무료 요금제는 결제가 필요하지 않습니다.")
 
     return plan
 
@@ -183,7 +182,7 @@ def confirm_billing(
     subscription = get_subscription(db, user_id)
 
     if _is_duplicate_confirm(subscription, plan.code, datetime.now(UTC)):
-        info_logger.info(f"billing confirm skip(duplicate) user_id={user_id} plan={plan.code}")
+        logger.info(f"billing confirm skip(duplicate) user_id={user_id} plan={plan.code}")
         return subscription
 
     issued = toss_client.issue_billing_key(auth_key, customer_key)
@@ -198,7 +197,7 @@ def confirm_billing(
     subscription = _activate_subscription(db, user_id, plan.code, datetime.now(UTC))
     _mark_payment_done(payment, charge)
     db.commit()
-    info_logger.info(
+    logger.info(
         f"billing confirm ok user_id={user_id} plan={plan.code} order_id={payment.order_id}"
     )
     return subscription
@@ -387,7 +386,7 @@ def refund_payment(
     db.refresh(payment)
 
     # 금액·사유는 남기되 결제키는 로그에 넣지 않는다 (재청구 자격증명이다).
-    info_logger.info(
+    logger.info(
         f"refund done payment_id={payment.id} order_id={payment.order_id} "
         f"amount={payment.refunded_amount} status={result.status}"
     )
@@ -438,12 +437,12 @@ def sync_payment_from_toss(db: Session, order_id: str) -> str:
         # 우리 원장엔 있는데 토스는 모르는 주문이다(청구 호출 전에 끊긴 `ready` 행이 이 모양이다).
         # 재전송해도 같은 404 라 예외를 삼키고 닫는다. 원장은 건드리지 않는다 — 토스가 모른다는
         # 것은 "승인된 적 없다"는 뜻이지만, 그 판정을 이 경로에서 확정할 근거는 아니다.
-        error_logger.error(f"webhook order unknown to toss order_id={order_id}")
+        logger.error(f"webhook order unknown to toss order_id={order_id}")
         return "not-found"
 
     if snapshot.total_amount and snapshot.total_amount != payment.amount:
         # 우리가 만든 주문번호라 일어날 수 없다. 일어났다면 우리 쪽 버그이므로 남긴다.
-        error_logger.error(
+        logger.error(
             f"webhook amount mismatch order_id={order_id} "
             f"ledger={payment.amount} toss={snapshot.total_amount}"
         )
@@ -481,7 +480,7 @@ def _apply_cancel(db: Session, payment: Payment, snapshot: toss_client.PaymentSn
     # 사유**이고, 환불 근거로 보존해야 할 기록이다 (LEGAL_COMPLIANCE.md §2).
     payment.refund_reason = (snapshot.cancel_reason or "결제사 취소")[:200]
     db.commit()
-    info_logger.info(
+    logger.info(
         f"webhook cancel applied order_id={payment.order_id} "
         f"amount={payment.refunded_amount} status={snapshot.status}"
     )
@@ -513,7 +512,7 @@ def _apply_done(db: Session, payment: Payment, snapshot: toss_client.PaymentSnap
 
         if not _is_duplicate_confirm(subscription, payment.plan_code, now):
             _activate_subscription(db, payment.user_id, payment.plan_code, now)
-            info_logger.info(
+            logger.info(
                 f"webhook activate subscription user_id={payment.user_id} "
                 f"plan={payment.plan_code} order_id={payment.order_id}"
             )
@@ -521,7 +520,7 @@ def _apply_done(db: Session, payment: Payment, snapshot: toss_client.PaymentSnap
     db.commit()
     # 우리가 놓친 승인을 웹훅이 주워 온 것이라 error 로 남긴다 — 조용히 지나가면 청구 경로의
     # 타임아웃이 얼마나 자주 나는지 알 길이 없다.
-    error_logger.error(f"webhook done recovered order_id={payment.order_id}")
+    logger.error(f"webhook done recovered order_id={payment.order_id}")
     return "done"
 
 
@@ -534,7 +533,7 @@ def _apply_dead(db: Session, payment: Payment, snapshot: toss_client.PaymentSnap
     payment.fail_code = snapshot.status
     payment.fail_reason = "결제가 완료되지 않았습니다."
     db.commit()
-    info_logger.info(f"webhook dead applied order_id={payment.order_id} status={snapshot.status}")
+    logger.info(f"webhook dead applied order_id={payment.order_id} status={snapshot.status}")
     return "failed"
 
 
@@ -546,14 +545,14 @@ def cancel_billing(db: Session, user_id: int) -> UserSubscription:
     plan = get_plan(db, subscription.plan_code)
 
     if plan.price_krw <= 0:
-        raise ValueError("무료 요금제는 해지할 자동결제가 없습니다.")
+        raise BadRequestError("무료 요금제는 해지할 자동결제가 없습니다.")
 
     subscription.status = STATUS_CANCELED
     subscription.cancel_at_period_end = True
     # 다음 청구를 지운다 — 갱신 배치의 대상 조건에서 빠진다.
     subscription.next_billing_at = None
     db.commit()
-    info_logger.info(f"billing cancel ok user_id={user_id} plan={plan.code}")
+    logger.info(f"billing cancel ok user_id={user_id} plan={plan.code}")
     return subscription
 
 
@@ -586,15 +585,15 @@ def charge_due_subscriptions(db: Session, now: datetime | None = None) -> dict:
         except TossError as error:
             # 청구 실패(카드 거절·결제사 장애). _renew 안에서 원장·구독 상태를 이미 확정했다.
             result["failed"] += 1
-            error_logger.error(
+            logger.error(
                 f"billing renew fail user_id={subscription.user_id} code={error.code}"
             )
         except Exception as error:  # noqa: BLE001 - 배치는 어떤 예외로도 멈추면 안 된다
             db.rollback()
             result["failed"] += 1
-            error_logger.error(f"billing renew error user_id={subscription.user_id}: {error!r}")
+            logger.error(f"billing renew error user_id={subscription.user_id}: {error!r}")
 
-    info_logger.info(
+    logger.info(
         f"billing renew batch due={result['due']} charged={result['charged']} "
         f"failed={result['failed']} skipped={result['skipped']}"
     )
@@ -621,7 +620,7 @@ def _renew(db: Session, subscription: UserSubscription, now: datetime) -> bool:
         subscription.status = STATUS_PAST_DUE
         subscription.next_billing_at = None
         db.commit()
-        error_logger.error(f"billing renew skip user_id={user_id}: 등록된 결제수단 없음")
+        logger.error(f"billing renew skip user_id={user_id}: 등록된 결제수단 없음")
         return False
 
     payment = _create_ready_payment(db, user_id, plan, plan.price_krw)
@@ -652,7 +651,7 @@ def _renew(db: Session, subscription: UserSubscription, now: datetime) -> bool:
     subscription.current_period_end = period_end
     subscription.next_billing_at = period_end
     db.commit()
-    info_logger.info(
+    logger.info(
         f"billing renew ok user_id={user_id} plan={plan.code} order_id={payment.order_id}"
     )
     return True

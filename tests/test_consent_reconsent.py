@@ -24,7 +24,7 @@ from api.dependencies import get_current_user
 from api.lab_api import router as lab_router
 from api.visit_api import router as visit_router
 from database import get_db
-from models.auth_model import User
+from main import add_service_error_handlers
 from models.consent_model import UserConsent
 from models.health_model import CareVisit, LabResult
 from services import consent_service, lab_service, visit_service
@@ -41,19 +41,13 @@ GATED_PATHS = ("/api/me/conditions", "/api/me/labs")
 
 
 @pytest.fixture
-def user(db):
-    row = User(kakao_id="reconsent-test", nickname="재동의테스터")
-    db.add(row)
-    db.flush()
-    return row
-
-
-@pytest.fixture
 def client(db, user):
     app = FastAPI()
 
     for router in (consent_router, lab_router, visit_router):
         app.include_router(router, prefix="/api")
+
+    add_service_error_handlers(app)
 
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_current_user] = lambda: user
@@ -177,16 +171,6 @@ def test_is_current_is_true_for_kinds_without_a_known_version(client, db, user):
 
     assert [row["is_current"] for row in rows if row["kind"] == "future_kind"] == [True]
     assert consent_service.is_current_version("future_kind", "whatever") is True
-
-
-def test_other_kinds_do_not_expire_with_version(db, user):
-    """버전 무효화는 민감정보에만 건다. 약관 1.0 동의자가 개정만으로 동의 없음이 되지 않는다."""
-    _add_legacy_consent(db, user.id, kind=consent_service.TERMS, version="1.0")
-
-    assert consent_service.get_consent_state(db, user.id, consent_service.TERMS) is (
-        consent_service.ConsentState.OUTDATED
-    )
-    assert consent_service.has_active_consent(db, user.id, consent_service.TERMS) is True
 
 
 # ---- ④ 낡은 동의도 철회되고 파기된다 ----

@@ -1,7 +1,6 @@
 import random
 from datetime import date
 from math import ceil
-from typing import NamedTuple
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -79,27 +78,30 @@ TAG_REASON_PHRASES = {
 }
 
 
-class RecommendationResult(NamedTuple):
-    recommendation: DietRecommendation
-    cached: bool
-    tips: list[str]
-    # 응답용 items — 저장된 items 에 상대 등급을 매 요청 얹은 것이다. 등급을 저장하지 않는 이유는
-    # 사용자가 질병을 추가·삭제하면 캐시된 등급이 어긋나기 때문이다 (tips 와 같은 정책).
-    items: list[dict]
-    # 등급을 실제로 얹었을 때만 채워지는 고지. 등급 없는 사용자에겐 None.
-    tier_notice: str | None
-
-
 def get_recommendation(
     db: Session,
     user_id: int,
     rec_date: date,
     meal_type: str,
-) -> RecommendationResult:
+) -> dict:
+    """RecommendationResponse 형태의 dict 를 반환한다."""
     # tips 는 현재 질병 기준으로 매 요청 계산한다 (저장 안 함) — 캐시된 추천에도 최신 안내가 붙는다.
     conditions = meta_service.list_user_condition_types(db, user_id)
-    tips = _condition_tips(conditions)
     stage = meta_service.get_user_ckd_stage(db, user_id)
+
+    def respond(recommendation: DietRecommendation, cached: bool) -> dict:
+        return {
+            "meal_type": recommendation.meal_type,
+            "rec_date": recommendation.rec_date,
+            # 저장된 items 가 아니라 상대 등급을 매 요청 얹은 응답용 items 다. 등급을 저장하지 않는
+            # 이유는 사용자가 질병을 추가·삭제하면 캐시된 등급이 어긋나기 때문이다 (CKD_NUTRITION.md 3-4).
+            "items": _annotate_tiers(recommendation.items, conditions, stage),
+            "excluded": recommendation.excluded,
+            "tips": _condition_tips(conditions),
+            # 등급을 실제로 얹었을 때만 채워지는 고지. 등급 없는 사용자에겐 None.
+            "tier_notice": _tier_notice(conditions),
+            "cached": cached,
+        }
 
     cached = db.scalar(
         select(DietRecommendation).where(
@@ -109,13 +111,7 @@ def get_recommendation(
         )
     )
     if cached is not None:
-        return RecommendationResult(
-            cached,
-            True,
-            tips,
-            _annotate_tiers(cached.items, conditions, stage),
-            _tier_notice(conditions),
-        )
+        return respond(cached, True)
 
     # 남은 칼로리는 summary 와 동일 산식 (target_kcal - consumed, 목표 미설정이면 None).
     remaining_kcal = health_service.get_summary(db, user_id, rec_date)["remaining_kcal"]
@@ -143,13 +139,7 @@ def get_recommendation(
     db.add(recommendation)
     db.commit()
     db.refresh(recommendation)
-    return RecommendationResult(
-        recommendation,
-        False,
-        tips,
-        _annotate_tiers(recommendation.items, conditions, stage),
-        _tier_notice(conditions),
-    )
+    return respond(recommendation, False)
 
 
 def _tier_axes(conditions: list[ConditionType]) -> tuple[bool, bool]:

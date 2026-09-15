@@ -1,10 +1,11 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from database import Base
+from database import Base, CreatedAt, UpdatedAt
+from timeutil import day_bounds_utc
 
 
 class UserProfile(Base):
@@ -17,15 +18,8 @@ class UserProfile(Base):
     height_cm: Mapped[Decimal] = mapped_column(Numeric(5, 1), nullable=False)
     weight_kg: Mapped[Decimal] = mapped_column(Numeric(5, 1), nullable=False)
     activity_level: Mapped[str] = mapped_column(String(20), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
+    created_at: Mapped[CreatedAt]
+    updated_at: Mapped[UpdatedAt]
 
 
 class UserGoal(Base):
@@ -36,9 +30,7 @@ class UserGoal(Base):
     goal_type: Mapped[str] = mapped_column(String(10), nullable=False)
     target_kcal: Mapped[int] = mapped_column(Integer, nullable=False)
     target_weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(5, 1), nullable=True)
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    started_at: Mapped[CreatedAt]
     # 목표 변경 시 이전 행을 닫는다 (이력 보존). 열려 있는 목표는 NULL.
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -48,26 +40,24 @@ class MealLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
-    logged_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), index=True, nullable=False
-    )
+    logged_at: Mapped[CreatedAt] = mapped_column(index=True)
     meal_type: Mapped[str] = mapped_column(String(10), nullable=False)
     # 첫 릴리즈는 항상 NULL. 마이그레이션 없이 후추가가 불가능하므로 컬럼만 선반영한다.
     photo_s3_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # meal_items 합계의 캐시. 단일 진실은 meal_items.
     total_kcal: Mapped[int] = mapped_column(Integer, nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
+    created_at: Mapped[CreatedAt]
+    updated_at: Mapped[UpdatedAt]
 
     items: Mapped[list["MealItem"]] = relationship(back_populates="meal_log")
+
+    @classmethod
+    def live_between(cls, user_id: int, start_date: date, end_date: date) -> tuple:
+        """그 사용자의 삭제되지 않은 끼니 중 [start_date, end_date] (양끝 포함, UTC 하루 경계) 조건."""
+        start, _ = day_bounds_utc(start_date)
+        _, end = day_bounds_utc(end_date)
+        return (cls.user_id == user_id, cls.deleted_at.is_(None), cls.logged_at >= start, cls.logged_at < end)
 
 
 class MealItem(Base):
@@ -98,9 +88,7 @@ class MealItem(Base):
     phosphorus_mg: Mapped[Decimal | None] = mapped_column(Numeric(8, 1), nullable=True)
     sugar_g: Mapped[Decimal | None] = mapped_column(Numeric(6, 1), nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    created_at: Mapped[CreatedAt]
 
     meal_log: Mapped["MealLog"] = relationship(back_populates="items")
 
@@ -110,13 +98,9 @@ class WeightLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
-    measured_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), index=True, nullable=False
-    )
+    measured_at: Mapped[CreatedAt] = mapped_column(index=True)
     weight_kg: Mapped[Decimal] = mapped_column(Numeric(5, 1), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    created_at: Mapped[CreatedAt]
 
 
 class FoodNutrition(Base):
@@ -142,9 +126,7 @@ class FoodNutrition(Base):
     food_group: Mapped[str | None] = mapped_column(String(30), index=True, nullable=True)
     # llm / mfds / curated.
     source: Mapped[str] = mapped_column(String(20), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    created_at: Mapped[CreatedAt]
 
 
 class ExerciseLog(Base):
@@ -171,12 +153,8 @@ class ExerciseLog(Base):
     source: Mapped[str] = mapped_column(String(20), nullable=False, server_default="manual")
     memo: Mapped[str | None] = mapped_column(String(200), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
-    )
+    created_at: Mapped[CreatedAt]
+    updated_at: Mapped[UpdatedAt]
 
 
 class ExerciseGoal(Base):
@@ -194,13 +172,9 @@ class ExerciseGoal(Base):
     # 중강도 환산 분 (고강도는 2배로 환산해 비교한다).
     weekly_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     weekly_strength_days: Mapped[int] = mapped_column(Integer, nullable=False)
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    started_at: Mapped[CreatedAt]
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    created_at: Mapped[CreatedAt]
 
 
 class LabResult(Base):
@@ -230,9 +204,7 @@ class LabResult(Base):
     unit: Mapped[str] = mapped_column(String(20), nullable=False)
     source: Mapped[str] = mapped_column(String(10), nullable=False, server_default="manual")
     note: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    created_at: Mapped[CreatedAt]
 
 
 class CareVisit(Base):
@@ -264,9 +236,5 @@ class CareVisit(Base):
     outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
     report_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     report_to: Mapped[date | None] = mapped_column(Date, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
-    )
+    created_at: Mapped[CreatedAt]
+    updated_at: Mapped[UpdatedAt]

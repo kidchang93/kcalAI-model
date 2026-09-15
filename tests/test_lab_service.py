@@ -9,18 +9,10 @@ from decimal import Decimal
 
 import pytest
 
-from models.auth_model import User
+from factories import make_user
 from services import lab_panels, lab_service
 
 MEASURED = date(2026, 8, 1)
-
-
-@pytest.fixture
-def user(db):
-    row = User(kakao_id="lab-test", nickname="검사테스터")
-    db.add(row)
-    db.flush()
-    return row
 
 
 def test_same_day_same_panel_overwrites(db, user):
@@ -62,9 +54,7 @@ def test_plausible_but_abnormal_value_is_saved(db, user):
 
 def test_delete_hides_other_users_rows(db, user):
     """남의 것과 없는 것을 구분하지 않는다 (다른 삭제 라우트와 같은 존재 은닉)."""
-    other = User(kakao_id="lab-test-other", nickname="남")
-    db.add(other)
-    db.flush()
+    other = make_user(db, kakao_id="lab-test-other", nickname="남")
 
     row = lab_service.save_result(db, other.id, MEASURED, "egfr", Decimal("55"))
 

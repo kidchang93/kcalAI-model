@@ -25,23 +25,16 @@ def list_guide_summaries(db: Session, user_id: int) -> list[dict]:
     if consent_service.has_active_consent(db, user_id):
         mine = {row.code for row in meta_service.list_user_condition_types(db, user_id)}
 
-    summaries = []
-
-    for code in nutrition_guide.available_conditions():
-        guide = nutrition_guide.get_guide(code)
-
-        if guide is None:  # pragma: no cover - available_conditions 가 보증한다
-            continue
-
-        summaries.append(
-            {
-                "condition": guide.condition,
-                "label": guide.label,
-                "intro": guide.intro,
-                "axis_count": len(guide.axes),
-                "is_mine": guide.condition in mine,
-            }
-        )
+    summaries = [
+        {
+            "condition": guide.condition,
+            "label": guide.label,
+            "intro": guide.intro,
+            "axis_count": len(guide.axes),
+            "is_mine": guide.condition in mine,
+        }
+        for guide in nutrition_guide._GUIDES.values()
+    ]
 
     # 내 질환을 앞에 둔다. 홈 카드는 앞에서부터 그리므로 순서가 곧 노출 우선순위다.
     # 안정 정렬이라 전부 false 면 기본 순서가 그대로 유지된다.

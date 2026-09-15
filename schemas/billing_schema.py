@@ -28,10 +28,6 @@ class BillingConfirmRequest(BaseModel):
     plan_code: str
 
 
-class BillingError(BaseModel):
-    detail: str
-
-
 class TossWebhookEvent(BaseModel):
     """토스 웹훅 본문 (29장).
 

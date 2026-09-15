@@ -1,11 +1,9 @@
+from dataclasses import asdict
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException, Query
 
-from api.consent_api import require_sensitive_consent
-from database import get_db
-from models.auth_model import User
+from api.dependencies import DB, ConsentedUser
 from models.health_model import LabResult
 from schemas.lab_schema import (
     LabPanelListResponse,
@@ -48,24 +46,12 @@ def _to_response(row: LabResult) -> LabResultResponse:
 
 
 @router.get("/me/lab-panels", response_model=LabPanelListResponse)
-def list_lab_panels(
-    current_user: User = Depends(require_sensitive_consent),
-    db: Session = Depends(get_db),
-):
+def list_lab_panels(current_user: ConsentedUser, db: DB):
     """입력 가능한 검사 항목·단위·정상범위. **앱이 의학 용어와 수치를 갖지 않게 한다.**"""
     mine = {row.code for row in meta_service.list_user_condition_types(db, current_user.id)}
 
     options = [
-        LabPanelOption(
-            code=panel.code,
-            label=panel.label,
-            unit=panel.unit,
-            reference=panel.reference,
-            source=panel.source,
-            conditions=list(panel.conditions),
-            decimals=panel.decimals,
-            is_mine=bool(mine & set(panel.conditions)),
-        )
+        LabPanelOption(**asdict(panel), is_mine=bool(mine & set(panel.conditions)))
         for panel in lab_panels.PANELS
     ]
 
@@ -76,33 +62,18 @@ def list_lab_panels(
 
 
 @router.post("/me/labs", response_model=LabResultResponse, status_code=201)
-def create_lab_result(
-    request: LabResultRequest,
-    current_user: User = Depends(require_sensitive_consent),
-    db: Session = Depends(get_db),
-):
-    try:
-        row = lab_service.save_result(
-            db,
-            user_id=current_user.id,
-            measured_on=request.measured_on,
-            panel=request.panel,
-            value=request.value,
-            note=request.note,
-        )
-    except (lab_service.UnknownPanelError, lab_service.ValueOutOfRangeError) as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
+def create_lab_result(request: LabResultRequest, current_user: ConsentedUser, db: DB):
+    row = lab_service.save_result(db, user_id=current_user.id, **request.model_dump())
     return _to_response(row)
 
 
 @router.get("/me/labs", response_model=LabResultListResponse)
 def list_lab_results(
+    current_user: ConsentedUser,
+    db: DB,
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
     panel: str | None = Query(default=None, max_length=30),
-    current_user: User = Depends(require_sensitive_consent),
-    db: Session = Depends(get_db),
 ):
     rows = lab_service.list_results(
         db, current_user.id, start_date=start_date, end_date=end_date, panel=panel
@@ -115,11 +86,7 @@ def list_lab_results(
 
 
 @router.delete("/me/labs/{result_id}", status_code=204)
-def delete_lab_result(
-    result_id: int,
-    current_user: User = Depends(require_sensitive_consent),
-    db: Session = Depends(get_db),
-):
+def delete_lab_result(result_id: int, current_user: ConsentedUser, db: DB):
     if not lab_service.delete_result(db, current_user.id, result_id):
         # 남의 것과 없는 것을 구분하지 않는다 (다른 삭제 라우트와 같은 존재 은닉 규칙).
         raise HTTPException(status_code=404, detail="기록을 찾을 수 없습니다.")

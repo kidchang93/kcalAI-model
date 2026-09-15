@@ -45,23 +45,18 @@ DATA_MODEL.md 12장 규칙:
 import argparse
 import csv
 import re
-import statistics
 import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from sqlalchemy.dialects.postgresql import insert
-
 # 스크립트를 scripts/ 밖의 로컬 모듈(database, models)과 연결한다.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from database import SessionLocal  # noqa: E402
-from models.health_model import FoodNutrition  # noqa: E402
+from food_upsert import upsert  # noqa: E402
 
 SOURCE_MFDS = "mfds"
 # mfds(실측)는 llm(추정)보다 우선하고, 재실행 시 자기 자신도 갱신한다. curated 는 감수 콘텐츠라 보존.
 OVERWRITABLE_SOURCES = ("llm", SOURCE_MFDS)
-BATCH_SIZE = 1000
 
 _AMOUNT_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(g|ml|l)?\s*$", re.IGNORECASE)
 
@@ -191,8 +186,6 @@ def build_record(row: dict[str, str]) -> dict | None:
         "phosphorus_mg": scale(parse_nutrient(row["인(mg)"]), factor),
         "food_group": row["식품대분류명"].strip()[:30],
         "source": SOURCE_MFDS,
-        # 중복 식품명 선택 기준 (upsert 전 dedupe 용, DB 에는 넣지 않는다).
-        "_has_serving": serving is not None,
     }
 
 
@@ -224,7 +217,6 @@ def load_records(csv_path: Path) -> list[dict]:
             skipped += 1
             continue
 
-        del record["_has_serving"]
         records.append(record)
 
     print(
@@ -233,40 +225,6 @@ def load_records(csv_path: Path) -> list[dict]:
         f"→ 적재 {len(records)}건"
     )
     return records
-
-
-def upsert(records: list[dict]) -> None:
-    table = FoodNutrition.__table__
-    session = SessionLocal()
-    try:
-        for start in range(0, len(records), BATCH_SIZE):
-            batch = records[start : start + BATCH_SIZE]
-            statement = insert(table).values(batch)
-            statement = statement.on_conflict_do_update(
-                index_elements=[table.c.food_label],
-                set_={
-                    column: statement.excluded[column]
-                    for column in (
-                        "kcal_per_serving",
-                        "serving_desc",
-                        "serving_size_g",
-                        "carbs_g",
-                        "protein_g",
-                        "fat_g",
-                        "sugar_g",
-                        "sodium_mg",
-                        "potassium_mg",
-                        "phosphorus_mg",
-                        "food_group",
-                        "source",
-                    )
-                },
-                where=table.c.source.in_(OVERWRITABLE_SOURCES),
-            )
-            session.execute(statement)
-        session.commit()
-    finally:
-        session.close()
 
 
 def main() -> None:
@@ -278,7 +236,7 @@ def main() -> None:
         parser.error(f"CSV 파일을 찾을 수 없습니다: {args.csv_path}")
 
     records = load_records(args.csv_path)
-    upsert(records)
+    upsert(records, OVERWRITABLE_SOURCES)
     print(f"upsert 완료: {len(records)}건 (source={SOURCE_MFDS})")
 
 

@@ -353,8 +353,8 @@ KDA2025 권고 6 본문 그대로:
 |---|---:|---|---|
 | `HTN_SODIUM_MG_PER_DAY` | **2,000** | KSH2026 권고 21 (I, A) | 지침 수치 |
 | `DM_SODIUM_MG_PER_DAY` | **2,300** | KDA2025 권고 9 | 지침 수치 |
-| `DKD_SODIUM_MG_PER_DAY` | **2,000** | KSN-DKD 4.1.1 | 지침 수치 |
-| `SODIUM_MG_PER_DAY_FLOOR` | **1,500** (이 아래로 유도하지 않음) | KDA2025 권고 9 본문 | 지침 수치 |
+| `DKD_SODIUM_MG_PER_DAY` | **2,000** | KSN-DKD 4.1.1 | 지침 수치 · 코드에 없음(소비처 0건이라 2026-09-14 제거) |
+| `SODIUM_MG_PER_DAY_FLOOR` | **1,500** (이 아래로 유도하지 않음) | KDA2025 권고 9 본문 | 지침 수치 · 코드에 없음(소비처 0건이라 2026-09-14 제거) |
 | `POTASSIUM_AI_MG_PER_DAY` | **3,500** | KDRI2025 충분섭취량 / 표시기준 1일 기준치 동일 | 지침 수치 |
 | `POTASSIUM_WHO_MIN_MG` | **3,510** | WHO-K | 지침 수치 |
 | `ADDED_SUGAR_ENERGY_PCT_MAX` | **10** (총당류는 20) | KDRI2025 · WHO-Sugar | 지침 수치 ⚠️ DB는 총당류 |

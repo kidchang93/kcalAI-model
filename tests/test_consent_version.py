@@ -11,12 +11,16 @@
 카카오 회원번호는 다른 테스트와 겹치지 않도록 8500000xxx 대역을 쓴다.
 """
 
+from functools import partial
+
 import pytest
 from sqlalchemy import select
 
-from models.auth_model import User
+from factories import make_user
 from models.consent_model import UserConsent
 from services import auth_service, consent_service
+
+_make_user = partial(make_user, nickname="버전테스터")
 
 
 def _issue_link_code(db, kakao_id: str) -> str:
@@ -102,13 +106,6 @@ def test_signup_without_versions_falls_back_to_server_constants(db):
 
 
 # ---- 민감정보 동의: 아무 문자열이나 받지 않는다 ----
-
-def _make_user(db, kakao_id: str) -> User:
-    user = User(kakao_id=kakao_id, nickname="버전테스터")
-    db.add(user)
-    db.commit()
-    return user
-
 
 def test_create_consent_rejects_unknown_version(db):
     """실측으로 확인된 구멍: 임의 문자열이 201 로 저장됐다."""

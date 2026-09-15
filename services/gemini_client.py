@@ -7,40 +7,30 @@
 """
 
 import json
-import logging
 import os
 import time
 
 from google import genai
-from google.genai import errors as genai_errors
 from google.genai import types
-
-from log_utils import setup_level_logger
 
 # flash-latest는 항상 현행 stable flash를 가리켜 모델 폐기(deprecation)에 안 깨진다.
 # 재현성이 필요하면 env로 핀 버전(예: gemini-3.5-flash)을 지정한다.
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 # Gemini 호출 타임아웃(ms). google-genai HttpOptions.timeout 단위는 밀리초.
 GEMINI_TIMEOUT_MS = int(os.getenv("GEMINI_TIMEOUT_MS", "15000"))
-# 일시 오류 재시도: 최대 횟수와 백오프 기준 지연(초). 지연 = base * 2**attempt.
+# 일시 오류 재시도 횟수. 재시도·백오프는 SDK(tenacity)가 한다 — 429·5xx 와 httpx 타임아웃·연결 오류.
+# SDK 는 지연에 0~1초 지터를 더하고(끌 수 없다), 재시도 로그는 SDK 로거(INFO)로 간다.
 MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "2"))
-_RETRY_BASE_DELAY = 0.5
-
-error_logger = setup_level_logger(logging.ERROR)
+_RETRY_OPTIONS = types.HttpRetryOptions(
+    attempts=MAX_RETRIES + 1,
+    initial_delay=0.5,
+    # ServerError(5xx 전체)를 재시도하던 기존 판정과 같게 둔다.
+    http_status_codes=[429, *range(500, 600)],
+)
 
 
 class GeminiError(Exception):
     """Gemini 호출·파싱 실패(재시도 소진 포함). 호출한 서비스가 자기 예외로 감싼다."""
-
-
-def _is_transient(error: Exception) -> bool:
-    """재시도할 가치가 있는 일시 오류인가 — 429·5xx·타임아웃·네트워크."""
-    if isinstance(error, genai_errors.ServerError):
-        return True
-    if isinstance(error, genai_errors.ClientError) and getattr(error, "code", None) == 429:
-        return True
-    name = type(error).__name__.lower()
-    return "timeout" in name or "connect" in name
 
 
 def ensure_api_key() -> None:
@@ -69,7 +59,7 @@ def generate_json(
 ) -> tuple[dict, float]:
     """structured JSON 응답을 받아 (파싱된 dict, 소요 ms)로 반환한다.
 
-    일시 오류는 지수 백오프로 재시도하고, 최종 실패·파싱 실패는 GeminiError로 던진다.
+    일시 오류는 SDK 가 지수 백오프로 재시도하고, 최종 실패·파싱 실패는 GeminiError로 던진다.
     temperature=0 을 주면 같은 입력의 응답 변동이 줄어든다(영양 추정이 사용).
     """
     client = get_client()
@@ -78,30 +68,14 @@ def generate_json(
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema=response_schema,
-        http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
+        http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS, retry_options=_RETRY_OPTIONS),
         temperature=temperature,
     )
 
-    response = None
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=contents,
-                config=config,
-            )
-        except Exception as error:  # 키 노출 방지: 원문 대신 타입명만 로그/예외에 쓴다.
-            if attempt < MAX_RETRIES and _is_transient(error):
-                delay = _RETRY_BASE_DELAY * (2**attempt)
-                error_logger.error(
-                    f"gemini 일시 오류 재시도 {attempt + 1}/{MAX_RETRIES} "
-                    f"({type(error).__name__}) delay={delay}s"
-                )
-                time.sleep(delay)
-                continue
-            raise GeminiError(f"Gemini 호출 실패: {type(error).__name__}") from error
-        else:
-            break  # 성공
+    try:
+        response = client.models.generate_content(model=GEMINI_MODEL, contents=contents, config=config)
+    except Exception as error:  # 키 노출 방지: 원문 대신 타입명만 예외에 쓴다.
+        raise GeminiError(f"Gemini 호출 실패: {type(error).__name__}") from error
 
     duration_ms = (time.perf_counter() - started) * 1000
 

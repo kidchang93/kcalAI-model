@@ -17,8 +17,8 @@ FastAPI 서버(Gemini 비전 + 식약처 DB)를 **AWS Lightsail Ubuntu**에 올�
 >
 > **`release` 브랜치는 2026-07-12에 멈춰 있다**(master보다 22커밋 뒤) — 이 문서가 오래 "배포 브랜치는
 > release"라고 적어 뒀지만 실제 배포는 `local_deploy.sh`가 작업 트리를 올리는 방식이라 그 브랜치를
-> 거치지 않는다. **방치된 브랜치이므로 쓰지 말 것.** (2026-07-16: 이 낡은 브랜치를 pull하던
-> `deploy/redeploy.sh`의 `BRANCH`를 `master`로 고쳤다.)
+> 거치지 않는다. **방치된 브랜치이므로 쓰지 말 것.** (서버 git pull 방식이던 `deploy/redeploy.sh`는
+> 2026-09-14에 삭제했다 — 운영 서버 트리에는 `.git`이 없다.)
 >
 > `.github/workflows/deploy.yml`(dev → NCP)은 **사문화**다: dev를 push하지 않으므로 아무 일도 하지 않는다.
 > **git push는 배포를 트리거하지 않는다** — push는 GitHub 원격만 갱신한다.
@@ -206,11 +206,6 @@ bash kcalAI-model/deploy/local_deploy.sh --web --migrate
 **웹 프런트 서빙**: `--web`을 주면 `build-web.sh`가 Expo 웹을 `webapp/`으로 내보내고 서버에 올린다.
 FastAPI가 `webapp/`를 `/`로 서빙하므로, 서브도메인(`https://api.kcalai.link`)에서 웹으로도 접속된다.
 
-> **대안(서버 git pull 방식)**: 서버에 repo를 clone해 두고 `deploy/redeploy.sh`로 pull·재시작하는
-> 경로가 있다. 기본 브랜치는 **`master`**이며 `BRANCH=... bash deploy/redeploy.sh`로 덮어쓸 수 있다.
-> (2026-07-16 이전에는 `release` 고정이라 낡은 코드가 올라가는 함정이었다.) 이 경로는 서버에 git·원격
-> 접근이 있어야 한다 — **현재 운영은 로컬 주도(`local_deploy.sh`) 방식이고, 서버에 repo가 clone돼 있지
-> 않으면 이 스크립트는 쓸 수 없다.**
 > GitHub Actions 자동 배포는 미구성(`deploy.yml`은 NCP/dev용 레거시 — 건드리지 않음).
 
 ---

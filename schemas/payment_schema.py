@@ -24,7 +24,3 @@ class PaymentItem(BaseModel):
 
 class PaymentsResponse(BaseModel):
     payments: list[PaymentItem]
-
-
-class PaymentError(BaseModel):
-    detail: str

@@ -52,11 +52,3 @@ class FeedingResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
-
-
-class MessageResponse(BaseModel):
-    message: str
-
-
-class PetError(BaseModel):
-    detail: str

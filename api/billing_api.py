@@ -1,20 +1,15 @@
-import logging
+from fastapi import APIRouter, HTTPException, status
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-
-from api.dependencies import get_current_user
-from database import get_db
-from log_utils import setup_level_logger
-from models.auth_model import User
+from api.dependencies import DB, CurrentUser
+from log_utils import get_logger
 from schemas.billing_schema import (
     BillingCheckoutRequest,
     BillingCheckoutResponse,
     BillingConfirmRequest,
-    BillingError,
     BillingWebhookAck,
     TossWebhookEvent,
 )
+from schemas.common_schema import ErrorResponse
 from schemas.subscription_schema import MySubscriptionResponse
 from services import billing_service
 from services.subscription_service import my_subscription_view
@@ -22,10 +17,10 @@ from services.toss_client import TossError, TossNotConfiguredError
 
 router = APIRouter()
 
-info_logger = setup_level_logger(logging.INFO)
+logger = get_logger(__name__)
 
 # 예외 → 상태코드 규약 (내부 예외 원문은 절대 나가지 않는다):
-#   ValueError              → 400  서비스가 만든 한국어 사용자 메시지
+#   BadRequestError         → 400  서비스가 만든 한국어 사용자 메시지 (main.py 전역 핸들러)
 #   TossNotConfiguredError  → 503  결제 키 미설정 (장애가 아니라 미구성)
 #   TossError               → 502  결제사 오류. TossError.message 는 우리가 통제하는 한국어 문구다
 _NOT_CONFIGURED_DETAIL = "결제 서비스를 준비 중입니다. 잠시 후 다시 시도해주세요."
@@ -35,41 +30,31 @@ _NOT_CONFIGURED_DETAIL = "결제 서비스를 준비 중입니다. 잠시 후 �
     "/billing/checkout",
     response_model=BillingCheckoutResponse,
     responses={
-        400: {"model": BillingError},
-        401: {"model": BillingError},
-        503: {"model": BillingError},
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
     },
 )
-def start_billing_checkout(
-    request: BillingCheckoutRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def start_billing_checkout(request: BillingCheckoutRequest, current_user: CurrentUser, db: DB):
     try:
         return billing_service.start_checkout(db, current_user.id, request.plan_code)
     except TossNotConfiguredError as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=_NOT_CONFIGURED_DETAIL
         ) from error
-    except ValueError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
 @router.post(
     "/billing/confirm",
     response_model=MySubscriptionResponse,
     responses={
-        400: {"model": BillingError},
-        401: {"model": BillingError},
-        502: {"model": BillingError},
-        503: {"model": BillingError},
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
     },
 )
-def confirm_billing(
-    request: BillingConfirmRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def confirm_billing(request: BillingConfirmRequest, current_user: CurrentUser, db: DB):
     try:
         billing_service.confirm_billing(
             db,
@@ -87,8 +72,6 @@ def confirm_billing(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=error.message
         ) from error
-    except ValueError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
     return my_subscription_view(db, current_user.id)
 
@@ -96,9 +79,9 @@ def confirm_billing(
 @router.post(
     "/billing/webhook",
     response_model=BillingWebhookAck,
-    responses={502: {"model": BillingError}, 503: {"model": BillingError}},
+    responses={502: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
 )
-def receive_billing_webhook(request: TossWebhookEvent, db: Session = Depends(get_db)):
+def receive_billing_webhook(request: TossWebhookEvent, db: DB):
     """토스 결제 상태 변경 알림 (DATA_MODEL.md 29장).
 
     **무인증이다** — 토스가 우리 Bearer 토큰을 가질 수 없다. 대신 본문을 믿지 않는 것으로
@@ -110,13 +93,13 @@ def receive_billing_webhook(request: TossWebhookEvent, db: Session = Depends(get
       502·503 — 토스 조회에 실패해 **아직 판단하지 못했다.** 재전송받아 다시 시도한다.
     """
     if request.event_type not in billing_service.HANDLED_WEBHOOK_EVENTS:
-        info_logger.info(f"webhook ignored event_type={request.event_type}")
+        logger.info(f"webhook ignored event_type={request.event_type}")
         return BillingWebhookAck()
 
     order_id = request.resolved_order_id
 
     if order_id is None:
-        info_logger.info(f"webhook ignored(no orderId) event_type={request.event_type}")
+        logger.info(f"webhook ignored(no orderId) event_type={request.event_type}")
         return BillingWebhookAck()
 
     try:
@@ -132,7 +115,7 @@ def receive_billing_webhook(request: TossWebhookEvent, db: Session = Depends(get
             status_code=status.HTTP_502_BAD_GATEWAY, detail=error.message
         ) from error
 
-    info_logger.info(f"webhook handled event_type={request.event_type} result={result}")
+    logger.info(f"webhook handled event_type={request.event_type} result={result}")
     # 응답에는 결과를 싣지 않는다 — 무인증 호출자에게 주문의 존재 여부를 알려 주지 않는다.
     return BillingWebhookAck()
 
@@ -140,16 +123,9 @@ def receive_billing_webhook(request: TossWebhookEvent, db: Session = Depends(get
 @router.post(
     "/billing/cancel",
     response_model=MySubscriptionResponse,
-    responses={400: {"model": BillingError}, 401: {"model": BillingError}},
+    responses={400: {"model": ErrorResponse}, 401: {"model": ErrorResponse}},
 )
-def cancel_billing(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def cancel_billing(current_user: CurrentUser, db: DB):
     # 해지는 우리 DB 상태 변경뿐이라 토스를 부르지 않는다 — 다음 청구를 하지 않는 것이 곧 해지다.
-    try:
-        billing_service.cancel_billing(db, current_user.id)
-    except ValueError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
-
+    billing_service.cancel_billing(db, current_user.id)
     return my_subscription_view(db, current_user.id)

@@ -18,7 +18,7 @@ kcal 비율이 아니라 **무게 비율**로 환산하는 것이 핵심이다 �
 
 - **정확 일치만 쓴다.** 유사도(trgm)·부분 문자열 매칭을 쓰지 않는다 — 이름이 비슷한 다른 음식의
   칼륨으로 "높다"고 알리면 틀린 경고가 되고, 경고는 한 번 틀리면 전부 무시된다
-  (`nutrition_service._measured_for_warning` 와 같은 규약).
+  (`nutrition_service.measured_nutrition_for` 와 같은 규약).
 - 같은 이름의 원본이 여러 행이면 **중앙값**을 쓴다 (`import_mfds_processed.py` 와 같은 방식).
 - **이미 값이 있는 행은 건드리지 않는다** (`sodium_mg IS NULL` 인 curated 행만 대상).
 - kcal·serving_desc·serving_size_g·source 는 **변경하지 않는다.**
@@ -209,8 +209,7 @@ def main() -> None:
     index = load_source_index(args.data_dir)
     print(f"  이름 {len(index):,}종")
 
-    session = SessionLocal()
-    try:
+    with SessionLocal() as session:
         # SQL 생성 모드는 **다른 환경(운영)에 적용할 문장**을 만드는 것이라, 로컬이 이미 채워져
         # 있어도 curated 전체를 계산 대상으로 삼는다. 실제 적용 여부는 생성된 SQL 의 WHERE
         # (`sodium_mg IS NULL`)가 대상 환경에서 판단한다.
@@ -315,8 +314,6 @@ def main() -> None:
             # 다만 "원본이 없다"고 단정하지 말 것 — 표기가 다를 뿐인 경우가 섞여 있다
             # (2026-08-03에 계란찜→달걀찜 등 7건이 그렇게 발견됐다, LABEL_ALIASES 주석).
             print(f"건너뜀(이름 못 찾음) {len(skipped_no_source)}건: {', '.join(skipped_no_source)}")
-    finally:
-        session.close()
 
 
 if __name__ == "__main__":

@@ -1,9 +1,9 @@
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from database import Base
+from database import Base, CreatedAt
 
 
 class Group(Base):
@@ -16,9 +16,7 @@ class Group(Base):
     kind: Mapped[str] = mapped_column(String(20), nullable=False)
     # 서버가 생성하는 참여 코드. 클라이언트가 지정할 수 없다.
     invite_code: Mapped[str] = mapped_column(String(12), unique=True, index=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    created_at: Mapped[CreatedAt]
 
 
 class GroupMember(Base):
@@ -30,9 +28,7 @@ class GroupMember(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
     # owner / member
     role: Mapped[str] = mapped_column(String(10), nullable=False)
-    joined_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    joined_at: Mapped[CreatedAt]
 
 
 class GroupPet(Base):
@@ -43,9 +39,7 @@ class GroupPet(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     group_id: Mapped[int] = mapped_column(ForeignKey("groups.id"), index=True, nullable=False)
     pet_id: Mapped[int] = mapped_column(ForeignKey("pets.id"), index=True, nullable=False)
-    joined_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    joined_at: Mapped[CreatedAt]
 
 
 class GroupChallenge(Base):
@@ -67,6 +61,4 @@ class GroupChallenge(Base):
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    created_at: Mapped[CreatedAt]

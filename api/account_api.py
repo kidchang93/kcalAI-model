@@ -1,34 +1,26 @@
-import logging
+from fastapi import APIRouter, HTTPException, status
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-
-from api.dependencies import get_current_user
-from database import get_db
-from log_utils import setup_level_logger
-from models.auth_model import User
-from schemas.account_schema import AccountDeleteResponse, AccountError
+from api.dependencies import DB, CurrentUser
+from log_utils import get_logger
+from schemas.common_schema import ErrorResponse, MessageResponse
 from services import account_service
 
 router = APIRouter()
 
-error_logger = setup_level_logger(logging.ERROR)
+logger = get_logger(__name__)
 
 
 @router.delete(
     "/me",
-    response_model=AccountDeleteResponse,
-    responses={401: {"model": AccountError}, 500: {"model": AccountError}},
+    response_model=MessageResponse,
+    responses={401: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
 )
-def delete_me(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def delete_me(current_user: CurrentUser, db: DB):
     try:
         account_service.delete_account(db, current_user)
     except Exception as error:
         # 파기는 트랜잭션 하나다 — commit 전 실패는 세션 종료와 함께 전체 롤백된다.
-        error_logger.error(f"회원 탈퇴 실패 user_id={current_user.id}: {error!r}")
+        logger.error(f"회원 탈퇴 실패 user_id={current_user.id}: {error!r}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="회원 탈퇴 처리에 실패했습니다. 잠시 후 다시 시도해주세요.",

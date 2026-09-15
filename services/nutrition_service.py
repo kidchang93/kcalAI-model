@@ -1,12 +1,11 @@
-import logging
-
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
-from log_utils import setup_level_logger
+from log_utils import get_logger
 from models.health_model import FoodNutrition
+from services.errors import NotFoundError
 from services import chronic_food_rules, ckd_food_rules, meta_service
 from services.food_synonyms import expand_variants
 from services.serving_size import parse_serving_size_g
@@ -17,8 +16,8 @@ from services.gemini_nutrition_service import (
 )
 
 
-class FoodNotFoundError(LookupError):
-    """데이터셋·llm 캐시·신규 추정이 모두 실패했을 때. api 가 404 로 변환한다 (19장)."""
+class FoodNotFoundError(NotFoundError):
+    """데이터셋·llm 캐시·신규 추정이 모두 실패했을 때. 전역 핸들러가 404 로 변환한다 (19장)."""
 
 
 # pg_trgm similarity 하한. 실측(YOLO 721라벨 대조): 0.3 미만 구간은 오매칭이 다수
@@ -35,8 +34,7 @@ LLM_SOURCE = "llm"
 _NOT_FOUND_MESSAGE = "일치하는 음식을 찾지 못했습니다. 칼로리를 직접 입력해주세요."
 _UNAVAILABLE_MESSAGE = "지금은 영양 정보를 계산할 수 없습니다. 잠시 후 다시 시도해주세요."
 
-info_logger = setup_level_logger(logging.INFO)
-error_logger = setup_level_logger(logging.ERROR)
+logger = get_logger(__name__)
 
 
 class NutritionUnavailableError(RuntimeError):
@@ -57,7 +55,9 @@ def estimate_nutrition(db: Session, food_label: str) -> tuple[FoodNutrition, boo
     if dataset_row is not None:
         return dataset_row, True
 
-    cached_row = _find_llm_cached(db, label)
+    # 이미 추정·동결해 둔 llm 행 — 유사도(trgm)를 쓰지 않는 것이 핵심이다. llm 행은 근사값이라,
+    # 유사도 매칭을 허용하면 한 번 잘못 추정된 값이 이름이 비슷한 다른 음식들까지 오염시킨다 (19장).
+    cached_row = _exact_or_spaceless(db, label, (LLM_SOURCE,))
     if cached_row is not None:
         return cached_row, True
 
@@ -82,16 +82,12 @@ def prewarm_labels(food_labels: list[str]) -> None:
             if not clean:
                 continue
             try:
-                if _find_in_dataset(db, clean) is not None:
-                    continue
-                if _find_llm_cached(db, clean) is not None:
-                    continue
-                _estimate_and_store(db, clean)
+                estimate_nutrition(db, clean)
             except (FoodNotFoundError, NutritionUnavailableError) as error:
-                info_logger.info(f"prewarm skip label={clean} ({type(error).__name__})")
+                logger.info(f"prewarm skip label={clean} ({type(error).__name__})")
             except Exception as error:  # 백그라운드 작업이 요청을 깨뜨리면 안 된다.
                 db.rollback()
-                error_logger.error(f"prewarm 실패 label={clean}: {type(error).__name__}")
+                logger.error(f"prewarm 실패 label={clean}: {type(error).__name__}")
     finally:
         db.close()
 
@@ -103,34 +99,12 @@ def _find_in_dataset(db: Session, food_label: str) -> FoodNutrition | None:
     "계란찜"은 정확 일치 단계에서 이미 "달걀찜" 행을 찾는다.
     반환 food_label 은 매칭된 DB 행의 이름이다 (요청 라벨과 다를 수 있음).
     """
-    variants = expand_variants(food_label)
-
     # 1·2단계: 변형 후보를 순서대로 — 원 라벨이 항상 우선한다.
-    for variant in variants:
-        exact = db.scalar(
-            select(FoodNutrition)
-            .where(
-                FoodNutrition.food_label == variant,
-                FoodNutrition.source.in_(DATASET_SOURCES),
-            )
-            .order_by(FoodNutrition.id.asc())
-            .limit(1)
-        )
-        if exact is not None:
-            return exact
+    exact = _exact_or_spaceless(db, food_label, DATASET_SOURCES)
+    if exact is not None:
+        return exact
 
-    for variant in variants:
-        normalized_match = db.scalar(
-            select(FoodNutrition)
-            .where(
-                func.replace(FoodNutrition.food_label, " ", "") == variant.replace(" ", ""),
-                FoodNutrition.source.in_(DATASET_SOURCES),
-            )
-            .order_by(FoodNutrition.id.asc())
-            .limit(1)
-        )
-        if normalized_match is not None:
-            return normalized_match
+    variants = expand_variants(food_label)
 
     # 2b단계: 식약처 라벨은 "카테고리_이름" 패턴이다("과ㆍ채주스_사과주스"). 접두어가
     # trgm 유사도를 깎아 짧은 라벨이 오폭하므로("토마토주스"→케첩), '_' 뒤 이름과의
@@ -173,21 +147,14 @@ def _find_in_dataset(db: Session, food_label: str) -> FoodNutrition | None:
     return best[1] if best is not None else None
 
 
-def _find_llm_cached(db: Session, food_label: str) -> FoodNutrition | None:
-    """이미 추정·동결해 둔 llm 행을 찾는다 — 정확 일치와 공백 무시 일치만 본다.
-
-    유사도(trgm)를 쓰지 않는 것이 핵심이다. llm 행은 근사값이라, 유사도 매칭을 허용하면
-    한 번 잘못 추정된 값이 이름이 비슷한 다른 음식들까지 오염시킨다 (19장).
-    """
+def _exact_or_spaceless(db: Session, food_label: str, sources: tuple[str, ...]) -> FoodNutrition | None:
+    """변형 후보 전체에서 정확 일치를 먼저, 없으면 공백 무시 일치를 본다. 같으면 낮은 id."""
     variants = expand_variants(food_label)
 
     for variant in variants:
         exact = db.scalar(
             select(FoodNutrition)
-            .where(
-                FoodNutrition.food_label == variant,
-                FoodNutrition.source == LLM_SOURCE,
-            )
+            .where(FoodNutrition.food_label == variant, FoodNutrition.source.in_(sources))
             .order_by(FoodNutrition.id.asc())
             .limit(1)
         )
@@ -195,17 +162,17 @@ def _find_llm_cached(db: Session, food_label: str) -> FoodNutrition | None:
             return exact
 
     for variant in variants:
-        normalized_match = db.scalar(
+        normalized = db.scalar(
             select(FoodNutrition)
             .where(
                 func.replace(FoodNutrition.food_label, " ", "") == variant.replace(" ", ""),
-                FoodNutrition.source == LLM_SOURCE,
+                FoodNutrition.source.in_(sources),
             )
             .order_by(FoodNutrition.id.asc())
             .limit(1)
         )
-        if normalized_match is not None:
-            return normalized_match
+        if normalized is not None:
+            return normalized
 
     return None
 
@@ -223,6 +190,8 @@ def _estimate_and_store(db: Session, food_label: str) -> FoodNutrition:
         # 음식이 아니거나 게이트 탈락 — DB에 남기지 않고 수동 입력으로 유도한다.
         raise FoodNotFoundError(_NOT_FOUND_MESSAGE) from error
     except NutritionEstimationUnavailable as error:
+        # Gemini 재시도 소진·키 없음. 라우트는 503 문구만 내리므로 원인은 여기에만 남는다.
+        logger.error(f"nutrition estimate unavailable label={food_label}: {error!r}")
         raise NutritionUnavailableError(_UNAVAILABLE_MESSAGE) from error
 
     db.execute(
@@ -250,7 +219,7 @@ def _estimate_and_store(db: Session, food_label: str) -> FoodNutrition:
         # 적재 직후 조회가 비는 건 정상 경로에 없다(충돌이어도 상대 행이 있어야 한다).
         raise FoodNotFoundError(_NOT_FOUND_MESSAGE)
 
-    info_logger.info(
+    logger.info(
         f"nutrition estimate stored label={food_label} kcal={stored.kcal_per_serving} "
         f"source={stored.source}"
     )
@@ -270,7 +239,7 @@ def get_record_warnings(db: Session, user_id: int, food_labels: list[str]) -> li
     labels = list(dict.fromkeys(food_labels))
 
     # 라벨별 실측 행을 한 번만 조회해 재사용한다 (라벨은 최대 10개).
-    measured = {label: _measured_for_warning(db, label) for label in labels}
+    measured = {label: measured_nutrition_for(db, label) for label in labels}
 
     warnings: list[dict] = []
     # 축(nutrient)까지 포함해 dedupe — 같은 음식이 칼륨·인 두 축에 걸리면 각각 알린다.
@@ -385,7 +354,7 @@ def unmeasured_labels(db: Session, user_id: int, food_labels: list[str], warning
         if label in warned:
             continue
 
-        row = _measured_for_warning(db, label)
+        row = measured_nutrition_for(db, label)
 
         if row is None or all(_axis_measured_mg(row, nutrient) is None for nutrient in axes):
             result.append(label)
@@ -420,49 +389,14 @@ def get_record_warnings_response(db: Session, user_id: int, food_labels: list[st
 
 
 def measured_nutrition_for(db: Session, food_label: str) -> FoodNutrition | None:
-    """실측 행 조회의 **공개 진입점** — 경고와 하루 누적(day_nutrition)이 같은 규약을 쓴다.
-
-    두 곳이 다른 방식으로 찾으면 "경고는 떴는데 합계에는 안 잡히는" 음식이 생긴다.
-    """
-    return _measured_for_warning(db, food_label)
-
-
-def _measured_for_warning(db: Session, food_label: str) -> FoodNutrition | None:
-    """경고 판정용 실측 행 조회 — **정확·공백무시 일치만** 쓴다.
+    """실측 행 조회 — **정확·공백무시 일치만** 쓴다. 경고 판정과 기록 스냅샷(health_service)이
+    같은 규약을 쓴다 — 두 곳이 다르게 찾으면 "경고는 떴는데 합계에는 안 잡히는" 음식이 생긴다.
 
     estimate(`_find_in_dataset`)와 달리 유사도(trgm) 매칭을 쓰지 않는다. 이름이 비슷한 다른
     음식의 칼륨으로 "높다"고 알리면 틀린 경고가 되고, 경고는 한 번 틀리면 전부 무시된다.
     못 찾으면 None — 그때 판정은 지침 이름 분류만으로 한다.
     """
-    variants = expand_variants(food_label)
-
-    for variant in variants:
-        exact = db.scalar(
-            select(FoodNutrition)
-            .where(
-                FoodNutrition.food_label == variant,
-                FoodNutrition.source.in_(DATASET_SOURCES),
-            )
-            .order_by(FoodNutrition.id.asc())
-            .limit(1)
-        )
-        if exact is not None:
-            return exact
-
-    for variant in variants:
-        normalized = db.scalar(
-            select(FoodNutrition)
-            .where(
-                func.replace(FoodNutrition.food_label, " ", "") == variant.replace(" ", ""),
-                FoodNutrition.source.in_(DATASET_SOURCES),
-            )
-            .order_by(FoodNutrition.id.asc())
-            .limit(1)
-        )
-        if normalized is not None:
-            return normalized
-
-    return None
+    return _exact_or_spaceless(db, food_label, DATASET_SOURCES)
 
 
 def _axis_measured_mg(row: FoodNutrition | None, nutrient: str) -> float | None:
@@ -495,9 +429,9 @@ def _axis_tier(
     nutrient: str,
     label: str,
     nutrient_mg: float | None,
-    condition_code: str | None = None,
-    name_matched: str | None = None,
-    on_dialysis: bool = True,
+    condition_code: str,
+    name_matched: str | None,
+    on_dialysis: bool,
 ) -> str | None:
     if nutrient == "potassium":
         return ckd_food_rules.potassium_display_tier(label, nutrient_mg, on_dialysis)
@@ -513,10 +447,8 @@ def _axis_tier(
             name_tier = "high" if name_matched is not None else None
             return chronic_food_rules.sodium_display_tier(label, nutrient_mg, name_tier)
         return None
-    if nutrient == "sugar":
-        # **당류에는 등급이 없다.** 1인분 기준이 무너진 데이터 위에 경계를 대면 간식·음료가
-        # 거의 전부 '높음'이 된다 (`chronic_food_rules.SUGAR_TIER_CONDITIONS` 주석의 실측).
-        return None
+    # **당류에는 등급이 없다.** 1인분 기준이 무너진 데이터 위에 경계를 대면 간식·음료가
+    # 거의 전부 '높음'이 된다 (`chronic_food_rules.py` 첨가당 절 주석의 2026-07-25 실측).
     return None
 
 

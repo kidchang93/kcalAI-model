@@ -12,18 +12,9 @@ from datetime import datetime
 import pytest
 from timeutil import UTC
 
-from models.auth_model import User
 from services import health_service
 
 THIS_YEAR = datetime.now(UTC).year
-
-
-@pytest.fixture
-def user(db):
-    row = User(kakao_id="age-restriction-test", nickname="연령테스터")
-    db.add(row)
-    db.flush()
-    return row
 
 
 def _save(db, user, birth_year: int):

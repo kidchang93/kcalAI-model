@@ -28,10 +28,6 @@ class ExerciseCreateRequest(BaseModel):
     memo: str | None = Field(default=None, max_length=200)
 
 
-class ExerciseUpdateRequest(ExerciseCreateRequest):
-    """전체 교체 수정. 끼니 PUT 과 같은 방식이다."""
-
-
 class ExerciseResponse(BaseModel):
     id: int
     exercise_type: str
@@ -97,7 +93,3 @@ class ExerciseGoalRequest(BaseModel):
     # 상한은 지침 권장 상한(주 300분)보다 넉넉히 둔다 — 더 하려는 사람을 막을 이유는 없다.
     weekly_minutes: int = Field(..., ge=0, le=2000)
     weekly_strength_days: int = Field(..., ge=0, le=7)
-
-
-class ExerciseError(BaseModel):
-    detail: str

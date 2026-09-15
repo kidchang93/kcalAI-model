@@ -79,7 +79,3 @@ class NutritionWarningsResponse(BaseModel):
     # **1인분 경계는 지침 컷오프가 아니라 1일 상한을 끼니로 나눈 정책값**이라, 그 사실을 숨기지
     # 않는 것이 노출 원칙이다 (docs/CHRONIC_NUTRITION_SOURCES.md §4-2·§6).
     notice: str | None = None
-
-
-class NutritionError(BaseModel):
-    detail: str

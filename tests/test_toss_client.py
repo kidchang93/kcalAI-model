@@ -34,20 +34,20 @@ def toss_keys(monkeypatch):
 
 @pytest.fixture
 def error_log():
-    """`error_logger` 에 나가는 줄을 캡처한다.
+    """`toss_client.logger` 의 ERROR 줄을 캡처한다.
 
-    `setup_level_logger` 가 만든 로거는 파일·콘솔 핸들러를 직접 달고 있어, 핸들러를 하나 더
-    붙이는 쪽이 propagate 설정에 기대는 것보다 확실하다.
+    파일·콘솔 핸들러는 상위 `kcal` 로거에 있다(`log_utils`). 모듈 로거에 핸들러를 직접 붙이면
+    상위 설정·propagate 와 무관하게 이 모듈의 레코드를 받는다.
     """
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
     handler.setLevel(logging.ERROR)
-    toss_client.error_logger.addHandler(handler)
+    toss_client.logger.addHandler(handler)
 
     try:
         yield stream
     finally:
-        toss_client.error_logger.removeHandler(handler)
+        toss_client.logger.removeHandler(handler)
 
 
 def _charge_canary():

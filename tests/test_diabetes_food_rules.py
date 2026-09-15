@@ -12,7 +12,7 @@
 
 import pytest
 
-from models.auth_model import User
+from factories import make_user
 from models.consent_model import UserCondition
 from models.health_model import FoodNutrition
 from services import chronic_food_rules, nutrition_service
@@ -20,9 +20,7 @@ from services import chronic_food_rules, nutrition_service
 
 @pytest.fixture
 def diabetic(db):
-    user = User(kakao_id="diabetes-rules-test", nickname="당뇨테스터")
-    db.add(user)
-    db.flush()
+    user = make_user(db, kakao_id="diabetes-rules-test", nickname="당뇨테스터")
     db.add(UserCondition(user_id=user.id, condition="diabetes"))
     db.flush()
     return user
@@ -223,9 +221,7 @@ def test_warned_food_is_not_also_unmeasured(db, diabetic):
 
 def test_no_condition_means_no_unmeasured_noise(db):
     """질환이 없으면 판정할 축도 없다 — 굳이 알릴 것이 없다."""
-    user = User(kakao_id="no-condition-test", nickname="무질환")
-    db.add(user)
-    db.flush()
+    user = make_user(db, kakao_id="no-condition-test", nickname="무질환")
     _add_food(db, "돈까스테스트ZZ", sodium_mg=None)
 
     response = nutrition_service.get_record_warnings_response(db, user.id, ["돈까스테스트ZZ"])

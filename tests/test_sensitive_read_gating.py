@@ -20,7 +20,6 @@ from api.dependencies import get_current_user
 from api.guide_api import router as guide_router
 from api.health_api import router as health_router
 from database import get_db
-from models.auth_model import User
 from models.consent_model import UserCondition, UserConsent, UserHealthProfile
 from services import (
     consent_service,
@@ -39,14 +38,6 @@ PERIOD_START = TODAY - timedelta(days=6)
 OUTDATED_SENTENCE = (
     "건강 정보 동의 내용이 바뀌어 다시 동의하기 전까지 질환·병기·검사 수치는 이 기록에 싣지 않았습니다."
 )
-
-
-@pytest.fixture
-def user(db):
-    row = User(kakao_id="read-gating-test", nickname="게이트테스터")
-    db.add(row)
-    db.flush()
-    return row
 
 
 @pytest.fixture

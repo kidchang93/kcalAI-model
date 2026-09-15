@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from models.group_model import Group, GroupMember, GroupPet
 from models.pet_model import Pet
 from models.subscription_model import Plan, UserSubscription, VisionUsageDaily
+from services.errors import BadRequestError
 from timeutil import KST, UTC, today_kst
 
 # 가입 시 요금제를 고르지 않으면 무료 플랜으로 시작한다.
@@ -28,8 +29,8 @@ RESOURCE_PETS = "pets"
 class PlanLimitError(Exception):
     """요금제 한도 초과. main.py 의 전역 핸들러가 402 로 변환한다.
 
-    `ValueError` 를 상속하지 않는다 — 각 api 모듈의 `except ValueError → 400` 에 잡히면
-    업그레이드 유도가 일반 입력 오류로 뭉개진다.
+    `ValueError`(`BadRequestError`)를 상속하지 않는다 — 400 핸들러나 라우트의 `except ValueError`
+    에 잡히면 업그레이드 유도가 일반 입력 오류로 뭉개진다.
     """
 
     def __init__(self, message: str, *, resource: str, plan_code: str, limit: int) -> None:
@@ -70,7 +71,7 @@ def get_purchasable_plan(db: Session, plan_code: str) -> Plan:
     plan = db.scalar(select(Plan).where(Plan.code == plan_code, Plan.is_active.is_(True)))
 
     if plan is None:
-        raise ValueError("존재하지 않는 요금제입니다.")
+        raise BadRequestError("존재하지 않는 요금제입니다.")
 
     return plan
 
@@ -150,7 +151,7 @@ def create_subscription(db: Session, user_id: int, plan_code: str | None) -> Use
 
     가입 트랜잭션 안에서도 불리므로 commit 하지 않는다 (호출자가 커밋한다).
     """
-    # 없는 plan_code 는 여기서 ValueError → 400 (기존 계약 유지).
+    # 없는 plan_code 는 여기서 BadRequestError → 400 (기존 계약 유지).
     plan = get_purchasable_plan(db, plan_code or DEFAULT_PLAN_CODE)
 
     if plan.price_krw > 0:
@@ -177,7 +178,7 @@ def change_plan(db: Session, user_id: int, plan_code: str) -> UserSubscription:
     plan = get_purchasable_plan(db, plan_code)
 
     if plan.price_krw > 0:
-        raise ValueError("결제를 통해 업그레이드해주세요.")
+        raise BadRequestError("결제를 통해 업그레이드해주세요.")
 
     subscription = get_subscription(db, user_id)
     subscription.plan_code = plan.code
@@ -218,13 +219,7 @@ def consume_vision_quota(db: Session, user_id: int) -> tuple[int, int, date]:
     limit = plan.daily_vision_quota
     usage_date = today_kst()
 
-    if limit < 1:
-        raise PlanLimitError(
-            _quota_message(plan),
-            resource=RESOURCE_VISION_DAILY,
-            plan_code=plan.code,
-            limit=limit,
-        )
+    _ensure_under(plan, 0, limit, RESOURCE_VISION_DAILY, _quota_message(plan))
 
     statement = (
         pg_insert(VisionUsageDaily)
@@ -243,12 +238,8 @@ def consume_vision_quota(db: Session, user_id: int) -> tuple[int, int, date]:
 
     if used is None:
         db.rollback()
-        raise PlanLimitError(
-            _quota_message(plan),
-            resource=RESOURCE_VISION_DAILY,
-            plan_code=plan.code,
-            limit=limit,
-        )
+        # RETURNING 이 비었다 = 카운터가 이미 한도에 닿아 있다.
+        _ensure_under(plan, limit, limit, RESOURCE_VISION_DAILY, _quota_message(plan))
 
     db.commit()
     return int(used), limit, usage_date
@@ -333,20 +324,24 @@ def _quota_message(plan: Plan) -> str:
 # 그룹 자원의 한도는 언제나 **그룹 소유자(owner)의 요금제**로 판정한다. 참여자가 무료 회원이어도
 # 소유자가 결제한 정원 안에서는 들어올 수 있다 — 정원을 산 사람은 소유자다.
 
+def _ensure_under(plan: Plan, used: int, limit: int, resource: str, message: str) -> None:
+    if used >= limit:
+        raise PlanLimitError(message, resource=resource, plan_code=plan.code, limit=limit)
+
+
 def ensure_can_create_group(db: Session, owner_id: int) -> None:
     plan = get_user_plan(db, owner_id, for_update=True)
     owned = int(
         db.scalar(select(func.count()).select_from(Group).where(Group.owner_id == owner_id))
     )
-
-    if owned >= plan.max_owned_groups:
-        raise PlanLimitError(
-            f"{plan.label_ko} 요금제는 그룹을 {plan.max_owned_groups}개까지 만들 수 있습니다. "
-            "요금제를 업그레이드해주세요.",
-            resource=RESOURCE_OWNED_GROUPS,
-            plan_code=plan.code,
-            limit=plan.max_owned_groups,
-        )
+    _ensure_under(
+        plan,
+        owned,
+        plan.max_owned_groups,
+        RESOURCE_OWNED_GROUPS,
+        f"{plan.label_ko} 요금제는 그룹을 {plan.max_owned_groups}개까지 만들 수 있습니다. "
+        "요금제를 업그레이드해주세요.",
+    )
 
 
 def ensure_can_add_member(db: Session, group: Group) -> None:
@@ -357,16 +352,14 @@ def ensure_can_add_member(db: Session, group: Group) -> None:
         )
     )
     # 한도는 "본인(owner) 제외 추가 인원"이다. 정원 = max_group_members + 1.
-    added = max(member_count - 1, 0)
-
-    if added >= plan.max_group_members:
-        raise PlanLimitError(
-            f"이 그룹은 {plan.label_ko} 요금제라 본인 외 {plan.max_group_members}명까지 참여할 수 있습니다. "
-            "그룹 소유자가 요금제를 업그레이드해야 합니다.",
-            resource=RESOURCE_GROUP_MEMBERS,
-            plan_code=plan.code,
-            limit=plan.max_group_members,
-        )
+    _ensure_under(
+        plan,
+        max(member_count - 1, 0),
+        plan.max_group_members,
+        RESOURCE_GROUP_MEMBERS,
+        f"이 그룹은 {plan.label_ko} 요금제라 본인 외 {plan.max_group_members}명까지 참여할 수 있습니다. "
+        "그룹 소유자가 요금제를 업그레이드해야 합니다.",
+    )
 
 
 def ensure_can_create_pet(db: Session, owner_id: int) -> None:
@@ -378,15 +371,14 @@ def ensure_can_create_pet(db: Session, owner_id: int) -> None:
             .where(Pet.owner_id == owner_id, Pet.deleted_at.is_(None))
         )
     )
-
-    if owned >= plan.max_pets:
-        raise PlanLimitError(
-            f"{plan.label_ko} 요금제는 반려동물을 {plan.max_pets}마리까지 등록할 수 있습니다. "
-            "요금제를 업그레이드해주세요.",
-            resource=RESOURCE_PETS,
-            plan_code=plan.code,
-            limit=plan.max_pets,
-        )
+    _ensure_under(
+        plan,
+        owned,
+        plan.max_pets,
+        RESOURCE_PETS,
+        f"{plan.label_ko} 요금제는 반려동물을 {plan.max_pets}마리까지 등록할 수 있습니다. "
+        "요금제를 업그레이드해주세요.",
+    )
 
 
 def ensure_can_attach_pet(db: Session, group: Group) -> None:
@@ -396,12 +388,11 @@ def ensure_can_attach_pet(db: Session, group: Group) -> None:
             select(func.count()).select_from(GroupPet).where(GroupPet.group_id == group.id)
         )
     )
-
-    if attached >= plan.max_pets:
-        raise PlanLimitError(
-            f"이 그룹은 {plan.label_ko} 요금제라 반려동물을 {plan.max_pets}마리까지 참여시킬 수 있습니다. "
-            "그룹 소유자가 요금제를 업그레이드해야 합니다.",
-            resource=RESOURCE_PETS,
-            plan_code=plan.code,
-            limit=plan.max_pets,
-        )
+    _ensure_under(
+        plan,
+        attached,
+        plan.max_pets,
+        RESOURCE_PETS,
+        f"이 그룹은 {plan.label_ko} 요금제라 반려동물을 {plan.max_pets}마리까지 참여시킬 수 있습니다. "
+        "그룹 소유자가 요금제를 업그레이드해야 합니다.",
+    )

@@ -88,11 +88,3 @@ class AllergiesPutRequest(BaseModel):
 
 class AllergiesResponse(BaseModel):
     allergies: list[AllergyItem]
-
-
-class MessageResponse(BaseModel):
-    message: str
-
-
-class ConsentError(BaseModel):
-    detail: str

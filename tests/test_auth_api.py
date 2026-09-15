@@ -10,12 +10,14 @@ from fastapi.testclient import TestClient
 
 from api.auth_api import router
 from database import get_db
+from main import add_service_error_handlers
 
 
 @pytest.fixture
 def client(db, monkeypatch):
     app = FastAPI()
     app.include_router(router, prefix="/api")
+    add_service_error_handlers(app)
     app.dependency_overrides[get_db] = lambda: db
 
     import api.auth_api as auth_api

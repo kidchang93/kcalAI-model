@@ -8,22 +8,12 @@
 
 from datetime import datetime, timedelta
 
-import pytest
 from timeutil import UTC
 
-from models.auth_model import User
 from services import health_service
 
 TODAY = datetime.now(UTC).date()
 NOON = datetime.combine(TODAY, datetime.min.time(), tzinfo=UTC) + timedelta(hours=12)
-
-
-@pytest.fixture
-def user(db):
-    row = User(kakao_id="meal-ordering-test", nickname="정렬테스터")
-    db.add(row)
-    db.flush()
-    return row
 
 
 def _item(label: str, kcal: int) -> dict:

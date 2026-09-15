@@ -1,8 +1,11 @@
+from typing import Annotated
+
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
 from database import get_db
 from models.auth_model import User
+from services import consent_service
 from services.auth_service import get_user_by_session_token
 
 
@@ -41,3 +44,19 @@ def get_current_user(
         )
 
     return user
+
+
+def require_sensitive_consent(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> User:
+    # 401(미로그인)은 get_current_user 가 처리한다. 여기는 로그인된 사용자의 동의 여부만 본다.
+    # 버전이 낡은 동의도 403 이다 — 판정과 문구는 서비스가 정한다(ensure_sensitive_consent).
+    consent_service.ensure_sensitive_consent(db, current_user.id)
+    return current_user
+
+
+# 라우트 시그니처용 별칭: `def read_goal(current_user: CurrentUser, db: DB):`
+CurrentUser = Annotated[User, Depends(get_current_user)]
+ConsentedUser = Annotated[User, Depends(require_sensitive_consent)]
+DB = Annotated[Session, Depends(get_db)]

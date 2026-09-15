@@ -181,12 +181,6 @@ class MealCreateRequest(BaseModel):
     items: list[MealItemInput] = Field(..., min_length=1)
 
 
-class MealUpdateRequest(MealCreateRequest):
-    # 전체 교체 (PUT /api/pets/{id} 와 같은 방식). 항목은 지우고 다시 넣으며 total_kcal 은 서버가 재계산한다.
-    # 단 logged_at 은 not-null 컬럼이므로 생략(null) 시 기존 기록 시각을 유지한다.
-    pass
-
-
 class MealItemResponse(BaseModel):
     id: int
     food_label: str
@@ -229,10 +223,6 @@ class MealResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class MessageResponse(BaseModel):
-    message: str
-
-
 class WeightCreateRequest(BaseModel):
     weight_kg: float = Field(..., gt=0, le=500)
     measured_at: datetime | None = None
@@ -246,10 +236,6 @@ class WeightResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
-
-
-class HealthError(BaseModel):
-    detail: str
 
 
 class ReportMealItem(BaseModel):

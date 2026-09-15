@@ -30,15 +30,11 @@ from models.health_model import MealLog
 from services import (
     ckd_food_rules,
     consent_service,
-    day_nutrition,
     health_service,
     lab_panels,
     lab_service,
     meta_service,
 )
-
-# 진료 목적이라 상한을 추이(92일)와 같게 둔다 — 분기 단위 진료를 커버한다.
-REPORT_MAX_DAYS = health_service.TRENDS_MAX_DAYS
 
 REPORT_NOTICE = (
     "이 기록은 사용자가 앱에 직접 남긴 식단과 식약처 식품영양성분 DB 의 실측값을 합한 "
@@ -56,21 +52,16 @@ REPORT_OUTDATED_CONSENT_NOTICE = (
 
 
 def build_report(db: Session, user_id: int, start_date: date, end_date: date) -> dict:
-    """기간 리포트. 범위 검증은 추이와 같은 규칙을 쓴다.
+    """기간 리포트. 범위 검증(역순·최대 92일 — 분기 단위 진료를 커버한다)은 `get_trends` 가 한다.
 
     **질환·병기·검사 수치·질환 축은 민감정보 동의가 ACTIVE 일 때만 싣는다** (DATA_MODEL 7장).
     라우트는 막지 않는다 — 동의하지 않은 사용자도 칼로리·끼니 기록은 진료에 가져갈 수 있어야 한다.
     """
-    if end_date < start_date:
-        raise ValueError("종료일이 시작일보다 빠릅니다. 날짜 범위를 확인해주세요.")
-
-    if (end_date - start_date).days + 1 > REPORT_MAX_DAYS:
-        raise ValueError(f"조회 범위는 최대 {REPORT_MAX_DAYS}일입니다. 범위를 줄여 다시 시도해주세요.")
+    trends = health_service.get_trends(db, user_id, start_date, end_date)
 
     consent_state = consent_service.get_consent_state(db, user_id)
     readable = consent_state is consent_service.ConsentState.ACTIVE
 
-    trends = health_service.get_trends(db, user_id, start_date, end_date)
     recorded = [day for day in trends["days"] if day["meal_count"] > 0]
 
     return {
@@ -167,18 +158,10 @@ def _stage_label(db: Session, user_id: int) -> str | None:
 
 def _meals_in_range(db: Session, user_id: int, start_date: date, end_date: date) -> list[dict]:
     """기간 내 끼니와 항목. 정렬은 목록 API 와 같은 `logged_at` → `id` 다."""
-    start, _ = day_nutrition._day_bounds(start_date)
-    _, end = day_nutrition._day_bounds(end_date)
-
     meals = db.scalars(
         select(MealLog)
         .options(selectinload(MealLog.items))
-        .where(
-            MealLog.user_id == user_id,
-            MealLog.deleted_at.is_(None),
-            MealLog.logged_at >= start,
-            MealLog.logged_at < end,
-        )
+        .where(*MealLog.live_between(user_id, start_date, end_date))
         .order_by(MealLog.logged_at.asc(), MealLog.id.asc())
     ).all()
 
@@ -191,20 +174,17 @@ def _meals_in_range(db: Session, user_id: int, start_date: date, end_date: date)
             "items": [
                 {
                     "food_label": item.food_label,
-                    "serving_ratio": float(item.serving_ratio),
+                    # Decimal 은 응답 스키마(`ReportMealItem`, float)가 변환한다.
+                    "serving_ratio": item.serving_ratio,
                     "kcal": item.kcal,
                     # 기록 시점에 굳은 값 (리비전 0025). 실측이 없던 음식은 null 이고,
                     # 그 사실이 진료 문서에도 그대로 드러나야 한다.
-                    "sodium_mg": _as_float(item.sodium_mg),
-                    "potassium_mg": _as_float(item.potassium_mg),
-                    "phosphorus_mg": _as_float(item.phosphorus_mg),
+                    "sodium_mg": item.sodium_mg,
+                    "potassium_mg": item.potassium_mg,
+                    "phosphorus_mg": item.phosphorus_mg,
                 }
                 for item in meal.items
             ],
         }
         for meal in meals
     ]
-
-
-def _as_float(value) -> float | None:
-    return None if value is None else float(value)

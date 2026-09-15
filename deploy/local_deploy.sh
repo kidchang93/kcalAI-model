@@ -97,13 +97,8 @@ cd "$REMOTE_DIR"
 ./venv/bin/pip install -q -r requirements.txt
 $MIGRATE_CMD
 sudo systemctl restart kcalai
-# 기동에 몇 초 걸리므로 최대 ~30초 폴링한다(단일 sleep은 조기 오판을 유발).
-ok=0
-for _ in \$(seq 1 15); do
-  if curl -sf -o /dev/null http://127.0.0.1:8000/openapi.json; then ok=1; break; fi
-  sleep 2
-done
-if [ "\$ok" = 1 ]; then
+# 기동에 몇 초 걸리므로 2초 간격으로 최대 15회 재시도한다(단일 sleep은 조기 오판을 유발).
+if curl -sf --retry 15 --retry-delay 2 --retry-all-errors -o /dev/null http://127.0.0.1:8000/openapi.json; then
   echo "[remote] 헬스체크 OK"
 else
   echo "[remote] 헬스체크 실패(약 30초 대기) — journalctl -u kcalai -n 50" >&2

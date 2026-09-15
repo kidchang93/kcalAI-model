@@ -47,7 +47,3 @@ class ChallengeDetailResponse(ChallengeSummary):
     # 내가 공유에 동의했는지. false 면 앱이 동의 안내를 띄운다(챌린지 자체는 볼 수 있다).
     i_am_sharing: bool
     entries: list[ChallengeEntry]
-
-
-class ChallengeError(BaseModel):
-    detail: str

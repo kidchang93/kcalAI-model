@@ -1,22 +1,13 @@
-import logging
 import os
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Header, Query, status
 from fastapi.responses import RedirectResponse
-from sqlalchemy.orm import Session
 
-from api.dependencies import extract_bearer_token, get_current_user
-from database import get_db
-from log_utils import setup_level_logger
-from models.auth_model import User
-from schemas.auth_schema import (
-    AuthError,
-    AuthTokenResponse,
-    KakaoLoginRequest,
-    KakaoSignupRequest,
-    LogoutResponse,
-)
+from api.dependencies import DB, CurrentUser, extract_bearer_token
+from log_utils import get_logger
+from schemas.auth_schema import AuthTokenResponse, KakaoLoginRequest, KakaoSignupRequest
+from schemas.common_schema import ErrorResponse, MessageResponse
 from services.auth_service import (
     StateError,
     create_link_code,
@@ -35,7 +26,7 @@ from services.kakao_client import (
     fetch_profile,
 )
 
-error_logger = setup_level_logger(logging.ERROR)
+logger = get_logger(__name__)
 
 router = APIRouter()
 
@@ -43,7 +34,7 @@ router = APIRouter()
 # 카카오 → 서버(https) → 앱(딥링크) 2단으로 돌아온다.
 APP_DEEPLINK_SCHEME = os.getenv("APP_DEEPLINK_SCHEME", "kcalairn")
 # 웹 빌드는 FastAPI 가 같은 오리진에서 서빙하므로 딥링크가 아니라 경로로 돌려보낸다.
-WEB_CALLBACK_PATH = os.getenv("WEB_CALLBACK_PATH", "/auth")
+WEB_CALLBACK_PATH = "/auth"
 
 
 @router.get("/auth/kakao/start")
@@ -64,10 +55,10 @@ def start_kakao_login(
 
 @router.get("/auth/kakao/callback")
 def kakao_callback(
+    db: DB,
     code: str | None = Query(default=None),
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
-    db: Session = Depends(get_db),
 ):
     """카카오가 인가 코드를 들고 돌아오는 지점.
 
@@ -85,7 +76,7 @@ def kakao_callback(
     try:
         platform = verify_state(state)
     except StateError as state_error:
-        error_logger.error(f"kakao callback bad state: {state_error!r}")
+        logger.error(f"kakao callback bad state: {state_error!r}")
         return _redirect_to_app(hinted_platform, {"error": "invalid_state"})
 
     try:
@@ -94,7 +85,7 @@ def kakao_callback(
     except KakaoAuthCodeError:
         return _redirect_to_app(platform, {"error": "expired"})
     except KakaoError as kakao_error:
-        error_logger.error(f"kakao callback fail: {kakao_error!r}")
+        logger.error(f"kakao callback fail: {kakao_error!r}")
         return _redirect_to_app(platform, {"error": "kakao_unavailable"})
 
     # 앱이 다시 쓸 수 있는 1회용 코드로 바꿔 넘긴다 (카카오 인가 코드는 이미 소비됐다).
@@ -119,65 +110,47 @@ def _redirect_to_app(platform: str, params: dict[str, str]) -> RedirectResponse:
 @router.post(
     "/auth/kakao/login",
     response_model=AuthTokenResponse,
-    responses={400: {"model": AuthError}, 404: {"model": AuthError}},
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
 )
-def login_with_kakao(request: KakaoLoginRequest, db: Session = Depends(get_db)):
-    try:
-        # DB에는 토큰 해시만 저장되므로 원문(raw_token)은 이 응답에서만 나간다.
-        user, auth_session, raw_token = kakao_login(db, request.link_code)
-        return {
-            "access_token": raw_token,
-            "expires_at": auth_session.expires_at,
-            "user": user,
-        }
-    except LookupError as lookup_error:
-        # 미가입 카카오 계정 — 앱은 404를 받으면 가입 화면(동의·요금제)으로 보낸다.
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(lookup_error)
-        ) from lookup_error
-    except ValueError as value_error:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(value_error)
-        ) from value_error
+def login_with_kakao(request: KakaoLoginRequest, db: DB):
+    # 미가입 카카오 계정은 404 — 앱은 404를 받으면 가입 화면(동의·요금제)으로 보낸다.
+    # DB에는 토큰 해시만 저장되므로 원문(raw_token)은 이 응답에서만 나간다.
+    user, auth_session, raw_token = kakao_login(db, request.link_code)
+    return {
+        "access_token": raw_token,
+        "expires_at": auth_session.expires_at,
+        "user": user,
+    }
 
 
 @router.post(
     "/auth/kakao/signup",
     response_model=AuthTokenResponse,
-    responses={400: {"model": AuthError}},
+    responses={400: {"model": ErrorResponse}},
 )
-def signup_with_kakao(request: KakaoSignupRequest, db: Session = Depends(get_db)):
-    try:
-        user, auth_session, raw_token = kakao_signup(
-            db,
-            request.link_code,
-            request.agreed_terms,
-            request.agreed_privacy,
-            request.plan_code,
-            request.terms_version,
-            request.privacy_version,
-        )
-        return {
-            "access_token": raw_token,
-            "expires_at": auth_session.expires_at,
-            "user": user,
-        }
-    except ValueError as value_error:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(value_error)
-        ) from value_error
+def signup_with_kakao(request: KakaoSignupRequest, db: DB):
+    user, auth_session, raw_token = kakao_signup(
+        db,
+        request.link_code,
+        request.agreed_terms,
+        request.agreed_privacy,
+        request.plan_code,
+        request.terms_version,
+        request.privacy_version,
+    )
+    return {
+        "access_token": raw_token,
+        "expires_at": auth_session.expires_at,
+        "user": user,
+    }
 
 
 @router.post(
     "/auth/logout",
-    response_model=LogoutResponse,
-    responses={401: {"model": AuthError}},
+    response_model=MessageResponse,
+    responses={401: {"model": ErrorResponse}},
 )
-def logout(
-    _current_user: User = Depends(get_current_user),
-    authorization: str | None = Header(default=None),
-    db: Session = Depends(get_db),
-):
+def logout(_current_user: CurrentUser, db: DB, authorization: str | None = Header(default=None)):
     # get_current_user 를 통과했으므로 토큰은 유효하다. 같은 토큰을 폐기한다.
     token = extract_bearer_token(authorization)
     if token is not None:

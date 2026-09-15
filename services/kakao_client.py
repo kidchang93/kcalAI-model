@@ -11,14 +11,13 @@
 키·토큰은 로그에 남기지 않는다 — 실패는 상태코드와 예외 타입명만 남긴다.
 """
 
-import logging
 import os
 
 import requests
 
-from log_utils import setup_level_logger
+from log_utils import get_logger
 
-error_logger = setup_level_logger(logging.ERROR)
+logger = get_logger(__name__)
 
 KAKAO_REST_API_KEY = os.getenv("KAKAO_REST_API_KEY", "")
 # 신규 REST 키는 클라이언트 시크릿이 기본 [ON] 이라 사실상 필수다.
@@ -48,10 +47,6 @@ class KakaoError(Exception):
 
 class KakaoAuthCodeError(KakaoError):
     """인가 코드가 만료·재사용됐거나 위조됐다 — 사용자에게 재시도를 요구한다 (400)."""
-
-
-def is_configured() -> bool:
-    return bool(KAKAO_REST_API_KEY and KAKAO_CLIENT_SECRET)
 
 
 def _error_code(response: requests.Response) -> str:
@@ -134,25 +129,25 @@ def exchange_code(code: str) -> str:
             timeout=KAKAO_TIMEOUT_SECONDS,
         )
     except requests.RequestException as error:
-        error_logger.error(f"kakao token exchange fail: {error!r}")
+        logger.error(f"kakao token exchange fail: {error!r}")
         raise KakaoError("카카오 로그인에 실패했습니다.") from error
 
     if response.status_code == 400:
         # 만료·재사용된 코드, redirect_uri 불일치 등. 사용자가 다시 시도하면 풀린다.
-        error_logger.error(
+        logger.error(
             f"kakao token exchange rejected status={response.status_code} "
             f"code={_error_code(response)}"
         )
         raise KakaoAuthCodeError("카카오 로그인이 만료되었습니다. 다시 시도해주세요.")
 
     if response.status_code >= 400:
-        error_logger.error(f"kakao token exchange fail status={response.status_code}")
+        logger.error(f"kakao token exchange fail status={response.status_code}")
         raise KakaoError("카카오 로그인에 실패했습니다.")
 
     access_token = response.json().get("access_token")
 
     if not access_token:
-        error_logger.error("kakao token exchange returned no access_token")
+        logger.error("kakao token exchange returned no access_token")
         raise KakaoError("카카오 로그인에 실패했습니다.")
 
     return access_token
@@ -170,11 +165,11 @@ def fetch_profile(access_token: str) -> tuple[str, str]:
             timeout=KAKAO_TIMEOUT_SECONDS,
         )
     except requests.RequestException as error:
-        error_logger.error(f"kakao user fetch fail: {error!r}")
+        logger.error(f"kakao user fetch fail: {error!r}")
         raise KakaoError("카카오 사용자 정보를 가져오지 못했습니다.") from error
 
     if response.status_code >= 400:
-        error_logger.error(
+        logger.error(
             f"kakao user fetch fail status={response.status_code} code={_error_code(response)}"
         )
         raise KakaoError("카카오 사용자 정보를 가져오지 못했습니다.")
@@ -183,7 +178,7 @@ def fetch_profile(access_token: str) -> tuple[str, str]:
     kakao_id = payload.get("id")
 
     if kakao_id is None:
-        error_logger.error("kakao user fetch returned no id")
+        logger.error("kakao user fetch returned no id")
         raise KakaoError("카카오 사용자 정보를 가져오지 못했습니다.")
 
     nickname = (
@@ -202,7 +197,7 @@ def unlink(kakao_id: str) -> None:
     안 된다.** 실패는 로그로 남겨 수동 정리한다.
     """
     if not KAKAO_ADMIN_KEY:
-        error_logger.error("kakao unlink skipped: KAKAO_ADMIN_KEY 미설정")
+        logger.error("kakao unlink skipped: KAKAO_ADMIN_KEY 미설정")
         return
 
     try:
@@ -213,10 +208,10 @@ def unlink(kakao_id: str) -> None:
             timeout=KAKAO_TIMEOUT_SECONDS,
         )
     except requests.RequestException as error:
-        error_logger.error(f"kakao unlink fail kakao_id={kakao_id}: {error!r}")
+        logger.error(f"kakao unlink fail kakao_id={kakao_id}: {error!r}")
         return
 
     if response.status_code >= 400:
-        error_logger.error(
+        logger.error(
             f"kakao unlink fail kakao_id={kakao_id} status={response.status_code}"
         )

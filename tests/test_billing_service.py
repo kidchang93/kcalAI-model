@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import pytest
 from sqlalchemy import select, text
 
+from factories import make_user
 from models.auth_model import User
 from models.subscription_model import BillingKey, Payment, UserSubscription
 from services import billing_service, subscription_service, toss_client
@@ -19,13 +20,6 @@ from services.toss_client import ChargeResult, IssuedBillingKey, TossError, Toss
 from timeutil import UTC
 
 PRO_PRICE = 5000
-
-
-def _make_user(db, kakao_id: str) -> User:
-    user = User(kakao_id=kakao_id, nickname="테스터")
-    db.add(user)
-    db.commit()
-    return user
 
 
 class _TossStub:
@@ -89,7 +83,7 @@ def toss(monkeypatch) -> _TossStub:
 # ---- 1) 결제 준비 (checkout) ----
 
 def test_checkout_returns_server_decided_amount(db, toss):
-    user = _make_user(db, "8300000001")
+    user = make_user(db, "8300000001")
 
     checkout = billing_service.start_checkout(db, user.id, "pro")
 
@@ -103,21 +97,21 @@ def test_checkout_returns_server_decided_amount(db, toss):
 
 
 def test_checkout_rejects_free_plan(db, toss):
-    user = _make_user(db, "8300000002")
+    user = make_user(db, "8300000002")
 
     with pytest.raises(ValueError):
         billing_service.start_checkout(db, user.id, "lite")
 
 
 def test_checkout_rejects_unknown_plan(db, toss):
-    user = _make_user(db, "8300000003")
+    user = make_user(db, "8300000003")
 
     with pytest.raises(ValueError):
         billing_service.start_checkout(db, user.id, "enterprise")
 
 
 def test_checkout_without_toss_keys_raises_not_configured(db, monkeypatch):
-    user = _make_user(db, "8300000004")
+    user = make_user(db, "8300000004")
     monkeypatch.setattr(toss_client, "is_configured", lambda: False)
 
     # 라우트가 503 으로 변환한다 — 장애가 아니라 미구성이다.
@@ -126,7 +120,7 @@ def test_checkout_without_toss_keys_raises_not_configured(db, monkeypatch):
 
 
 def test_checkout_reuses_existing_customer_key(db, toss):
-    user = _make_user(db, "8300000005")
+    user = make_user(db, "8300000005")
     billing_service.confirm_billing(db, user.id, "auth_1", "cus_fixed", "pro")
 
     checkout = billing_service.start_checkout(db, user.id, "premium")
@@ -138,7 +132,7 @@ def test_checkout_reuses_existing_customer_key(db, toss):
 # ---- 2) 카드 등록 + 최초 청구 (confirm) ----
 
 def test_confirm_activates_subscription_and_records_payment(db, toss):
-    user = _make_user(db, "8300000010")
+    user = make_user(db, "8300000010")
 
     subscription = billing_service.confirm_billing(db, user.id, "auth_1", "cus_1", "pro")
 
@@ -163,7 +157,7 @@ def test_confirm_activates_subscription_and_records_payment(db, toss):
 
 
 def test_confirm_stores_billing_key_encrypted(db, toss):
-    user = _make_user(db, "8300000011")
+    user = make_user(db, "8300000011")
 
     billing_service.confirm_billing(db, user.id, "auth_1", "cus_1", "pro")
 
@@ -183,7 +177,7 @@ def test_confirm_stores_billing_key_encrypted(db, toss):
 
 
 def test_confirm_charge_failure_does_not_activate_subscription(db, toss):
-    user = _make_user(db, "8300000012")
+    user = make_user(db, "8300000012")
     toss.charge_error = TossError("카드 잔액이 부족합니다.", code="NOT_ENOUGH_BALANCE")
 
     with pytest.raises(TossError):
@@ -204,7 +198,7 @@ def test_confirm_charge_failure_does_not_activate_subscription(db, toss):
 
 
 def test_confirm_rejects_free_plan(db, toss):
-    user = _make_user(db, "8300000013")
+    user = make_user(db, "8300000013")
 
     with pytest.raises(ValueError):
         billing_service.confirm_billing(db, user.id, "auth_1", "cus_1", "lite")
@@ -221,7 +215,7 @@ def test_confirm_rejects_free_plan(db, toss):
 
 def test_confirm_twice_charges_only_once(db, toss):
     """새로고침·뒤로가기·502 후 재시도로 들어온 두 번째 confirm 은 청구하지 않는다."""
-    user = _make_user(db, "8300000060")
+    user = make_user(db, "8300000060")
 
     first = billing_service.confirm_billing(db, user.id, "auth_1", "cus_1", "pro")
     first_period_end = first.current_period_end
@@ -242,7 +236,7 @@ def test_confirm_twice_charges_only_once(db, toss):
 
 def test_confirm_different_plan_still_charges(db, toss):
     """업그레이드는 별개 결제다 (기간 중 전액 재청구는 감수한 결정, 24장)."""
-    user = _make_user(db, "8300000061")
+    user = make_user(db, "8300000061")
     billing_service.confirm_billing(db, user.id, "auth_1", "cus_1", "pro")
 
     subscription = billing_service.confirm_billing(db, user.id, "auth_2", "cus_1", "premium")
@@ -254,7 +248,7 @@ def test_confirm_different_plan_still_charges(db, toss):
 
 def test_confirm_while_past_due_still_charges(db, toss):
     """갱신 실패 중이면 카드를 바꿔 다시 결제할 수 있어야 한다 — 막으면 복구할 길이 사라진다."""
-    user = _make_user(db, "8300000062")
+    user = make_user(db, "8300000062")
     billing_service.confirm_billing(db, user.id, "auth_1", "cus_1", "pro")
 
     # 갱신 실패 상태를 만든다. 기간은 아직 남아 있다(유예).
@@ -270,7 +264,7 @@ def test_confirm_while_past_due_still_charges(db, toss):
 
 def test_confirm_after_period_expired_charges_again(db, toss):
     """기간이 끝났으면 다시 사는 것이 맞다 — 이미 lite 로 해석되는 상태다."""
-    user = _make_user(db, "8300000063")
+    user = make_user(db, "8300000063")
     billing_service.confirm_billing(db, user.id, "auth_1", "cus_1", "pro")
 
     subscription = subscription_service.get_subscription(db, user.id)
@@ -287,7 +281,7 @@ def test_confirm_duplicate_does_not_revive_canceled_subscription(db, toss):
 
     (기간이 남은 채 재결제하면 이중 지불이지만 그건 재구독 정책 문제다. 앱에는 경로가 없다.)
     """
-    user = _make_user(db, "8300000064")
+    user = make_user(db, "8300000064")
     billing_service.confirm_billing(db, user.id, "auth_1", "cus_1", "pro")
     billing_service.cancel_billing(db, user.id)
 
@@ -302,7 +296,7 @@ def test_confirm_duplicate_does_not_revive_canceled_subscription(db, toss):
 # ---- 3) 해지 ----
 
 def test_cancel_keeps_paid_plan_until_period_end(db, toss):
-    user = _make_user(db, "8300000020")
+    user = make_user(db, "8300000020")
     billing_service.confirm_billing(db, user.id, "auth_1", "cus_1", "pro")
     period_end = db.scalar(
         select(UserSubscription.current_period_end).where(UserSubscription.user_id == user.id)
@@ -319,7 +313,7 @@ def test_cancel_keeps_paid_plan_until_period_end(db, toss):
 
 
 def test_cancel_free_plan_is_rejected(db, toss):
-    user = _make_user(db, "8300000021")
+    user = make_user(db, "8300000021")
 
     with pytest.raises(ValueError):
         billing_service.cancel_billing(db, user.id)
@@ -328,7 +322,7 @@ def test_cancel_free_plan_is_rejected(db, toss):
 # ---- 4) 만료 강등 ----
 
 def test_expired_paid_subscription_reads_as_free_plan(db, toss):
-    user = _make_user(db, "8300000030")
+    user = make_user(db, "8300000030")
     billing_service.confirm_billing(db, user.id, "auth_1", "cus_1", "premium")
     subscription = db.scalar(select(UserSubscription).where(UserSubscription.user_id == user.id))
 
@@ -348,7 +342,7 @@ def test_expired_paid_subscription_reads_as_free_plan(db, toss):
 
 
 def test_active_paid_subscription_is_not_downgraded(db, toss):
-    user = _make_user(db, "8300000031")
+    user = make_user(db, "8300000031")
     billing_service.confirm_billing(db, user.id, "auth_1", "cus_1", "pro")
 
     assert subscription_service.get_user_plan(db, user.id).code == "pro"
@@ -356,7 +350,7 @@ def test_active_paid_subscription_is_not_downgraded(db, toss):
 
 def test_paid_plan_without_period_end_has_no_expiry(db, toss):
     # 결제 이전에 부여된 구독(가입 시 plan_code 선택)은 만료 개념이 없다 — 강등하면 안 된다.
-    user = _make_user(db, "8300000032")
+    user = make_user(db, "8300000032")
     subscription = subscription_service.get_subscription(db, user.id)
     subscription.plan_code = "premium"
     subscription.current_period_end = None
@@ -368,7 +362,7 @@ def test_paid_plan_without_period_end_has_no_expiry(db, toss):
 # ---- 5) PUT /api/me/subscription 제한 ----
 
 def test_change_plan_blocks_paid_upgrade(db, toss):
-    user = _make_user(db, "8300000040")
+    user = make_user(db, "8300000040")
 
     with pytest.raises(ValueError, match="결제"):
         subscription_service.change_plan(db, user.id, "pro")
@@ -377,7 +371,7 @@ def test_change_plan_blocks_paid_upgrade(db, toss):
 
 
 def test_change_plan_allows_downgrade_to_free(db, toss):
-    user = _make_user(db, "8300000041")
+    user = make_user(db, "8300000041")
     billing_service.confirm_billing(db, user.id, "auth_1", "cus_1", "pro")
 
     subscription = subscription_service.change_plan(db, user.id, "lite")
@@ -391,7 +385,7 @@ def test_change_plan_allows_downgrade_to_free(db, toss):
 # ---- 6) 갱신 배치 ----
 
 def _make_due_subscription(db, kakao_id: str, plan_code: str = "pro") -> User:
-    user = _make_user(db, kakao_id)
+    user = make_user(db, kakao_id)
     billing_service.confirm_billing(db, user.id, "auth_1", f"cus_{kakao_id}", plan_code)
     subscription = db.scalar(select(UserSubscription).where(UserSubscription.user_id == user.id))
     # 청구 예정일이 지난 상태로 만든다 (기간 종료 = 청구 예정 = 1분 전).
@@ -444,7 +438,7 @@ def test_renew_batch_is_idempotent(db, toss):
 
 def test_done_payment_is_not_applied_twice(db, toss):
     # 멱등의 마지막 방어선 — 이미 done 인 주문은 재반영하지 않는다(기간 이중 연장 방지).
-    user = _make_user(db, "8300000052")
+    user = make_user(db, "8300000052")
     billing_service.confirm_billing(db, user.id, "auth_1", "cus_1", "pro")
     payment = db.scalar(select(Payment).where(Payment.user_id == user.id))
 

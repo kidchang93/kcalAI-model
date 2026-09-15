@@ -13,24 +13,14 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-import pytest
 from timeutil import UTC
 
-from models.auth_model import User
 from models.health_model import MealItem, MealLog
 from schemas.health_schema import MealItemResponse, MealResponse
 from services import health_service
 
 TODAY = datetime.now(UTC).date()
 NOON = datetime.combine(TODAY, datetime.min.time(), tzinfo=UTC) + timedelta(hours=12)
-
-
-@pytest.fixture
-def user(db):
-    row = User(kakao_id="meal-snapshot-test", nickname="스냅샷테스터")
-    db.add(row)
-    db.flush()
-    return row
 
 
 def test_response_schema_exposes_every_snapshot_column():

@@ -28,7 +28,7 @@ die() { echo -e "\033[1;31m[provision] $*\033[0m" >&2; exit 1; }
 log "시스템 패키지 설치"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y python3-venv python3-pip postgresql postgresql-contrib git curl ca-certificates
+apt-get install -y python3-venv python3-pip postgresql postgresql-contrib curl ca-certificates
 
 # ---- 2. Postgres: 유저·DB·확장 (idempotent) ----
 log "Postgres 유저·DB 준비"
@@ -69,8 +69,6 @@ else
   cat > "$APP_DIR/.env" <<ENV
 APP_ENV=production
 DATABASE_URL=postgresql+psycopg2://${DB_USER}:${DB_PASSWORD}@localhost:5432/${DB_NAME}
-AUTH_INCLUDE_DEV_CODE=false
-AUTH_CODE_TTL_MINUTES=5
 AUTH_SESSION_TTL_DAYS=30
 AUTH_CODE_PEPPER=${PEPPER}
 HEALTH_ENCRYPTION_KEY=${ENCKEY}
@@ -104,12 +102,9 @@ sed -e "s#__APP_USER__#${APP_USER}#g" -e "s#__APP_DIR__#${APP_DIR}#g" \
   "$APP_DIR/deploy/kcalai.cron" > /etc/cron.d/kcalai
 chmod 644 /etc/cron.d/kcalai
 
-# 기동 대기(최대 ~30초 폴링).
+# 기동 대기(2초 간격 최대 15회 재시도, ~30초).
 ok=0
-for _ in $(seq 1 15); do
-  if curl -sf -o /dev/null http://127.0.0.1:8000/openapi.json; then ok=1; break; fi
-  sleep 2
-done
+curl -sf --retry 15 --retry-delay 2 --retry-all-errors -o /dev/null http://127.0.0.1:8000/openapi.json && ok=1
 systemctl --no-pager --lines=5 status "${SERVICE_NAME}" || true
 
 if [ "$ok" = 1 ]; then

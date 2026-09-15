@@ -71,8 +71,6 @@ ACTIVITY_NOTICE = (
 
 # ── MET (대사당량) — 운동 시간을 kcal 로 환산한다 ────────────────────────────
 # 소비 kcal ≈ MET × 체중(kg) × 시간(h). 강도 구분은 중강도 3.0~5.9, 고강도 6.0 이상.
-MODERATE_MET_MIN = 3.0
-VIGOROUS_MET_MIN = 6.0
 
 # 운동 종류 → (표시명, MET, 기본 강도). 사용자가 고르는 목록이자 kcal 산출의 계수다.
 # 값은 Compendium of Physical Activities 의 대표값 범위를 따른다.
@@ -93,11 +91,6 @@ EXERCISE_TYPES: dict[str, tuple[str, float, str]] = {
 # 지침의 강도 축 (보건복지부 2023). 권장 활동량 집계는 중강도·고강도만 센다 —
 # 저강도(가벼운 스트레칭 등)는 권장량에 포함되지 않는다.
 INTENSITIES: tuple[str, ...] = ("light", "moderate", "vigorous")
-INTENSITY_LABELS: dict[str, str] = {
-    "light": "저강도",
-    "moderate": "중강도",
-    "vigorous": "고강도",
-}
 
 # 근력운동은 '분'이 아니라 '주 몇 일'로 센다 (지침이 그렇게 권고한다).
 STRENGTH_EXERCISE_TYPE = "strength"

@@ -9,9 +9,11 @@
 from datetime import date
 
 import pytest
+from sqlalchemy import select
 
-from models.auth_model import User
+from factories import make_user
 from models.consent_model import UserCondition
+from models.recommendation_model import DietRecommendation
 from services import ckd_food_rules
 from services import recommendation_service as svc
 from services.recommendation_service import get_recommendation
@@ -21,9 +23,7 @@ REC_DATE = date(2026, 7, 20)
 
 @pytest.fixture
 def ckd_user(db):
-    user = User(kakao_id="ckd-integration-test", nickname="신장테스터")
-    db.add(user)
-    db.flush()
+    user = make_user(db, kakao_id="ckd-integration-test", nickname="신장테스터")
     db.add(UserCondition(user_id=user.id, condition="ckd"))
     db.flush()
     return user
@@ -64,18 +64,18 @@ class TestPotassiumTierFollowsStage:
 class TestCkdRecommendationIntegration:
     def test_meal_items_carry_measured_nutrients(self, db, ckd_user):
         result = get_recommendation(db, ckd_user.id, REC_DATE, "lunch")
-        assert result.cached is False
-        assert len(result.items) > 0, "점심 후보가 비어서는 안 된다"
+        assert result["cached"] is False
+        assert len(result["items"]) > 0, "점심 후보가 비어서는 안 된다"
         # 식사 대분류는 칼륨·인이 83% 채워져 있어 최소 한 항목엔 실측값이 있어야 한다.
-        assert any(item.get("potassium_mg") is not None for item in result.items)
-        assert any(item.get("sodium_mg") is not None for item in result.items)
-        for item in result.items:
+        assert any(item.get("potassium_mg") is not None for item in result["items"])
+        assert any(item.get("sodium_mg") is not None for item in result["items"])
+        for item in result["items"]:
             assert {"sodium_mg", "potassium_mg", "phosphorus_mg", "protein_g"} <= item.keys()
 
     def test_ckd_items_carry_display_tiers(self, db, ckd_user):
         # 신장병 사용자는 칼륨·인 등급이 실려야 한다 (docs/CKD_NUTRITION.md 3-4).
         result = get_recommendation(db, ckd_user.id, REC_DATE, "lunch")
-        for item in result.items:
+        for item in result["items"]:
             assert "potassium_tier" in item
             assert "phosphorus_tier" in item
             assert item["potassium_tier"] in (None, "low", "mid", "high")
@@ -86,19 +86,24 @@ class TestCkdRecommendationIntegration:
 
     def test_tiers_are_not_persisted_on_the_cached_row(self, db, ckd_user):
         # 등급은 응답에만 얹는다 — 질병이 바뀌면 저장된 등급이 거짓이 되기 때문 (tips 와 같은 정책).
-        result = get_recommendation(db, ckd_user.id, REC_DATE, "dinner")
-        assert all("potassium_tier" not in item for item in result.recommendation.items)
+        get_recommendation(db, ckd_user.id, REC_DATE, "dinner")
+        stored = db.scalar(
+            select(DietRecommendation).where(
+                DietRecommendation.user_id == ckd_user.id,
+                DietRecommendation.rec_date == REC_DATE,
+                DietRecommendation.meal_type == "dinner",
+            )
+        )
+        assert all("potassium_tier" not in item for item in stored.items)
 
     def test_non_ckd_user_gets_no_tiers(self, db):
-        user = User(kakao_id="plain-tier-test", nickname="일반등급")
-        db.add(user)
-        db.flush()
+        user = make_user(db, kakao_id="plain-tier-test", nickname="일반등급")
         result = get_recommendation(db, user.id, REC_DATE, "lunch")
-        assert len(result.items) > 0
-        assert all("potassium_tier" not in item for item in result.items)
+        assert len(result["items"]) > 0
+        assert all("potassium_tier" not in item for item in result["items"])
 
     def test_ckd_tips_present(self, db, ckd_user):
-        tips = get_recommendation(db, ckd_user.id, REC_DATE, "lunch").tips
+        tips = get_recommendation(db, ckd_user.id, REC_DATE, "lunch")["tips"]
         joined = " ".join(tips)
         assert "나트륨" in joined  # low_sodium
         assert ("데친" in joined) or ("담" in joined)  # low_potassium 조리법
@@ -106,7 +111,7 @@ class TestCkdRecommendationIntegration:
 
     def test_snack_pool_excludes_high_potassium_and_phosphorus(self, db, ckd_user):
         result = get_recommendation(db, ckd_user.id, REC_DATE, "snack")
-        for item in result.items:
+        for item in result["items"]:
             hit_k = _contains_any(item["name"], ckd_food_rules.POTASSIUM_HIGH_KEYWORDS)
             hit_p = _contains_any(item["name"], ckd_food_rules.HIGH_PHOSPHORUS_KEYWORDS)
             assert hit_k is None, f"고칼륨 간식이 추천됨: {item['name']} ({hit_k})"
@@ -116,7 +121,7 @@ class TestCkdRecommendationIntegration:
         # 실측 칼륨·인 상한을 넘는 항목이 어느 끼니에도 새지 않아야 한다 (고구마 804·간 409 회귀 방어).
         for meal in ("breakfast", "lunch", "dinner", "snack"):
             result = get_recommendation(db, ckd_user.id, REC_DATE, meal)
-            for item in result.items:
+            for item in result["items"]:
                 k = item.get("potassium_mg")
                 p = item.get("phosphorus_mg")
                 assert k is None or k <= ckd_food_rules.POTASSIUM_SERVING_HIGH_MG, (
@@ -134,20 +139,18 @@ class TestCkdRecommendationIntegration:
         하는 질문은 "뭘 먹을까"다.
         """
         result = get_recommendation(db, ckd_user.id, REC_DATE, "snack")
-        assert len(result.items) > 0, "간식 후보가 비어서는 안 된다"
-        for item in result.items:
+        assert len(result["items"]) > 0, "간식 후보가 비어서는 안 된다"
+        for item in result["items"]:
             assert item["kcal"] >= svc.MIN_RECOMMENDABLE_KCAL, item["name"]
 
     def test_excluded_reflects_ckd_condition(self, db, ckd_user):
         result = get_recommendation(db, ckd_user.id, REC_DATE, "dinner")
-        excluded = result.recommendation.excluded
+        excluded = result["excluded"]
         codes = {e["code"] for e in excluded if e.get("type") == "condition"}
         assert "ckd" in codes
 
     def test_non_ckd_user_gets_no_tips_and_full_pool(self, db):
-        user = User(kakao_id="plain-test", nickname="일반")
-        db.add(user)
-        db.flush()
+        user = make_user(db, kakao_id="plain-test", nickname="일반")
         result = get_recommendation(db, user.id, REC_DATE, "snack")
-        assert result.tips == []
-        assert len(result.items) > 0
+        assert result["tips"] == []
+        assert len(result["items"]) > 0

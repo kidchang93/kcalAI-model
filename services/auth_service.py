@@ -24,6 +24,7 @@ from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from models.auth_model import AuthSession, KakaoLinkCode, User
+from services.errors import BadRequestError, NotFoundError
 from services.consent_service import PRIVACY, TERMS, ensure_current_version, record_signup_consents
 from services.subscription_service import create_subscription
 
@@ -157,7 +158,7 @@ def _consume_link_code(db: Session, raw_code: str) -> KakaoLinkCode:
     )
 
     if link_code is None:
-        raise ValueError("로그인 정보가 만료되었습니다. 다시 시도해주세요.")
+        raise BadRequestError("로그인 정보가 만료되었습니다. 다시 시도해주세요.")
 
     link_code.consumed_at = now
     db.flush()
@@ -171,7 +172,7 @@ def kakao_login(db: Session, raw_code: str) -> tuple[User, AuthSession, str]:
     user = _get_user_by_kakao_id(db, link_code.kakao_id)
 
     if user is None:
-        raise LookupError("가입되지 않은 카카오 계정입니다. 회원가입을 먼저 진행해주세요.")
+        raise NotFoundError("가입되지 않은 카카오 계정입니다. 회원가입을 먼저 진행해주세요.")
 
     # 카카오에서 닉네임을 바꿨으면 따라간다 (그룹에 보이는 이름이다).
     if link_code.nickname and link_code.nickname != user.nickname:
@@ -196,7 +197,7 @@ def kakao_signup(
 ) -> tuple[User, AuthSession, str]:
     # 동의는 회원 행을 만들기 전에 본다 — 미동의 요청이 연동 코드만 소비하고 끝나지 않게 한다.
     if not (agreed_terms and agreed_privacy):
-        raise ValueError("서비스 이용약관과 개인정보 처리방침에 모두 동의해야 가입할 수 있습니다.")
+        raise BadRequestError("서비스 이용약관과 개인정보 처리방침에 모두 동의해야 가입할 수 있습니다.")
 
     # 버전 대조도 **코드 소비 전**이다. 옛 문서를 띄운 앱의 요청이 1회용 코드만 태우고 400 이
     # 되면, 사용자는 카카오 로그인부터 다시 해야 한다.
@@ -209,14 +210,14 @@ def kakao_signup(
     link_code = _consume_link_code(db, raw_code)
 
     if _get_user_by_kakao_id(db, link_code.kakao_id) is not None:
-        raise ValueError("이미 가입된 카카오 계정입니다. 로그인으로 진행해주세요.")
+        raise BadRequestError("이미 가입된 카카오 계정입니다. 로그인으로 진행해주세요.")
 
     user = User(kakao_id=link_code.kakao_id, nickname=link_code.nickname)
     db.add(user)
     db.flush()
 
     # 회원·동의·구독은 한 트랜잭션이다. 셋 중 하나만 남는 상태(동의 없는 회원, 요금제 없는
-    # 회원)가 생기면 안 된다. 없는 plan_code 는 여기서 ValueError → 400.
+    # 회원)가 생기면 안 된다. 없는 plan_code 는 여기서 BadRequestError → 400.
     record_signup_consents(db, user.id, terms_version, privacy_version)
     create_subscription(db, user.id, plan_code)
 

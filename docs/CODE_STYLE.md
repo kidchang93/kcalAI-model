@@ -11,7 +11,6 @@
 | Pydantic 계약 | `schemas/` | `<domain>_schema.py` 또는 `<domain>_schemas.py` |
 | ORM 모델 | `models/` | `<domain>_model.py` |
 | 학습 산출물 | `runs/` | 커밋하지 않음 (기존 74개는 예외) |
-| IDE HTTP 요청 | `http/` | `test_<domain>.http` |
 
 > `schemas/`의 파일명은 단수 `_schema.py`를 씁니다 (`auth_schema.py`, `predict_schema.py`).
 
@@ -27,7 +26,7 @@ from api.predict_api import router as predict_router
 
 | 대상 | 규칙 | 예시 |
 |------|------|------|
-| 함수·변수 | `snake_case` | `create_signup_code`, `predict_image`, `setup_level_logger` |
+| 함수·변수 | `snake_case` | `create_signup_code`, `predict_image`, `get_logger` |
 | 모듈 내부 전용 함수 | `_` 접두사 | `_get_user_by_phone`, `_hash_code`, `_consume_valid_code` |
 | 클래스 | `PascalCase` | `PhoneVerificationCode`, `AuthTokenResponse` |
 | 모듈 상수 | `UPPER_SNAKE_CASE` | `CODE_TTL_MINUTES`, `AUTH_CODE_PEPPER` |
@@ -123,25 +122,22 @@ class AuthUser(BaseModel):
 ## FastAPI 라우트
 
 ```python
-@router.post(
-    "/auth/signup/request-code",
-    response_model=PhoneCodeResponse,
-    responses={400: {"model": AuthError}},
+@router.put(
+    "/me/goal",
+    response_model=GoalResponse,
+    responses={400: {"model": ErrorResponse}, 401: {"model": ErrorResponse}},   # schemas/common_schema.py 공용
 )
-def request_signup_code(request: PhoneNumberRequest, db: Session = Depends(get_db)):
-    try:
-        expires_at, dev_code = create_signup_code(db, request.phone_number)
-        return {
-            "message": "회원가입 인증번호를 발급했습니다.",
-            "expires_at": expires_at,
-            "dev_code": dev_code,
-        }
-    except ValueError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+def update_goal(request: GoalUpsertRequest, current_user: CurrentUser, db: DB):   # api/dependencies.py 별칭
+    # 400 은 서비스가 BadRequestError 로 던지고 main.py 전역 핸들러가 변환한다 — try/except 를 두지 않는다.
+    return health_service.upsert_goal(db, current_user.id, **request.model_dump())
 ```
 
 - 요청 바디 파라미터명은 `request`.
+- 의존성은 `api/dependencies.py`의 별칭으로 받습니다: `current_user: CurrentUser`(Bearer) · `current_user: ConsentedUser`(Bearer + `sensitive_health` 동의) · `db: DB`. `Depends(...)`를 시그니처에 직접 쓰지 않습니다. 별칭은 기본값이 없으므로 `Query(...)` 같은 기본값 인자보다 **앞에** 둡니다.
+- 실패 응답 모델은 공용 `ErrorResponse`, `{message}` 응답은 공용 `MessageResponse`(`schemas/common_schema.py`)를 씁니다. 도메인별 `XxxError`를 새로 만들지 않습니다.
+- 요청 필드를 이름 그대로 전부 서비스에 넘길 때는 `**request.model_dump()`. 일부만 넘기거나 이름·변환이 다르면 풀어 씁니다.
 - 상태 코드는 `status.HTTP_400_BAD_REQUEST` 상수를 씁니다. 숫자 리터럴을 쓰지 않습니다.
+- **400·403·404는 라우트에서 변환하지 않습니다.** 서비스가 `services/errors.py`의 `BadRequestError`·`ForbiddenError`·`NotFoundError`를 던지면 `main.py`의 전역 핸들러가 `{"detail": str(error)}`로 바꿉니다. 라우트의 `try/except`는 **다른 상태코드**(502·503), **문구 치환**, **로깅·환불** 같은 추가 동작이 있을 때만 둡니다. 라우터만 올린 테스트 앱은 `main.add_service_error_handlers(app)`를 부릅니다.
 - 예외 재발생 시 `from error`를 붙입니다.
 - DB를 만지지 않는 라우트가 아니면 `def`(동기)를 씁니다. 현재 `async def`는 파일 I/O가 있는 `predict`뿐입니다.
 
@@ -160,21 +156,19 @@ AUTH_INCLUDE_DEV_CODE = os.getenv("AUTH_INCLUDE_DEV_CODE", "true").lower() == "t
 
 ## 로깅
 
-`log_utils.setup_level_logger(level)`로 레벨별 로거를 만듭니다. `LevelFilter` 때문에 **해당 레벨만** 기록됩니다.
+모듈마다 `log_utils.get_logger(__name__)`로 로거 **하나**를 만듭니다. 레벨에 따라 파일이 갈립니다.
 
 ```python
-import logging
-from log_utils import setup_level_logger
+from log_utils import get_logger
 
-info_logger = setup_level_logger(logging.INFO)     # → task-logs/info_log.txt
-error_logger = setup_level_logger(logging.ERROR)   # → task-logs/error_log.txt
+logger = get_logger(__name__)
 
-info_logger.info(f"{file.filename} 정상 수집 완료")
-error_logger.error(f"predict 실패 {file.filename}: {e!r}")
+logger.info(f"{file.filename} 정상 수집 완료")      # → task-logs/info_log.txt (ERROR 미만)
+logger.error(f"predict 실패 {file.filename}: {e!r}")  # → task-logs/error_log.txt (ERROR 이상)
 ```
 
 - `print()`를 쓰지 않습니다.
-- **INFO 로거로 `error()`를 호출하면 아무 데도 기록되지 않습니다.** `LevelFilter`가 레코드를 버립니다. 레벨마다 로거를 따로 만드세요.
+- `logging.getLogger(__name__)`를 직접 쓰지 않습니다. 핸들러는 공통 상위 로거 `kcal`에만 붙어 있어(`get_logger`가 `kcal.<name>`을 준다) 직접 만든 로거는 **파일에 남지 않습니다**(INFO는 아예 사라진다). root에 핸들러를 달지 않는 이유는 서드파티(httpx·urllib3) 로그가 파일로 새기 때문입니다 — 토스 요청 URL에 빌링키가 실립니다.
 - 예외는 `{e!r}`로 남깁니다. `str(e)`는 예외 타입을 잃습니다.
 - 로그에 인증번호, 토큰, 자격증명을 남기지 않습니다.
 
@@ -207,9 +201,10 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 | `class Config: orm_mode = True` | `model_config = {"from_attributes": True}` |
 | `except Exception: return {"error": str(e)}` | `raise HTTPException(...)`. `response_model`이 걸린 라우트에서 `return`으로 다른 형태를 내보내면 **500 평문**이 됩니다 |
 | `raise HTTPException(500, detail=str(e))` | 사용자용 한국어 메시지. 내부 예외는 로거로만 |
+| 라우트에서 `except ValueError as error: raise HTTPException(400, detail=str(error))` | 서비스가 `BadRequestError`를 던진다 (전역 핸들러). 내장 예외를 전역 매핑하지 않는다 — `KeyError`·`ValidationError`까지 4xx로 덮인다 |
 | `api/`에서 SQLAlchemy 쿼리 작성 | `services/`로 이동 |
 | `api/`에서 `os.getenv` 호출 | `services/`가 설정을 읽습니다 |
-| `services/`에서 `fastapi` import | `ValueError`/`RuntimeError`를 던지고 `api/`가 변환 |
+| `services/`에서 `fastapi` import | `services/errors.py`의 예외를 던진다 (400·403·404는 전역 핸들러, 그 밖은 `api/`가 변환) |
 | 라우트를 `main.py`에 직접 정의 | `api/<domain>_api.py` + `include_router(prefix="/api")` |
 | `@app.on_event("startup")` | `lifespan` 컨텍스트 매니저를 씁니다 (2026-07-12 이전 완료) |
 | 비밀값 하드코딩 | `os.getenv` + `.env.example` 등록 |
@@ -217,7 +212,7 @@ model = YOLO("runs/classify/s3_korean_food_all_classes/weights/last.pt")
 | 함수명에 모델 버전 포함 (`...GptOss20B`) | 모델은 바뀝니다. 역할로 명명하세요 |
 | 미사용 import (`from cProfile import label`) | 삭제 |
 | 주석 처리된 옛 구현을 파일에 남기기 | 삭제. git이 기억합니다 |
-| `print()` 디버깅 | `log_utils.setup_level_logger(logging.INFO)` |
+| `print()` 디버깅 | `log_utils.get_logger(__name__)` |
 
 ## 테스트 스타일
 

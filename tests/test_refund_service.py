@@ -13,34 +13,21 @@ from datetime import datetime, timedelta
 import pytest
 from timeutil import UTC
 
-from models.auth_model import User
-from models.subscription_model import Payment
+from factories import make_payment
 from services import billing_service, toss_client
-
-
-@pytest.fixture
-def user(db):
-    row = User(kakao_id="refund-test", nickname="환불테스터")
-    db.add(row)
-    db.flush()
-    return row
 
 
 @pytest.fixture
 def paid(db, user):
     """승인 완료된 결제 1건."""
-    payment = Payment(
-        user_id=user.id,
-        order_id=f"order-refund-{user.id}",
-        plan_code="pro",
-        amount=5000,
+    return make_payment(
+        db,
+        user.id,
+        f"order-refund-{user.id}",
         status=billing_service.PAYMENT_DONE,
         payment_key="test_payment_key",
         approved_at=datetime.now(UTC) - timedelta(days=1),
     )
-    db.add(payment)
-    db.flush()
-    return payment
 
 
 class _Recorder:
@@ -118,15 +105,9 @@ def test_double_refund_is_blocked_before_calling_toss(db, paid, monkeypatch):
 def test_unpaid_payment_cannot_be_refunded(db, user, monkeypatch):
     recorder = _Recorder()
     monkeypatch.setattr(toss_client, "cancel_payment", recorder)
-    payment = Payment(
-        user_id=user.id,
-        order_id=f"order-ready-{user.id}",
-        plan_code="pro",
-        amount=5000,
-        status=billing_service.PAYMENT_READY,
+    payment = make_payment(
+        db, user.id, f"order-ready-{user.id}", status=billing_service.PAYMENT_READY
     )
-    db.add(payment)
-    db.flush()
 
     with pytest.raises(ValueError, match="승인 완료된 결제만"):
         billing_service.refund_payment(db, payment.id, "잘못된 요청")

@@ -1,39 +1,21 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, status
 
-from api.dependencies import get_current_user
-from database import get_db
-from models.auth_model import User
+from api.dependencies import DB, ConsentedUser, CurrentUser
+from schemas.common_schema import ErrorResponse, MessageResponse
 from schemas.consent_schema import (
     AllergiesPutRequest,
     AllergiesResponse,
     ConditionsPutRequest,
     ConditionsResponse,
     ConsentCreateRequest,
-    ConsentError,
     ConsentResponse,
     ConsentRevokeRequest,
     HealthProfileResponse,
     HealthProfileUpsertRequest,
-    MessageResponse,
 )
 from services import consent_service
 
 router = APIRouter()
-
-
-def require_sensitive_consent(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> User:
-    # 401(미로그인)은 get_current_user 가 처리한다. 여기는 로그인된 사용자의 동의 여부만 본다.
-    # 버전이 낡은 동의도 403 이다 — 판정과 문구는 서비스가 정한다(ensure_sensitive_consent).
-    try:
-        consent_service.ensure_sensitive_consent(db, current_user.id)
-    except consent_service.SensitiveConsentRequiredError as error:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
-
-    return current_user
 
 
 # ---- 동의 ----
@@ -41,12 +23,9 @@ def require_sensitive_consent(
 @router.get(
     "/me/consents",
     response_model=list[ConsentResponse],
-    responses={401: {"model": ConsentError}},
+    responses={401: {"model": ErrorResponse}},
 )
-def read_consents(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def read_consents(current_user: CurrentUser, db: DB):
     return [
         consent_service.serialize_consent(consent)
         for consent in consent_service.list_consents(db, current_user.id)
@@ -57,38 +36,21 @@ def read_consents(
     "/me/consents",
     response_model=ConsentResponse,
     status_code=status.HTTP_201_CREATED,
-    responses={400: {"model": ConsentError}, 401: {"model": ConsentError}},
+    responses={400: {"model": ErrorResponse}, 401: {"model": ErrorResponse}},
 )
-def create_consent(
-    request: ConsentCreateRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    try:
-        consent = consent_service.create_consent(db, current_user.id, request.kind, request.version)
-    except ValueError as error:
-        # 앱이 옛 문서를 보여주고 있다 (ensure_current_version). 메시지는 서비스가 만든
-        # 사용자용 한국어 문구다 — 앱을 업데이트하면 해소된다.
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
-
+def create_consent(request: ConsentCreateRequest, current_user: CurrentUser, db: DB):
+    # 앱이 옛 문서를 보여주고 있으면 400 이다 (ensure_current_version) — 앱을 업데이트하면 해소된다.
+    consent = consent_service.create_consent(db, current_user.id, request.kind, request.version)
     return consent_service.serialize_consent(consent)
 
 
 @router.post(
     "/me/consents/revoke",
     response_model=MessageResponse,
-    responses={401: {"model": ConsentError}, 404: {"model": ConsentError}},
+    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
 )
-def revoke_consent(
-    request: ConsentRevokeRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    try:
-        consent_service.revoke_consent(db, current_user.id, request.kind)
-    except LookupError as error:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
-
+def revoke_consent(request: ConsentRevokeRequest, current_user: CurrentUser, db: DB):
+    consent_service.revoke_consent(db, current_user.id, request.kind)
     return {"message": "동의를 철회했습니다."}
 
 
@@ -97,35 +59,19 @@ def revoke_consent(
 @router.get(
     "/me/health-profile",
     response_model=HealthProfileResponse,
-    responses={401: {"model": ConsentError}, 403: {"model": ConsentError}, 404: {"model": ConsentError}},
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
 )
-def read_health_profile(
-    current_user: User = Depends(require_sensitive_consent),
-    db: Session = Depends(get_db),
-):
-    try:
-        return consent_service.get_health_profile(db, current_user.id)
-    except ValueError as error:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+def read_health_profile(current_user: ConsentedUser, db: DB):
+    return consent_service.get_health_profile(db, current_user.id)
 
 
 @router.put(
     "/me/health-profile",
     response_model=HealthProfileResponse,
-    responses={401: {"model": ConsentError}, 403: {"model": ConsentError}},
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}},
 )
-def update_health_profile(
-    request: HealthProfileUpsertRequest,
-    current_user: User = Depends(require_sensitive_consent),
-    db: Session = Depends(get_db),
-):
-    return consent_service.upsert_health_profile(
-        db,
-        current_user.id,
-        blood_type=request.blood_type,
-        rh=request.rh,
-        ckd_stage=request.ckd_stage,
-    )
+def update_health_profile(request: HealthProfileUpsertRequest, current_user: ConsentedUser, db: DB):
+    return consent_service.upsert_health_profile(db, current_user.id, **request.model_dump())
 
 
 # ---- 질병 ----
@@ -133,30 +79,19 @@ def update_health_profile(
 @router.get(
     "/me/conditions",
     response_model=ConditionsResponse,
-    responses={401: {"model": ConsentError}, 403: {"model": ConsentError}},
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}},
 )
-def read_conditions(
-    current_user: User = Depends(require_sensitive_consent),
-    db: Session = Depends(get_db),
-):
+def read_conditions(current_user: ConsentedUser, db: DB):
     return {"conditions": consent_service.list_conditions(db, current_user.id)}
 
 
 @router.put(
     "/me/conditions",
     response_model=ConditionsResponse,
-    responses={400: {"model": ConsentError}, 401: {"model": ConsentError}, 403: {"model": ConsentError}},
+    responses={400: {"model": ErrorResponse}, 401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}},
 )
-def replace_conditions(
-    request: ConditionsPutRequest,
-    current_user: User = Depends(require_sensitive_consent),
-    db: Session = Depends(get_db),
-):
-    try:
-        conditions = consent_service.replace_conditions(db, current_user.id, list(request.conditions))
-    except ValueError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
-
+def replace_conditions(request: ConditionsPutRequest, current_user: ConsentedUser, db: DB):
+    conditions = consent_service.replace_conditions(db, current_user.id, list(request.conditions))
     return {"conditions": conditions}
 
 
@@ -165,32 +100,21 @@ def replace_conditions(
 @router.get(
     "/me/allergies",
     response_model=AllergiesResponse,
-    responses={401: {"model": ConsentError}, 403: {"model": ConsentError}},
+    responses={401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}},
 )
-def read_allergies(
-    current_user: User = Depends(require_sensitive_consent),
-    db: Session = Depends(get_db),
-):
+def read_allergies(current_user: ConsentedUser, db: DB):
     return {"allergies": consent_service.list_allergies(db, current_user.id)}
 
 
 @router.put(
     "/me/allergies",
     response_model=AllergiesResponse,
-    responses={400: {"model": ConsentError}, 401: {"model": ConsentError}, 403: {"model": ConsentError}},
+    responses={400: {"model": ErrorResponse}, 401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}},
 )
-def replace_allergies(
-    request: AllergiesPutRequest,
-    current_user: User = Depends(require_sensitive_consent),
-    db: Session = Depends(get_db),
-):
-    try:
-        allergies = consent_service.replace_allergies(
-            db,
-            current_user.id,
-            [allergy.model_dump() for allergy in request.allergies],
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
-
+def replace_allergies(request: AllergiesPutRequest, current_user: ConsentedUser, db: DB):
+    allergies = consent_service.replace_allergies(
+        db,
+        current_user.id,
+        [allergy.model_dump() for allergy in request.allergies],
+    )
     return {"allergies": allergies}

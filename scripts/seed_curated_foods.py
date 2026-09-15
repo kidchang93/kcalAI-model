@@ -123,8 +123,7 @@ def seed() -> None:
         for label, kcal, serving_desc in CURATED_FOODS
     ]
 
-    session = SessionLocal()
-    try:
+    with SessionLocal() as session:
         statement = insert(FoodNutrition).values(rows)
         # 같은 라벨이 이미 curated 로 있으면 값 갱신, mfds 등 다른 source 면 건드리지 않는다.
         statement = statement.on_conflict_do_update(
@@ -139,8 +138,6 @@ def seed() -> None:
         session.execute(statement)
         session.commit()
         print(f"curated 시드 {len(rows)}건 upsert 완료.")
-    finally:
-        session.close()
 
 
 if __name__ == "__main__":

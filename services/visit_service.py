@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from models.health_model import CareVisit
+from services.errors import BadRequestError
 
 # 오타 방어 범위. 의학적 판단이 아니라 "2062년"처럼 손이 미끄러진 값을 막는 것이다.
 # 과거를 조금 허용하는 이유는, 진료를 다녀온 뒤 다음 일정을 아직 못 정한 사람이 지난
@@ -23,7 +24,7 @@ _PAST_LIMIT_DAYS = 365
 _FUTURE_LIMIT_DAYS = 365 * 5
 
 
-class ScheduleOutOfRangeError(ValueError):
+class ScheduleOutOfRangeError(BadRequestError):
     pass
 
 

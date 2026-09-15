@@ -1,6 +1,6 @@
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime
 
-from timeutil import UTC
+from timeutil import UTC, day_bounds_utc
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -8,12 +8,8 @@ from sqlalchemy.orm import Session
 
 from models.group_model import GroupMember, GroupPet
 from models.pet_model import Pet, PetFeedingLog
+from services.errors import NotFoundError
 from services.subscription_service import ensure_can_create_pet
-
-
-def _day_bounds(target_date: date) -> tuple[datetime, datetime]:
-    start = datetime.combine(target_date, time.min, tzinfo=UTC)
-    return start, start + timedelta(days=1)
 
 
 def _get_owned_pet(db: Session, user_id: int, pet_id: int) -> Pet:
@@ -21,7 +17,7 @@ def _get_owned_pet(db: Session, user_id: int, pet_id: int) -> Pet:
 
     # 존재하지 않거나 남의 소유면 존재 자체를 숨긴다 (정보 노출 방지).
     if pet is None or pet.owner_id != user_id:
-        raise LookupError("반려동물을 찾을 수 없습니다.")
+        raise NotFoundError("반려동물을 찾을 수 없습니다.")
 
     return pet
 
@@ -31,7 +27,7 @@ def _get_accessible_pet(db: Session, user_id: int, pet_id: int) -> Pet:
     pet = db.scalar(select(Pet).where(Pet.id == pet_id, Pet.deleted_at.is_(None)))
 
     if pet is None:
-        raise LookupError("반려동물을 찾을 수 없습니다.")
+        raise NotFoundError("반려동물을 찾을 수 없습니다.")
 
     if pet.owner_id == user_id:
         return pet
@@ -43,7 +39,7 @@ def _get_accessible_pet(db: Session, user_id: int, pet_id: int) -> Pet:
         .limit(1)
     )
     if shared is None:
-        raise LookupError("반려동물을 찾을 수 없습니다.")
+        raise NotFoundError("반려동물을 찾을 수 없습니다.")
 
     return pet
 
@@ -182,7 +178,7 @@ def create_feeding(
 
 def list_feedings(db: Session, user_id: int, pet_id: int, target_date: date) -> list[PetFeedingLog]:
     pet = _get_accessible_pet(db, user_id, pet_id)
-    start, end = _day_bounds(target_date)
+    start, end = day_bounds_utc(target_date)
 
     return list(
         db.scalars(

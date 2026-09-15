@@ -5,9 +5,16 @@
 여기서 정의해 3.10에서도 동작하게 한다. (코드는 `from timeutil import UTC`로 쓴다.)
 """
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 UTC = timezone.utc
+
+
+def day_bounds_utc(target_date: date) -> tuple[datetime, datetime]:
+    """기록(끼니·운동·급여)의 하루 = **UTC 자정 경계** [시작, 다음 날 시작). 도메인마다 경계가
+    어긋나면 홈의 합계와 기록 목록이 서로 다른 하루를 보게 된다."""
+    start = datetime.combine(target_date, time.min, tzinfo=UTC)
+    return start, start + timedelta(days=1)
 
 # 요금제 일일 쿼터의 리셋 경계. 기록(meal_logs·weight_logs)의 하루 경계는 UTC지만, 쿼터는
 # "오늘 몇 건 남았나"를 사용자가 체감하는 값이라 국내 서비스 기준시(KST) 자정에 리셋한다.

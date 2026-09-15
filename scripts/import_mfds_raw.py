@@ -26,18 +26,15 @@ import sys
 from decimal import Decimal
 from pathlib import Path
 
-from sqlalchemy.dialects.postgresql import insert
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from database import SessionLocal  # noqa: E402
-from models.health_model import FoodNutrition  # noqa: E402
+from food_upsert import to_float, upsert  # noqa: E402
 
 import csv  # noqa: E402
 
 SOURCE_RAW = "mfds_raw"
+# 요리 실측(mfds)·감수(curated)·가공식품 집계(mfds_processed)는 덮지 않는다.
 OVERWRITABLE_SOURCES = ("llm", SOURCE_RAW)
-BATCH_SIZE = 1000
 
 # 원물 라벨이 기름으로 오폭한다(포도→포도씨유). 가공식품 임포트와 같은 이유.
 EXCLUDED_GROUPS = frozenset({"유지류"})
@@ -54,15 +51,6 @@ NUTRIENT_COLUMNS = {
     "potassium": "칼륨(mg)",
     "phosphorus": "인(mg)",
 }
-
-
-def to_float(raw) -> float | None:
-    if raw is None or str(raw).strip() == "":
-        return None
-    try:
-        return float(raw)
-    except ValueError:
-        return None
 
 
 def clean_name(name: str) -> str:
@@ -143,33 +131,6 @@ def build_records(buckets: dict[str, dict]) -> list[dict]:
     return records
 
 
-def upsert(records: list[dict]) -> None:
-    table = FoodNutrition.__table__
-    session = SessionLocal()
-    try:
-        for start in range(0, len(records), BATCH_SIZE):
-            batch = records[start : start + BATCH_SIZE]
-            statement = insert(table).values(batch)
-            statement = statement.on_conflict_do_update(
-                index_elements=[table.c.food_label],
-                set_={
-                    column: statement.excluded[column]
-                    for column in (
-                        "kcal_per_serving", "serving_desc", "serving_size_g",
-                        "carbs_g", "protein_g", "fat_g",
-                        "sugar_g", "sodium_mg", "potassium_mg", "phosphorus_mg",
-                        "food_group", "source",
-                    )
-                },
-                # 요리 실측(mfds)·감수(curated)·가공식품 집계(mfds_processed)는 덮지 않는다.
-                where=table.c.source.in_(OVERWRITABLE_SOURCES),
-            )
-            session.execute(statement)
-        session.commit()
-    finally:
-        session.close()
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="원재료성식품 CSV 를 food_nutrition 에 선별 적재한다.")
     parser.add_argument("csv_paths", type=Path, nargs="+", help="원재료성식품 CSV 경로 (복수 가능)")
@@ -180,7 +141,7 @@ def main() -> None:
             parser.error(f"CSV 파일을 찾을 수 없습니다: {path}")
 
     records = build_records(collect(args.csv_paths))
-    upsert(records)
+    upsert(records, OVERWRITABLE_SOURCES)
     print(f"upsert 완료: {len(records)}건 (source={SOURCE_RAW})")
 
 

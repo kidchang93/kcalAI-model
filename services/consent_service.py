@@ -10,6 +10,7 @@ from models.consent_model import UserAllergy, UserCondition, UserConsent, UserHe
 from models.health_model import CareVisit, LabResult
 from models.recommendation_model import DietRecommendation
 from services import meta_service
+from services.errors import BadRequestError, ForbiddenError, NotFoundError
 
 SENSITIVE_HEALTH = "sensitive_health"
 TERMS = "terms"
@@ -44,22 +45,10 @@ _CURRENT_VERSIONS = {
     GROUP_ACTIVITY_SHARE: GROUP_ACTIVITY_SHARE_VERSION,
 }
 
-# 버전이 바뀌면 **재동의 전까지 동의가 없는 것으로 보는** kind.
-#
-# 민감정보 동의만 넣는다. 개인정보보호법 제23조는 민감정보를 **알린 목적·항목 범위에서만**
-# 처리하게 하므로, 문구가 넓어졌는데 옛 동의로 계속 처리하면 그 범위를 벗어난다 — v1.0 은
-# 혈액형·질병·알러지를 "식단 추천에서 거르는 데"만 알렸고, 검사 수치·진료 메모와 경고·리포트
-# 용도는 v1.1 에서야 알린다.
-#
-# terms·privacy 는 넣지 않는다. 기능을 여닫는 게이트가 아니라 가입 조건이라, 버전으로 무효화
-# 하면 개정마다 기존 회원 전원이 서비스에서 막히는데 그건 제품 결정이지 이 함수가 정할 일이
-# 아니다. group_activity_share 는 버전을 올린 적이 없고, 판정도 `challenge_service` 가 따로 한다.
-_VERSION_GATED_KINDS = frozenset({SENSITIVE_HEALTH})
-
 # 앱이 옛 문서를 보여주고 있을 때의 사용자 메시지. 앱을 최신으로 올리면 해소된다.
 _STALE_VERSION_MESSAGE = "약관이 변경되었습니다. 앱을 최신 버전으로 업데이트한 뒤 다시 시도해주세요."
 
-# 민감정보 동의가 유효하지 않을 때의 사용자 메시지 (api 가 403 으로 내린다).
+# 민감정보 동의가 유효하지 않을 때의 사용자 메시지 (전역 핸들러가 403 으로 내린다).
 _SENSITIVE_CONSENT_REQUIRED_MESSAGE = "건강 민감정보 이용 동의가 필요합니다. 동의 후 다시 시도해주세요."
 # 동의는 살아 있는데 문구가 개정된 경우. "동의가 필요합니다"라고만 하면 이미 동의한 사용자는
 # 무엇이 문제인지 모른다 — 바뀌었다는 사실과 다시 동의할 곳을 알려 준다.
@@ -78,8 +67,8 @@ class ConsentState(StrEnum):
     OUTDATED = "outdated"
 
 
-class SensitiveConsentRequiredError(PermissionError):
-    """민감정보 동의가 유효하지 않다. 메시지는 사용자용 한국어 문구다 (api 가 403 으로 변환)."""
+class SensitiveConsentRequiredError(ForbiddenError):
+    """민감정보 동의가 유효하지 않다. 메시지는 사용자용 한국어 문구다 (전역 핸들러가 403 으로 변환)."""
 
 
 def is_current_version(kind: str, version: str) -> bool:
@@ -100,7 +89,7 @@ def ensure_current_version(kind: str, version: str) -> None:
     모르는 kind 는 통과시킨다 — 동의 종류가 늘 때 서버만 먼저 배포돼도 깨지지 않아야 한다.
     """
     if not is_current_version(kind, version):
-        raise ValueError(_STALE_VERSION_MESSAGE)
+        raise BadRequestError(_STALE_VERSION_MESSAGE)
 
 
 # ---- 동의 ----
@@ -134,7 +123,7 @@ def serialize_consent(consent: UserConsent) -> dict:
 
 
 def create_consent(db: Session, user_id: int, kind: str, version: str) -> UserConsent:
-    # 앱이 보여준 문서가 현재 것인지 먼저 확인한다 (api 레이어가 ValueError → 400).
+    # 앱이 보여준 문서가 현재 것인지 먼저 확인한다 (BadRequestError → 400).
     ensure_current_version(kind, version)
     # 재동의도 항상 새 행이다 (이력 보존). 기존 행을 갱신하지 않는다.
     consent = UserConsent(user_id=user_id, kind=kind, version=version)
@@ -150,7 +139,7 @@ def record_signup_consents(
     """가입 필수 동의(이용약관·개인정보 처리방침)를 기록한다.
 
     `*_version` 은 **앱이 화면에 실제로 그린 문서의 버전**이다. 받으면 현재 버전과 대조하고
-    (다르면 ValueError → 400), 그 값을 그대로 기록한다.
+    (다르면 BadRequestError → 400), 그 값을 그대로 기록한다.
 
     None 은 버전을 보내지 않는 구버전 앱이다. 이때는 서버 상수로 기록한다 — 하위호환을 위한
     폴백이며, 앱이 무엇을 보여줬는지 알 수 없으므로 **증빙으로서는 약하다**. 두 필드가 앱에
@@ -179,13 +168,13 @@ def _latest_consent(db: Session, user_id: int, kind: str) -> UserConsent | None:
     )
 
 
-def get_consent_state(db: Session, user_id: int, kind: str = SENSITIVE_HEALTH) -> ConsentState:
-    """해당 kind 의 **최신 행** 하나로 판정한다. 옛 행이 살아 있어도 최신 행이 철회면 철회다.
+def get_consent_state(db: Session, user_id: int) -> ConsentState:
+    """민감정보 동의의 **최신 행** 하나로 판정한다. 옛 행이 살아 있어도 최신 행이 철회면 철회다.
 
     철회를 버전보다 먼저 본다 — 철회한 사람에게 "내용이 바뀌었으니 다시 동의하라"고 하면
     철회 의사를 무시하는 문구가 된다.
     """
-    latest = _latest_consent(db, user_id, kind)
+    latest = _latest_consent(db, user_id, SENSITIVE_HEALTH)
 
     if latest is None:
         return ConsentState.MISSING
@@ -193,24 +182,23 @@ def get_consent_state(db: Session, user_id: int, kind: str = SENSITIVE_HEALTH) -
     if latest.revoked_at is not None:
         return ConsentState.REVOKED
 
-    if not is_current_version(kind, latest.version):
+    if not is_current_version(SENSITIVE_HEALTH, latest.version):
         return ConsentState.OUTDATED
 
     return ConsentState.ACTIVE
 
 
-def has_active_consent(db: Session, user_id: int, kind: str = SENSITIVE_HEALTH) -> bool:
-    """동의 유효 = 최신 행이 철회되지 않았고, **민감정보라면** 현재 버전이기도 하다.
+def has_active_consent(db: Session, user_id: int) -> bool:
+    """민감정보 동의 유효 = 최신 행이 철회되지 않았고 **현재 버전**이다.
 
-    민감정보 외의 kind 는 버전을 보지 않는다 — 2026-09-13 이전과 같은 판정이다
-    (`_VERSION_GATED_KINDS` 의 근거).
+    버전까지 보는 것은 민감정보뿐이다. 개인정보보호법 제23조는 민감정보를 **알린 목적·항목
+    범위에서만** 처리하게 하므로, 문구가 넓어졌는데 옛 동의로 계속 처리하면 그 범위를 벗어난다 —
+    v1.0 은 혈액형·질병·알러지를 "식단 추천에서 거르는 데"만 알렸고, 검사 수치·진료 메모와
+    경고·리포트 용도는 v1.1 에서야 알린다. terms·privacy 는 기능 게이트가 아니라 가입 조건이라
+    버전으로 무효화하지 않는다(개정마다 전 회원이 막히는 건 제품 결정이다). group_activity_share
+    판정은 `challenge_service` 가 따로 한다.
     """
-    state = get_consent_state(db, user_id, kind)
-
-    if kind in _VERSION_GATED_KINDS:
-        return state is ConsentState.ACTIVE
-
-    return state in (ConsentState.ACTIVE, ConsentState.OUTDATED)
+    return get_consent_state(db, user_id) is ConsentState.ACTIVE
 
 
 def ensure_sensitive_consent(db: Session, user_id: int) -> None:
@@ -219,7 +207,7 @@ def ensure_sensitive_consent(db: Session, user_id: int) -> None:
     이유를 가르는 이유: 문구 개정으로 무효가 된 사용자는 **이미 동의한 사람**이다. 그 사람에게
     "동의가 필요합니다"를 보이면 동의했는데 왜 막히는지 알 수 없다.
     """
-    state = get_consent_state(db, user_id, SENSITIVE_HEALTH)
+    state = get_consent_state(db, user_id)
 
     if state is ConsentState.ACTIVE:
         return
@@ -236,7 +224,7 @@ def revoke_consent(db: Session, user_id: int, kind: str) -> UserConsent:
     latest = _latest_consent(db, user_id, kind)
 
     if latest is None or latest.revoked_at is not None:
-        raise LookupError("철회할 동의 내역이 없습니다.")
+        raise NotFoundError("철회할 동의 내역이 없습니다.")
 
     # 동의 행은 삭제하지 않고 revoked_at 만 채워 증빙으로 남긴다.
     latest.revoked_at = datetime.now(UTC)
@@ -286,7 +274,7 @@ def _destroy_sensitive_data(db: Session, user_id: int) -> None:
 def get_health_profile(db: Session, user_id: int) -> UserHealthProfile:
     profile = db.scalar(select(UserHealthProfile).where(UserHealthProfile.user_id == user_id))
     if profile is None:
-        raise ValueError("등록된 건강 정보가 없습니다. 혈액형 정보를 먼저 등록해주세요.")
+        raise NotFoundError("등록된 건강 정보가 없습니다. 혈액형 정보를 먼저 등록해주세요.")
     return profile
 
 
@@ -329,7 +317,7 @@ def replace_conditions(db: Session, user_id: int, conditions: list[str]) -> list
     valid_codes = meta_service.active_condition_codes(db)
     invalid = [code for code in dict.fromkeys(conditions) if code not in valid_codes]
     if invalid:
-        raise ValueError(f"선택할 수 없는 질병 코드입니다: {', '.join(invalid)}")
+        raise BadRequestError(f"선택할 수 없는 질병 코드입니다: {', '.join(invalid)}")
 
     # replace-all. 빈 배열이면 전체 삭제로 끝난다.
     db.execute(delete(UserCondition).where(UserCondition.user_id == user_id))
@@ -363,7 +351,7 @@ def replace_allergies(db: Session, user_id: int, allergies: list[dict]) -> list[
         if allergen not in valid_codes
     ]
     if invalid:
-        raise ValueError(f"선택할 수 없는 알러지 코드입니다: {', '.join(invalid)}")
+        raise BadRequestError(f"선택할 수 없는 알러지 코드입니다: {', '.join(invalid)}")
 
     # replace-all. 빈 배열이면 전체 삭제로 끝난다.
     db.execute(delete(UserAllergy).where(UserAllergy.user_id == user_id))

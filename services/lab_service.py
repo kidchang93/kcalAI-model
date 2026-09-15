@@ -15,13 +15,14 @@ from sqlalchemy.orm import Session
 
 from models.health_model import LabResult
 from services import lab_panels
+from services.errors import BadRequestError
 
 
-class UnknownPanelError(ValueError):
+class UnknownPanelError(BadRequestError):
     pass
 
 
-class ValueOutOfRangeError(ValueError):
+class ValueOutOfRangeError(BadRequestError):
     pass
 
 

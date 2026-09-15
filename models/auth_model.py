@@ -1,9 +1,9 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from database import Base
+from database import Base, CreatedAt, UpdatedAt
 
 
 class User(Base):
@@ -21,13 +21,8 @@ class User(Base):
     # 전화번호 동의항목을 받게 되면 다시 채울 자리이고, 기존 행의 값을 지우지 않기 위해서다.
     phone_number: Mapped[str | None] = mapped_column(String(20), index=True, nullable=True)
     is_phone_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
+    created_at: Mapped[CreatedAt]
+    updated_at: Mapped[UpdatedAt]
 
     sessions: Mapped[list["AuthSession"]] = relationship(back_populates="user")
 
@@ -51,9 +46,7 @@ class KakaoLinkCode(Base):
     nickname: Mapped[str | None] = mapped_column(String(50), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    created_at: Mapped[CreatedAt]
 
 
 class AuthSession(Base):
@@ -64,6 +57,6 @@ class AuthSession(Base):
     token: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[CreatedAt]
 
     user: Mapped[User] = relationship(back_populates="sessions")

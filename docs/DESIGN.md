@@ -13,7 +13,7 @@
 | 결정 | 위치 | 이유 |
 |------|------|------|
 | 세션 토큰·연동 코드를 `secrets.token_urlsafe`로 생성하고 **해시만 저장** | `services/auth_service.py` | JWT 대신 불투명 토큰 → 서버측 폐기(`revoked_at`) 가능. 연동 코드는 딥링크 URL에 실려 나가므로 DB 유출과 조합되면 안 된다 |
-| 서비스는 `ValueError`/`RuntimeError`를 던지고 api가 HTTP로 변환 | `api/auth_api.py:36` | 서비스 레이어가 HTTP를 모르게 유지 |
+| 서비스는 `services/errors.py`의 `BadRequestError`·`ForbiddenError`·`NotFoundError`를 던지고 `main.py` 전역 핸들러가 400·403·404로 변환 (2026-09-14) | `services/errors.py`, `main.py:add_service_error_handlers` | 서비스 레이어가 HTTP를 모르게 유지하면서 라우트마다 같은 `try/except`를 반복하지 않는다. 402·502·503처럼 다른 변환은 전역(`PlanLimitError`) 또는 라우트가 맡는다 |
 | 추론을 로컬 LLM이 아닌 HF Inference API로 | `services/gpt_oss_service.py:24` | 로컬 CPU로는 20B 모델 최소사양 미달 (커밋 `4184460` 참조) |
 | 이미지 분류를 `transformers` 파이프라인에서 YOLO로 교체 | `services/predict_service.py:22` | 한국 음식 150클래스 자체 학습 모델 적용 (커밋 `494eed1`) |
 | YOLO 모델을 모듈 전역에 로드 | `services/predict_service.py:22` | 요청마다 로드하면 지연이 큼. 대신 서버 시작 시간과 cwd에 묶임 |
@@ -53,12 +53,12 @@
 1. `schemas/<domain>_schema.py`에 요청/응답 모델을 정의합니다. 이것이 계약의 단일 기준입니다.
 2. `services/<domain>_service.py`에 로직을 작성합니다. FastAPI를 import 하지 않습니다.
 3. `api/<domain>_api.py`에 `APIRouter`를 만들고 라우트를 추가합니다.
-   - `response_model`과 `responses={...}`를 지정합니다.
-   - DB가 필요하면 `db: Session = Depends(get_db)`.
-   - **예외를 `return`하지 말고 `raise HTTPException(...)` 하세요.** `response_model`이 걸려 있으면 다른 형태의 `return`은 500으로 바뀝니다 (`api/predict_api.py:27`의 버그).
-4. `api/__init__.py`에 라우터를 재수출합니다.
+   - `response_model`과 `responses={...}`를 지정합니다. 실패 모델은 공용 `ErrorResponse`(`schemas/common_schema.py`)입니다.
+   - 인증·DB는 `api/dependencies.py` 별칭으로 받습니다: `def read_goal(current_user: CurrentUser, db: DB):` (민감정보 동의가 필요하면 `ConsentedUser`).
+   - **예외를 `return`하지 마세요.** `response_model`이 걸려 있으면 다른 형태의 `return`은 500으로 바뀝니다 (`api/predict_api.py:27`의 버그). 400·403·404는 서비스가 `services/errors.py`의 예외를 던지면 전역 핸들러가 변환합니다 — 라우트에 `try/except`를 두지 않습니다. 그 밖의 상태코드·문구 치환·로깅이 필요할 때만 라우트에서 `raise HTTPException(...)`.
+4. `api/__init__.py`는 건드리지 않습니다 (비워 둔다 — 라우터는 `main.py`가 서브모듈에서 직접 import).
 5. `main.py`에서 `app.include_router(<domain>_router, prefix="/api", tags=["<Domain>"])`.
-6. ORM이 필요하면 `models/<domain>_model.py`에 추가하고 `database.init_db()`의 import 목록에 넣습니다.
+6. ORM이 필요하면 `models/<domain>_model.py`에 추가하고, 새 모듈이면 `models/__init__.py`의 import 목록에 넣습니다. 패키지 import 한 번으로 전 모델이 `Base.metadata`에 등록되므로 `init_db()`(`import models`)·`alembic/env.py`·`tests/conftest.py`는 따로 고치지 않습니다. 시각 컬럼은 `Mapped[CreatedAt]`/`Mapped[UpdatedAt]`(`database.py`)를 씁니다.
 7. 새 환경변수는 **`.env.example`에 반드시 추가**합니다.
 8. `k-calAI-RN/services/`에 대응 클라이언트를 추가하고 경로가 일치하는지 확인합니다.
 
@@ -86,7 +86,7 @@ raise HTTPException(status_code=400, detail="인증번호가 올바르지 않거
 
 ```python
 except Exception as e:
-    error_logger.error(f"predict 실패 {file.filename}: {e!r}")
+    logger.error(f"predict 실패 {file.filename}: {e!r}")
     raise HTTPException(
         status_code=500,
         detail="이미지 분석에 실패했습니다. 다른 사진으로 다시 시도해주세요.",
@@ -111,7 +111,7 @@ raise HTTPException(status_code=500, detail=f"파일 업로드 실패: {str(e)}"
 사용자에게 보일 문장은 **한국어**로, 다음 행동을 알려주는 형태로 작성합니다.
 
 ```python
-raise ValueError("이미 가입된 카카오 계정입니다. 로그인으로 진행해주세요.")
+raise BadRequestError("이미 가입된 카카오 계정입니다. 로그인으로 진행해주세요.")   # services/errors.py → 400
 ```
 
 내부 예외(`str(e)`, 스택트레이스, 라이브러리 이름, 외부 SDK 오류코드)를 그대로 담지 않습니다.
@@ -120,7 +120,7 @@ raise ValueError("이미 가입된 카카오 계정입니다. 로그인으로 �
 
 - **사용자 선택지의 관리 기준** (2026-07-09 확정): 선택지가 서비스 로직의 데이터와 조인되거나 릴리즈 없이 늘어나야 하면 **참조 테이블**(`condition_types`, `allergen_types` — `docs/DATA_MODEL.md` 10장)로 관리하고 `GET /api/meta/options`로 내려줍니다. 화면 구조·계산식 자체에 붙어 있는 값(끼니 4종, 혈액형, 섭취량 프리셋)은 코드 enum을 유지합니다. 참조 테이블 값 검증은 Pydantic `Literal`이 아니라 서비스 레이어의 테이블 조회로 합니다.
 - 시간은 **timezone-aware UTC**로 저장합니다. `datetime.now(UTC)`를 쓰고 `datetime.utcnow()`는 쓰지 않습니다.
-- `created_at`/`updated_at`은 `server_default=func.now()`로 DB가 채웁니다.
+- `created_at`/`updated_at`은 `server_default=func.now()`로 DB가 채웁니다. 모델에서는 `Mapped[CreatedAt]`·`Mapped[UpdatedAt]` 별칭(`database.py`)으로 선언하고, 인덱스가 필요하면 `= mapped_column(index=True)`를 덧붙입니다.
 - 만료는 `expires_at` 값으로 저장하고 조회 시 `expires_at > now`로 필터합니다.
 - "소비됨"/"폐기됨"은 삭제가 아니라 타임스탬프 컬럼(`consumed_at`, `revoked_at`)으로 표현합니다.
 

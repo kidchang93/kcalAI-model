@@ -18,8 +18,8 @@ from sqlalchemy import select
 
 from api.billing_api import router
 from database import get_db
-from models.auth_model import User
-from models.subscription_model import Payment, UserSubscription
+from factories import make_payment, make_user
+from models.subscription_model import UserSubscription
 from services import billing_service, toss_client
 from services.toss_client import PaymentSnapshot, TossError, TossNotConfiguredError
 from timeutil import UTC
@@ -27,27 +27,12 @@ from timeutil import UTC
 PRO_PRICE = 5000
 
 
-def _make_user(db, kakao_id: str) -> User:
-    user = User(kakao_id=kakao_id, nickname="테스터")
-    db.add(user)
-    db.commit()
-    return user
-
-
-def _add_payment(db, user_id: int | None, order_id: str, **kwargs) -> Payment:
-    payment = Payment(
-        user_id=user_id,
-        order_id=order_id,
-        plan_code=kwargs.pop("plan_code", "pro"),
-        amount=kwargs.pop("amount", PRO_PRICE),
-        status=kwargs.pop("status", "done"),
-        payment_key=kwargs.pop("payment_key", "pay_test_key"),
-        method=kwargs.pop("method", "카드"),
-        approved_at=kwargs.pop("approved_at", datetime.now(UTC)),
-    )
-    db.add(payment)
-    db.commit()
-    return payment
+def _add_payment(db, user_id: int | None, order_id: str, **kwargs):
+    # 이 파일의 결제는 기본적으로 "이미 승인된" 건이다 — make_payment 의 기본값과 다르다.
+    kwargs.setdefault("payment_key", "pay_test_key")
+    kwargs.setdefault("amount", PRO_PRICE)
+    kwargs.setdefault("approved_at", datetime.now(UTC))
+    return make_payment(db, user_id, order_id, **kwargs)
 
 
 def _snapshot(order_id: str, status: str, **kwargs) -> PaymentSnapshot:
@@ -95,7 +80,7 @@ def lookup(monkeypatch) -> _LookupStub:
 
 def test_forged_cancel_does_not_touch_ledger(db, lookup):
     """위조 웹훅의 핵심 시나리오 — 본문은 "취소"라고 하지만 토스는 승인 상태다."""
-    user = _make_user(db, "8400000001")
+    user = make_user(db, "8400000001")
     payment = _add_payment(db, user.id, "ord_forge", status="done")
     lookup.snapshots["ord_forge"] = _snapshot("ord_forge", toss_client.STATUS_DONE)
 
@@ -119,7 +104,7 @@ def test_unknown_order_does_not_call_toss(db, lookup):
 # ---- 2) 취소 반영 (상점관리자 수동 취소) ----
 
 def test_cancel_is_written_to_ledger(db, lookup):
-    user = _make_user(db, "8400000002")
+    user = make_user(db, "8400000002")
     payment = _add_payment(db, user.id, "ord_cancel", status="done")
     canceled_at = datetime.now(UTC)
     lookup.snapshots["ord_cancel"] = _snapshot(
@@ -142,7 +127,7 @@ def test_cancel_is_written_to_ledger(db, lookup):
 
 def test_partial_cancel_uses_balance_not_total(db, lookup):
     """부분 취소는 **잔액 기준**으로 누계를 낸다. 결제 금액(amount)은 그대로 남는다."""
-    user = _make_user(db, "8400000003")
+    user = make_user(db, "8400000003")
     payment = _add_payment(db, user.id, "ord_partial", status="done")
     lookup.snapshots["ord_partial"] = _snapshot(
         "ord_partial", toss_client.STATUS_PARTIAL_CANCELED, balance_amount=2000
@@ -158,7 +143,7 @@ def test_partial_cancel_uses_balance_not_total(db, lookup):
 
 def test_repeated_cancel_webhook_is_idempotent(db, lookup):
     """토스는 최대 7회 재전송한다 — 같은 취소를 다시 받아도 기록이 흔들리지 않는다."""
-    user = _make_user(db, "8400000004")
+    user = make_user(db, "8400000004")
     payment = _add_payment(db, user.id, "ord_dup", status="done")
     lookup.snapshots["ord_dup"] = _snapshot(
         "ord_dup", toss_client.STATUS_CANCELED, balance_amount=0, cancel_reason="고객 요청"
@@ -177,7 +162,7 @@ def test_repeated_cancel_webhook_is_idempotent(db, lookup):
 
 def test_cancel_does_not_revoke_subscription(db, lookup):
     """환불과 이용권 회수는 다른 판단이다 (`refund_payment` 와 같은 규약)."""
-    user = _make_user(db, "8400000005")
+    user = make_user(db, "8400000005")
     _add_payment(db, user.id, "ord_keep", status="done")
     subscription = billing_service.get_subscription(db, user.id)
     period_end = datetime.now(UTC) + timedelta(days=20)
@@ -199,7 +184,7 @@ def test_cancel_does_not_revoke_subscription(db, lookup):
 # ---- 3) 승인 복구 (돈은 나갔는데 기록이 실패인 상태) ----
 
 def test_done_webhook_recovers_failed_ledger_and_activates(db, lookup):
-    user = _make_user(db, "8400000006")
+    user = make_user(db, "8400000006")
     payment = _add_payment(
         db, user.id, "ord_recover", status="failed", payment_key=None, approved_at=None
     )
@@ -227,7 +212,7 @@ def test_done_webhook_recovers_failed_ledger_and_activates(db, lookup):
 
 def test_done_webhook_does_not_extend_active_subscription(db, lookup):
     """이미 반영된 결제의 재전송이 기간을 두 번 늘리면 안 된다."""
-    user = _make_user(db, "8400000007")
+    user = make_user(db, "8400000007")
     _add_payment(db, user.id, "ord_already", status="done")
     subscription = billing_service.get_subscription(db, user.id)
     period_end = datetime.now(UTC) + timedelta(days=20)
@@ -260,7 +245,7 @@ def test_done_webhook_on_anonymized_ledger_skips_subscription(db, lookup):
 
 @pytest.mark.parametrize("status", [toss_client.STATUS_ABORTED, toss_client.STATUS_EXPIRED])
 def test_dead_status_closes_ready_ledger(db, lookup, status):
-    user = _make_user(db, f"84000001{status[:2]}")
+    user = make_user(db, f"84000001{status[:2]}")
     payment = _add_payment(
         db, user.id, f"ord_dead_{status}", status="ready", payment_key=None, approved_at=None
     )
@@ -276,7 +261,7 @@ def test_dead_status_closes_ready_ledger(db, lookup, status):
 
 def test_dead_status_does_not_overwrite_done(db, lookup):
     """승인된 결제를 뒤늦은 실패 알림이 뒤집지 못한다."""
-    user = _make_user(db, "8400000008")
+    user = make_user(db, "8400000008")
     payment = _add_payment(db, user.id, "ord_done_keep", status="done")
     lookup.snapshots["ord_done_keep"] = _snapshot("ord_done_keep", toss_client.STATUS_ABORTED)
 
@@ -288,7 +273,7 @@ def test_dead_status_does_not_overwrite_done(db, lookup):
 
 
 def test_in_progress_status_leaves_ledger_alone(db, lookup):
-    user = _make_user(db, "8400000009")
+    user = make_user(db, "8400000009")
     payment = _add_payment(db, user.id, "ord_progress", status="ready", payment_key=None)
     lookup.snapshots["ord_progress"] = _snapshot("ord_progress", "IN_PROGRESS")
 
@@ -316,7 +301,7 @@ def _post_webhook(client, **body):
 
 
 def test_webhook_route_requires_no_auth(db, client, lookup):
-    user = _make_user(db, "8400000010")
+    user = make_user(db, "8400000010")
     payment = _add_payment(db, user.id, "ord_route", status="done")
     lookup.snapshots["ord_route"] = _snapshot(
         "ord_route", toss_client.STATUS_CANCELED, balance_amount=0
@@ -367,7 +352,7 @@ def test_unknown_body_shape_does_not_422(client, lookup):
 
 def test_order_unknown_to_toss_closes_without_retransmission(db, client, lookup):
     """토스가 모르는 주문(404)은 재전송해도 답이 같다 — 200 으로 닫고 원장은 그대로 둔다."""
-    user = _make_user(db, "8400000013")
+    user = make_user(db, "8400000013")
     payment = _add_payment(db, user.id, "ord_ghost", status="ready", payment_key=None)
     lookup.error = TossError("결제에 실패했습니다.", code=toss_client.ERROR_NOT_FOUND_PAYMENT)
 
@@ -382,7 +367,7 @@ def test_order_unknown_to_toss_closes_without_retransmission(db, client, lookup)
 
 def test_toss_lookup_failure_returns_502_for_retransmission(db, client, lookup):
     """조회에 실패했으면 **아직 판단하지 못한 것**이다 — 200 을 주면 알림이 영영 사라진다."""
-    user = _make_user(db, "8400000011")
+    user = make_user(db, "8400000011")
     _add_payment(db, user.id, "ord_retry", status="done")
     lookup.error = TossError("결제 서버와 통신하지 못했습니다. 잠시 후 다시 시도해주세요.")
 
@@ -394,7 +379,7 @@ def test_toss_lookup_failure_returns_502_for_retransmission(db, client, lookup):
 
 
 def test_toss_not_configured_returns_503_for_retransmission(db, client, lookup):
-    user = _make_user(db, "8400000012")
+    user = make_user(db, "8400000012")
     _add_payment(db, user.id, "ord_noconf", status="done")
     lookup.error = TossNotConfiguredError("결제 서비스를 준비 중입니다. 잠시 후 다시 시도해주세요.")
 

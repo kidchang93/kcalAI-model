@@ -24,7 +24,3 @@ class CoachingResponse(BaseModel):
     conditions: list[str]
     items: list[CoachingItem]
     notice: str
-
-
-class CoachingError(BaseModel):
-    detail: str

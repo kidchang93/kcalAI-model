@@ -5,12 +5,12 @@
 ```
 kcalAI-model/
 ├── main.py                     # 앱 생성, CORS, 라우터 등록, startup 훅
-├── database.py                 # engine, SessionLocal, Base, get_db, init_db
+├── database.py                 # engine, SessionLocal, Base, CreatedAt·UpdatedAt 시각 컬럼 별칭, get_db, init_db
 ├── crypto.py                   # 민감정보 AES-256-GCM 암복호화 + EncryptedString 타입 (models·services가 사용)
-├── log_utils.py                # 레벨별 RotatingFileHandler 로거 팩토리
+├── log_utils.py                # get_logger(__name__) — 공통 상위 로거 `kcal` 에 INFO·ERROR 파일 핸들러(+콘솔)를 한 번만 부착
 ├── api/
-│   ├── __init__.py             # 라우터 재수출
-│   ├── dependencies.py         # get_current_user (Bearer 세션 토큰 검증)
+│   ├── __init__.py             # 비워 둔다 (라우터는 main.py 가 서브모듈에서 직접 import)
+│   ├── dependencies.py         # get_current_user (Bearer 세션 토큰 검증), require_sensitive_consent, 별칭 CurrentUser·ConsentedUser·DB
 │   ├── auth_api.py             # /auth/kakao/** (OAuth start·callback·login·signup), /auth/logout
 │   ├── predict_api.py          # /predict (업로드 검증 + Gemini 인식, 503 on 실패)
 │   ├── health_api.py           # /me/profile, /me/goal, /me/summary, /me/trends, /meals (PUT 전체 교체 포함), /weights
@@ -22,9 +22,10 @@ kcalAI-model/
 │   ├── account_api.py          # DELETE /me (회원 탈퇴 — 계정 파기, DATA_MODEL 18장)
 │   ├── subscription_api.py     # /plans (무인증), /me/subscription (조회·변경 — PUT은 무료 다운그레이드만, 20·24장)
 │   ├── payment_api.py          # /payments, /payments/{id} (결제 내역 읽기 전용, DATA_MODEL 23장)
-│   ├── billing_api.py          # /billing/{checkout,confirm,cancel} (자동결제, 24장. ValueError→400·TossError→502·미설정→503)
+│   ├── billing_api.py          # /billing/{checkout,confirm,cancel} (자동결제, 24장. BadRequestError→400(전역)·TossError→502·미설정→503)
 │   └── recommendation_api.py   # /recommendations (식단 추천, sensitive_health 동의 필수)
 ├── services/
+│   ├── errors.py               # BadRequestError·ForbiddenError·NotFoundError — main.py 전역 핸들러가 400·403·404 {detail} 로 변환
 │   ├── auth_service.py         # 카카오 연동코드·OAuth state 서명, 가입·로그인, 세션 생성·검증·폐기 (21장)
 │   ├── kakao_client.py         # 카카오 OAuth — 인가 URL·토큰 교환(client_secret)·프로필·연결끊기(unlink)
 │   ├── subscription_service.py # 요금제 한도 판정·비전 일일 쿼터(원자적 UPSERT), PlanLimitError (20장), 만료 강등 해석 get_effective_plan (24장)
@@ -52,11 +53,11 @@ kcalAI-model/
 │   ├── consent_schema.py
 │   ├── group_schema.py
 │   ├── pet_schema.py           # PetResponse 에 recommended_kcal (계산 필드, 18장)
-│   ├── account_schema.py       # AccountDeleteResponse
+│   ├── common_schema.py        # ErrorResponse({detail}), MessageResponse({message}) — 전 라우트 공용
 │   ├── nutrition_schema.py
 │   ├── meta_schema.py          # OptionItem, MetaOptionsResponse
 │   ├── recommendation_schema.py # RecommendationItem, ExcludedCriterion/Filtered, RecommendationResponse
-│   ├── predict_schema.py       # Prediction, PredictionResponse, ErrorResponse
+│   ├── predict_schema.py       # DetectedFood, PredictionResponse
 │   └── gpt_schemas.py          # GptAnswer, GptResponse, GptError
 ├── models/
 │   ├── auth_model.py           # User(kakao_id·nickname), KakaoLinkCode, AuthSession
@@ -70,6 +71,7 @@ kcalAI-model/
 ├── alembic/                    # DB 마이그레이션 (0001 auth → 0002 health → 0003 consent → 0004 group/pet → 0005 option ref → 0006 diet rec → 0007 food nutrition mfds → 0008 food_label pg_trgm → 0009 meal_items confidence → 0010 condition exclude_keywords → 0011 otp attempt_count → 0012 session token 해시 → 0013 혈액형·Rh 암호화 → 0014 요금제·쿼터 → 0015 카카오 로그인)
 ├── scripts/
 │   ├── import_mfds_food.py     # 식약처 음식 CSV → food_nutrition 임포트 (원본 CSV 는 레포 밖, 커밋 금지)
+│   ├── food_upsert.py          # 식약처 임포트 3종(food·processed·raw) 공용 upsert·to_float
 │   ├── purge_expired_auth.py   # 만료 연동코드·세션 정리 (멱등, cron)
 │   └── charge_due_subscriptions.py  # 자동결제 갱신 배치 (멱등, cron. **실행하면 실제 결제가 일어난다**, 24장)
 ├── webapp/                     # Expo 웹 빌드 산출물 (gitignored, 존재할 때만 정적 서빙)
@@ -79,8 +81,6 @@ kcalAI-model/
 │       ├── s3_korean_food_all_classes/weights/last.pt   ← 실사용 가중치
 │       ├── s3_korean_food_sequential/                   ← best_v3 ~ v8.2.1
 │       └── val/, val2/
-├── http/                       # IDE용 HTTP 요청 파일
-│   └── test_main.http
 ├── docker-compose.yml          # postgres:16-alpine
 ├── .github/workflows/deploy.yml
 └── task-logs/                  # 런타임 로그 (gitignored)
@@ -106,7 +106,7 @@ api  →  services  →  models  →  database (Base, engine)
 
 현재 없음. (과거 위반이던 `api/file_upload_api.py`의 `os.getenv` 직접 호출과 `str(e)` 노출은 2026-07-12 S3 라우트 제거로 소멸했고, `predict_api`의 `str(e)` 노출은 이전에 로그/응답 분리로 수정됐습니다.)
 
-`database.init_db()`가 `models.auth_model`을 함수 내부에서 지연 import 하는 것은 순환 import 회피용이며 인정된 예외입니다 (`database.py:30`).
+`database.init_db()`가 `models` 패키지를 함수 내부에서 지연 import 하는 것은 순환 import 회피용(models → database)이며 인정된 예외입니다. 패키지 `__init__`이 전 모델 모듈을 import 하므로 `import models.auth_model` 한 줄도 전 모델을 등록합니다.
 
 ## 요청 흐름
 
@@ -115,18 +115,18 @@ api  →  services  →  models  →  database (Base, engine)
 ```
 클라이언트 (multipart/form-data, field=file, Authorization: Bearer <token>)
   └─ api/predict_api.py:predict()
-       ├─ Depends(get_current_user)   # 무토큰/무효 토큰 → 401
+       ├─ current_user: CurrentUser   # get_current_user — 무토큰/무효 토큰 → 401
        ├─ await file.read() → bytes
        ├─ validate_image_upload()      # 크기 413 / 타입 415 / 디코드 400
        ├─ run_in_threadpool(gemini_vision_service.identify_food)   # 블로킹 HTTP → 스레드풀
        │    ├─ Gemini(structured JSON): 한글 요리명 후보 최대 3
        │    ├─ 일시 오류(429·5xx·타임아웃) 백오프 재시도(기본 2회)
        │    └─ [Prediction(label=요리명, score=confidence)]
-       ├─ info_logger.info("predict ok backend=gemini model=... top_label=...")
+       ├─ logger.info("predict ok backend=gemini model=... top_label=...")
        └─ {"predictions": [...]}  (response_model=PredictionResponse)
 
   최종 실패(재시도 소진) → VisionError
-  └─ error_logger.error("predict fail backend=gemini ...")   # 서버에만, 키 미노출
+  └─ logger.error("predict fail backend=gemini ...")   # 서버에만, 키 미노출
      raise HTTPException(503, detail="음식 인식이 일시적으로 지연되고 있습니다. ...")
      → {"detail": "..."}  (ErrorResponse)
 ```
@@ -161,7 +161,7 @@ HF LLM으로 칼로리를 **서술 문자열**로 생성하던 라우트. 앱 �
        ├─ (signup) 동의 검증 → record_signup_consents() + create_subscription()   ← 한 트랜잭션
        ├─ (login)  닉네임을 카카오 값으로 갱신 (그룹에 보이는 이름이다)
        └─ _create_session()              token_urlsafe(48) 원문은 응답에만, DB에는 sha256 해시 저장
-  ← ValueError → 400, LookupError(미가입) → 404
+  ← BadRequestError → 400, NotFoundError(미가입) → 404   (main.py 전역 핸들러)
 ```
 
 **콜백은 JSON이 아니라 리다이렉트로 답한다** — 인앱 브라우저가 여는 화면이라, 실패도 딥링크에 `error=`를 실어 보내야 사용자가 브라우저에 갇히지 않는다.
@@ -181,7 +181,7 @@ HF LLM으로 칼로리를 **서술 문자열**로 생성하던 라우트. 앱 �
             ├─ toss_client.charge_billing() → paymentKey·method·approvedAt
             ├─ 성공: payment done + 구독 활성화(period_end=+1개월, next_billing_at=period_end)
             └─ 실패: payment failed(fail_code·fail_reason) + **구독 미활성화** → TossError
-  ← ValueError → 400 / TossError → **502**(결제사 오류) / TossNotConfiguredError → 503
+  ← BadRequestError → 400(전역) / TossError → **502**(결제사 오류) / TossNotConfiguredError → 503
 ```
 
 갱신은 `scripts/charge_due_subscriptions.py`(cron) → `charge_due_subscriptions()`가 같은 청구 경로를 탄다. 만료 강등은 행을 바꾸지 않고 `subscription_service.get_effective_plan()`이 **읽을 때 해석**하므로, 비전 쿼터·그룹·펫 한도가 전부 자동으로 만료를 존중한다.
@@ -192,7 +192,7 @@ HF LLM으로 칼로리를 **서술 문자열**로 생성하던 라우트. 앱 �
 
 `main.py`가 `APP_ENV`(기본 `development`)를 읽어 두 가지를 분기합니다.
 
-- **production 기동 fail-fast**: `auth_service.ensure_production_auth_config()`(`AUTH_CODE_PEPPER` 기본값) + `crypto.ensure_production_crypto_config()`(`HEALTH_ENCRYPTION_KEY` 기본키) + `gemini_vision_service.ensure_production_vision_config()`(`GEMINI_API_KEY` 없음) + **`kakao_client.ensure_production_kakao_config()`**(카카오 키 4종 — 유일한 인증 수단이라 없으면 아무도 로그인 못 한다) + **`toss_client.ensure_production_toss_config()`**(`TOSS_SECRET_KEY`·`TOSS_CLIENT_KEY` — 없으면 유료 요금제를 팔 수 없는데 그 사실이 사용자의 결제 시도에서야 드러나면 안 된다)가 import 단계에서 `RuntimeError`로 죽입니다.
+- **production 기동 fail-fast**: `auth_service.ensure_production_auth_config()`(`AUTH_CODE_PEPPER` 기본값) + `crypto.ensure_production_crypto_config()`(`HEALTH_ENCRYPTION_KEY` 기본키) + `gemini_client.ensure_api_key()`(`GEMINI_API_KEY` 없음) + **`kakao_client.ensure_production_kakao_config()`**(카카오 키 4종 — 유일한 인증 수단이라 없으면 아무도 로그인 못 한다) + **`toss_client.ensure_production_toss_config()`**(`TOSS_SECRET_KEY`·`TOSS_CLIENT_KEY` — 없으면 유료 요금제를 팔 수 없는데 그 사실이 사용자의 결제 시도에서야 드러나면 안 된다)가 import 단계에서 `RuntimeError`로 죽입니다.
 
 ### 이미지 인식 — Gemini 단일 백엔드 (2026-07-12)
 
@@ -246,7 +246,7 @@ kcal/build-web.sh → npx expo export --platform web → kcalAI-model/webapp/
 
 - 스키마 변경은 **Alembic 리비전으로만** 합니다 (`alembic/versions/`). `create_all`은 신규 테이블 생성용으로만 남아 있습니다.
 - 세션 토큰 검증은 `api/dependencies.py:get_current_user`가 담당합니다. `/api/predict`도 2026-07-12부터 Bearer 필수입니다 (무인증 공개 라우트는 Auth 가입·로그인 4종뿐).
-- `/api/me/health-profile`·`/api/me/conditions`·`/api/me/allergies`는 유효한 `sensitive_health` 동의(최신 행의 `revoked_at IS NULL` **이고 `version`이 현재 버전** — 2026-09-13)가 없으면 **403**을 반환합니다. 401(미로그인)과 구분됩니다. 판정·문구는 `consent_service.ensure_sensitive_consent`가 정하고 api는 `SensitiveConsentRequiredError`를 403으로 바꿀 뿐입니다 (DATA_MODEL 7장).
+- `/api/me/health-profile`·`/api/me/conditions`·`/api/me/allergies`는 유효한 `sensitive_health` 동의(최신 행의 `revoked_at IS NULL` **이고 `version`이 현재 버전** — 2026-09-13)가 없으면 **403**을 반환합니다. 401(미로그인)과 구분됩니다. 판정·문구는 `consent_service.ensure_sensitive_consent`가 정하고, `SensitiveConsentRequiredError`(`ForbiddenError`)를 `main.py` 전역 핸들러가 403으로 바꿀 뿐입니다 (DATA_MODEL 7장).
 - 동의 없이 열리는 라우트(`/api/me/summary`·`trends`·`report`, `/api/guides`)는 막지 않고 **읽는 서비스**(`day_nutrition`·`medical_report_service`·`guide_service`)가 동의 상태를 확인해 민감정보 자리만 비웁니다. 민감정보를 읽는 새 경로는 라우트 게이트나 서비스 확인 중 하나를 반드시 거칩니다.
 
 ## 전역 초기화 (import 시점)
@@ -254,37 +254,28 @@ kcal/build-web.sh → npx expo export --platform web → kcalAI-model/webapp/
 | 모듈 | 부작용 | 실패 조건 |
 |------|--------|-----------|
 | `database.py` · `crypto.py` | `load_dotenv()` — **cwd 기준으로 `.env` 탐색** (설정 최하위 모듈, 멱등) | — |
-| `api/predict_api.py` | `setup_level_logger(INFO)` → `task-logs/` 디렉토리 생성 | — |
+| `log_utils.get_logger` 첫 호출 (로거를 쓰는 모듈 import) | `task-logs/` 디렉토리 생성 + `kcal` 로거에 핸들러 부착 | — |
 
 이 때문에 `import main`만 해도 모델 로드·`.env` 탐색·토큰 조회가 일어납니다. 테스트를 도입하려면 지연 로딩이 선행되어야 합니다.
 
 두 부작용이 모두 **cwd에 묶여 있다**는 점이 중요합니다. 저장소 루트가 아닌 곳에서 실행하면 가중치도, `.env`도 찾지 못합니다.
 
-## 로깅 규칙
-
-`setup_level_logger(level)`는 `LevelFilter`로 **해당 레벨만** 기록합니다. 따라서 레벨마다 로거를 따로 만들어야 합니다.
-
-```python
-info_logger  = setup_level_logger(logging.INFO)    # → task-logs/info_log.txt
-error_logger = setup_level_logger(logging.ERROR)   # → task-logs/error_log.txt
-```
-
-**INFO 로거로 `.error()`를 호출하면 레코드가 소멸합니다.** `api/predict_api.py`가 이 버그를 갖고 있었고 `error_logger`를 추가해 고쳤습니다. (같은 버그가 있던 `api/file_upload_api.py`는 S3 제거로 삭제됐습니다.)
-
-실측: 비이미지 업로드 → `error_log.txt`에 `UnidentifiedImageError` 기록, `info_log.txt`에는 ERROR 라인 0개, 응답 본문에는 내부 예외 미노출.
-
 ## 로깅
 
-`log_utils.setup_level_logger(level)`는 **레벨당 하나의 로거**를 만들고, `LevelFilter`로 그 레벨만 통과시킵니다.
+모듈마다 `logger = log_utils.get_logger(__name__)` 하나를 쓴다 (2026-09-14, 이전의 `setup_level_logger`·`LevelFilter` 대체).
 
 ```
-task-logs/info_log.txt    ← INFO 만
-task-logs/error_log.txt   ← ERROR 만 (setup_level_logger(ERROR) 호출 시)
+kcal (공통 상위 로거, level=INFO, 핸들러는 여기에만 한 번)
+ ├─ task-logs/info_log.txt    ← ERROR 미만 (필터 levelno < ERROR)
+ ├─ task-logs/error_log.txt   ← ERROR 이상 (handler level=ERROR)
+ └─ 콘솔(stderr)              ← 전부 — journalctl·cron 로그(task-logs/cron_*.log)가 받는다
+kcal.api.predict_api · kcal.services.toss_client · …  (get_logger 가 kcal. 을 붙인다)
 ```
 
-- `RotatingFileHandler(maxBytes=1MB, backupCount=5)`
-- 콘솔 핸들러도 함께 붙습니다
-- 현재 `api/predict_api.py`만 사용합니다. 다른 라우터는 로깅하지 않습니다.
+- `RotatingFileHandler(maxBytes=1MB, backupCount=5)`, 포맷 `[%(asctime)s] [%(levelname)s] %(message)s`.
+- **root 에 핸들러를 달지 않는다.** 서드파티(httpx·urllib3) 로그가 파일로 들어오는데, 토스 요청 URL 에는 빌링키가 실린다.
+- `propagate` 는 기본값(True)이다. uvicorn 기본 설정은 root 에 핸들러가 없어 중복 출력이 없고, pytest `caplog` 가 로그를 볼 수 있다(`tests/test_refund_service.py` 의 미로깅 단언).
+- 핸들러 부착은 `kcal.handlers` 가 비었을 때만이라 재import·테스트에서 중복되지 않는다.
 
 ## 애플리케이션 수명주기
 

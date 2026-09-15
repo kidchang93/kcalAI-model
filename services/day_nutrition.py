@@ -23,14 +23,13 @@ food_label 로 실측 행을 다시 찾아 `serving_ratio` 를 곱했고, 그래
 같은 스냅샷을 기간 단위로 합치는 것이 `get_period_nutrient_axes` 다 (리포트 탭).
 """
 
-from datetime import date, datetime, time, timedelta
+from datetime import date, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from timeutil import UTC
 from models.health_model import MealItem, MealLog
-from services import chronic_food_rules, ckd_food_rules, consent_service, meta_service, nutrition_service
+from services import chronic_food_rules, ckd_food_rules, consent_service, meta_service
 
 # 하루 누적 축 (tag, nutrient, label). **경고 축(`ckd_food_rules.WARNING_AXES`)과 같지 않다.**
 #
@@ -88,46 +87,30 @@ def get_day_nutrient_axes(db: Session, user_id: int, target_date: date) -> dict 
     """오늘 먹은 음식의 질환 축 누적. 해당 질환이 없으면 None (앱은 카드를 그리지 않는다).
 
     민감정보 동의가 유효하지 않아도 None 이다 — 질병·병기를 읽지 않으니 축이 없다.
+    계산은 기간 누적의 하루짜리다 — 두 곳이 따로 합하면 홈과 리포트의 같은 날 수치가 갈릴 수 있다.
     """
-    # 질병·병기는 민감정보라 동의가 ACTIVE 일 때만 읽는다 (DATA_MODEL 7장). 라우트(summary·
-    # trends)는 칼로리 요약 때문에 동의 없이 열려 있어야 해서 막지 않고 **여기서 거른다.**
-    # 낡은 동의(v1.0)는 데이터를 가진 채 무효라, "동의가 없으면 질병도 없다"에 기대면 새어 나간다.
-    if not consent_service.has_active_consent(db, user_id):
+    period = get_period_nutrient_axes(db, user_id, target_date, target_date)
+
+    if period is None:
         return None
-
-    axes = _axes_for_user(db, user_id)
-
-    if not axes:
-        return None
-
-    items = _day_items(db, user_id, target_date)
-    stage = meta_service.get_user_ckd_stage(db, user_id)
-    conditions = {condition.code for condition in meta_service.list_user_condition_types(db, user_id)}
-
-    totals: dict[str, float] = {nutrient: 0.0 for nutrient in axes}
-    measured_counts: dict[str, int] = {nutrient: 0 for nutrient in axes}
-
-    for item in items:
-        for nutrient in axes:
-            # 모르는 축은 조용히 0이 되지 않고 여기서 터진다 — 축을 늘리면 컬럼 매핑도 함께
-            # 늘리라는 뜻이고, 단위가 mg 가 아닌 축은 애초에 이 합계에 들어올 수 없다.
-            value = getattr(item, _AXIS_COLUMNS[nutrient])
-
-            if value is None:
-                continue
-
-            totals[nutrient] += float(value)
-            measured_counts[nutrient] += 1
-
-    payloads = [
-        _axis_payload(nutrient, totals[nutrient], measured_counts[nutrient], conditions, stage)
-        for nutrient in axes
-    ]
 
     return {
-        "axes": payloads,
-        "total_items": len(items),
-        "notice": _notice(payloads),
+        "axes": [
+            {
+                "nutrient": axis["nutrient"],
+                "label": axis["label"],
+                "consumed_mg": axis["days"][0]["consumed_mg"],
+                # 상한이 있으면 앱이 게이지를 그린다. 없으면 수치만 보여준다.
+                "limit_mg": axis["limit_mg"],
+                # 상한이 아니라 실무 참고치다. 게이지로 쓰지 않는다.
+                "reference_mg": axis["reference_mg"],
+                "basis": axis["basis"],
+                "measured_items": axis["days"][0]["measured_items"],
+            }
+            for axis in period["axes"]
+        ],
+        "total_items": period["axes"][0]["days"][0]["total_items"],
+        "notice": period["notice"],
     }
 
 
@@ -145,8 +128,11 @@ def get_period_nutrient_axes(
     평균은 **기록한 날만** 나눈다. 기록 없는 날을 0으로 넣어 평균을 내리면 "적게 먹었다"로
     읽히는데, 실제로는 기록을 안 한 것이다 (`measured_items` 를 숨기지 않는 것과 같은 이유).
 
-    민감정보 동의가 유효하지 않으면 None 이다 (`get_day_nutrient_axes` 와 같은 이유).
+    민감정보 동의가 유효하지 않으면 None 이다 — 질병·병기를 읽지 않으니 축이 없다.
     """
+    # 질병·병기는 민감정보라 동의가 ACTIVE 일 때만 읽는다 (DATA_MODEL 7장). 라우트(summary·
+    # trends)는 칼로리 요약 때문에 동의 없이 열려 있어야 해서 막지 않고 **여기서 거른다.**
+    # 낡은 동의(v1.0)는 데이터를 가진 채 무효라, "동의가 없으면 질병도 없다"에 기대면 새어 나간다.
     if not consent_service.has_active_consent(db, user_id):
         return None
 
@@ -158,22 +144,17 @@ def get_period_nutrient_axes(
     stage = meta_service.get_user_ckd_stage(db, user_id)
     conditions = {condition.code for condition in meta_service.list_user_condition_types(db, user_id)}
 
-    start, _ = _day_bounds(start_date)
-    _, end = _day_bounds(end_date)
     day_column = func.date(func.timezone("UTC", MealLog.logged_at))
 
+    # 모르는 축은 조용히 0이 되지 않고 `_AXIS_COLUMNS[...]`에서 터진다 — 축을 늘리면 컬럼 매핑도
+    # 함께 늘리라는 뜻이고, 단위가 mg 가 아닌 축은 애초에 이 합계에 들어올 수 없다.
     columns = [func.sum(getattr(MealItem, _AXIS_COLUMNS[nutrient])) for nutrient in axes]
     counts = [func.count(getattr(MealItem, _AXIS_COLUMNS[nutrient])) for nutrient in axes]
 
     rows = db.execute(
         select(day_column.label("day"), func.count(MealItem.id), *columns, *counts)
         .join(MealLog, MealLog.id == MealItem.meal_log_id)
-        .where(
-            MealLog.user_id == user_id,
-            MealLog.deleted_at.is_(None),
-            MealLog.logged_at >= start,
-            MealLog.logged_at < end,
-        )
+        .where(*MealLog.live_between(user_id, start_date, end_date))
         .group_by(day_column)
     ).all()
 
@@ -262,61 +243,6 @@ def _axes_for_user(db: Session, user_id: int) -> list[str]:
         axes.insert(0, "sodium")
 
     return axes
-
-
-def _day_bounds(target_date: date) -> tuple[datetime, datetime]:
-    """끼니 조회(`health_service`)와 **같은 UTC 자정 경계**. 여기가 어긋나면 홈의 합계와
-    기록 목록이 서로 다른 하루를 보게 된다."""
-    start = datetime.combine(target_date, time.min, tzinfo=UTC)
-    return start, start + timedelta(days=1)
-
-
-def _day_items(db: Session, user_id: int, target_date: date) -> list[MealItem]:
-    """그날 기록한 항목들.
-
-    **수치는 항목에 굳어 있는 스냅샷을 쓴다** (리비전 0025) — 예전에는 `food_label`로
-    `food_nutrition`을 매번 다시 조회해 합쳤고, 그래서 DB 값이 바뀌면 과거 기록이 말하는
-    수치도 소급해 바뀌었다. 기록은 기록이어야 한다 (`docs/PRODUCT_STRATEGY.md` §0-1).
-    """
-    start, end = _day_bounds(target_date)
-
-    return list(
-        db.scalars(
-            select(MealItem)
-            .join(MealLog, MealLog.id == MealItem.meal_log_id)
-            .where(
-                MealLog.user_id == user_id,
-                MealLog.deleted_at.is_(None),
-                MealLog.logged_at >= start,
-                MealLog.logged_at < end,
-            )
-        ).all()
-    )
-
-
-def _axis_payload(
-    nutrient: str,
-    consumed_mg: float,
-    measured_items: int,
-    conditions: set[str],
-    stage: str | None,
-) -> dict:
-    limit_mg, basis = _sodium_limit(conditions, stage) if nutrient == "sodium" else (None, None)
-    reference_mg, reference_note = (
-        _reference(nutrient, stage) if nutrient != "sodium" else (None, None)
-    )
-
-    return {
-        "nutrient": nutrient,
-        "label": ckd_food_rules.NUTRIENT_LABELS[nutrient],
-        "consumed_mg": round(consumed_mg, 1),
-        # 상한이 있으면 앱이 게이지를 그린다. 없으면 수치만 보여준다.
-        "limit_mg": limit_mg,
-        # 상한이 아니라 실무 참고치다. 게이지로 쓰지 않는다.
-        "reference_mg": reference_mg,
-        "basis": basis or reference_note,
-        "measured_items": measured_items,
-    }
 
 
 def _sodium_limit(conditions: set[str], stage: str | None) -> tuple[int | None, str | None]:

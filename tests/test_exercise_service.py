@@ -9,19 +9,11 @@ from datetime import datetime, timedelta
 import pytest
 from timeutil import UTC
 
-from models.auth_model import User
+from factories import make_user
 from models.health_model import UserProfile
 from services import exercise_service, fitness_rules
 
 DAY = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
-
-
-@pytest.fixture
-def user(db):
-    row = User(kakao_id="exercise-test", nickname="운동테스터")
-    db.add(row)
-    db.flush()
-    return row
 
 
 @pytest.fixture
@@ -86,9 +78,7 @@ class TestListAndOwnership:
         assert row.deleted_at is not None
 
     def test_other_users_record_is_404(self, db, user):
-        other = User(kakao_id="exercise-other", nickname="남")
-        db.add(other)
-        db.flush()
+        other = make_user(db, kakao_id="exercise-other", nickname="남")
         row = exercise_service.create_exercise(db, other.id, "walking", 30, None, None, DAY, None)
 
         # 남의 기록은 '없음'과 구분되지 않아야 한다.

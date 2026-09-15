@@ -17,12 +17,9 @@ from services.auth_service import purge_expired_auth  # noqa: E402
 
 
 def main() -> None:
-    session = SessionLocal()
-    try:
+    with SessionLocal() as session:
         result = purge_expired_auth(session)
         print(f"정리 완료 — 코드 {result['codes']}건, 세션 {result['sessions']}건 삭제.")
-    finally:
-        session.close()
 
 
 if __name__ == "__main__":

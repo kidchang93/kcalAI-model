@@ -19,10 +19,6 @@ DM_SODIUM_MG_PER_DAY = 2300
 # 위 두 상한을 화면에 보일 때 붙이는 출처 (KCAL-15 — 누가 그은 선인지 밝힌다).
 HTN_SODIUM_CITATION = "대한고혈압학회 진료지침 2026 권고 21"
 DM_SODIUM_CITATION = "대한당뇨병학회 진료지침 2025 권고 9"
-# 당뇨병콩팥병. KSN-DKD 4.1.1 — 고혈압과 같은 값이라 병존해도 충돌하지 않는다.
-DKD_SODIUM_MG_PER_DAY = 2000
-# 이 아래로는 내리도록 유도하지 않는다. KDA2025 권고 9 본문(엄격한 제한의 근거 부족).
-SODIUM_MG_PER_DAY_FLOOR = 1500
 
 # ── 정책값 (§4-2) — 지침 컷오프가 아니다. 노출 시 반드시 고지문을 동반한다 ──────
 # 2,000 ÷ 3끼 ≈ 667 을, 국내 유일한 법정 1회 제공량 기준(고열량·저영양 식사대용 나트륨
@@ -77,7 +73,6 @@ SODIUM_TIER_CONDITIONS: frozenset[str] = frozenset({"hypertension", "diabetes"})
 # 대면 간식·음료가 거의 전부 '높음'이 되고, 문장에는 사용자가 먹지도 않은 양이 근거로 붙는다.
 # 경고가 상시화되면 사용자는 경고 전체를 무시한다 (CKD 에서 국·장류로 배운 것).
 # 임포트의 1인분 기준을 고치기 전에는 **등급을 만들지 않는다.**
-SUGAR_TIER_CONDITIONS: frozenset[str] = frozenset()
 
 # 가당음료 — 권고 6의 주 급원이다. 농축과즙·과일주스도 지침이 첨가당으로 분류한다
 # ("액체로 섭취하면 혈당을 크게 높인다", §2-2).
@@ -143,33 +138,23 @@ def added_sugar_caution(label: str) -> str | None:
     return _matches(label, SWEET_DRINK_KEYWORDS) or _matches(label, ADDED_SUGAR_SNACK_KEYWORDS)
 
 
-def is_noodle(label: str) -> bool:
-    return _matches(label, NOODLE_KEYWORDS) is not None
-
-
-def sodium_serving_high_mg(label: str) -> int:
-    """이 음식에 적용할 1인분 '높음' 경계 (면류만 완화)."""
-    return SODIUM_SERVING_HIGH_MG_NOODLE if is_noodle(label) else SODIUM_SERVING_HIGH_MG
-
-
-def sodium_tier(label: str, sodium_mg: float | None) -> str | None:
-    """1인분 실측 나트륨 등급. 미측정이면 None — 앱은 배지를 숨긴다.
-
-    **CKD가 아니라 고혈압·당뇨에 쓴다.** CKD는 병기별로 상한이 갈려(비투석 2,000 · 투석 3,000)
-    단일 등급을 매기지 않기로 했으나(`CKD_NUTRITION.md` 3-4), 고혈압은 병기 구분이 없어
-    단일 기준이 성립한다.
-    """
-    return _tier_by_mg(sodium_mg, SODIUM_SERVING_MID_MG, sodium_serving_high_mg(label))
-
-
 def sodium_display_tier(
     label: str,
     sodium_mg: float | None,
     name_tier: str | None = None,
 ) -> str | None:
-    """이름 근거와 실측 등급 중 엄격한 쪽 (칼륨·인과 같은 이중 판정).
+    """이름 근거와 1인분 실측 등급 중 엄격한 쪽 (칼륨·인과 같은 이중 판정). 미측정·이름 무관이면 None.
 
     실측 보유율이 96.9%로 높지만 어패류는 34.3%라(`PRODUCT_STRATEGY.md` §5-1) 젓갈·자반 같은
     고나트륨 원물이 실측 없이 새어 나간다. 이름 축을 함께 쓰는 이유다.
+
+    **CKD가 아니라 고혈압·당뇨에 쓴다.** CKD는 병기별로 상한이 갈려(비투석 2,000 · 투석 3,000)
+    단일 등급을 매기지 않기로 했으나(`CKD_NUTRITION.md` 3-4), 고혈압은 병기 구분이 없어
+    단일 기준이 성립한다. '높음' 경계는 면류만 완화한다.
     """
-    return _stricter(name_tier, sodium_tier(label, sodium_mg))
+    high_mg = (
+        SODIUM_SERVING_HIGH_MG_NOODLE
+        if _matches(label, NOODLE_KEYWORDS) is not None
+        else SODIUM_SERVING_HIGH_MG
+    )
+    return _stricter(name_tier, _tier_by_mg(sodium_mg, SODIUM_SERVING_MID_MG, high_mg))

@@ -26,15 +26,12 @@ def main() -> int:
         print("TOSS_SECRET_KEY·TOSS_CLIENT_KEY 가 설정되지 않아 중단합니다.")
         return 1
 
-    session = SessionLocal()
-    try:
+    with SessionLocal() as session:
         result = charge_due_subscriptions(session)
         print(
             f"갱신 배치 완료 — 대상 {result['due']}건, 성공 {result['charged']}건, "
             f"실패 {result['failed']}건, 건너뜀 {result['skipped']}건."
         )
-    finally:
-        session.close()
 
     return 0
 

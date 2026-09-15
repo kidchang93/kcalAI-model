@@ -35,6 +35,7 @@ import os  # noqa: E402
 
 from database import SessionLocal  # noqa: E402
 from services import auth_service, consent_service, health_service  # noqa: E402
+from services.errors import NotFoundError  # noqa: E402
 
 # 개발 계정임이 한눈에 보이는 접두사. 운영 데이터와 절대 섞이지 않게 한다.
 KAKAO_ID_PREFIX = "local-dev"
@@ -82,8 +83,7 @@ def main() -> int:
         else [code.strip() for code in args.conditions.split(",") if code.strip()]
     )
 
-    db = SessionLocal()
-    try:
+    with SessionLocal() as db:
         # 실제 로그인 경로를 그대로 탄다 — 연동 코드를 만들고 신규면 가입, 기존이면 로그인.
         raw_code, is_new = auth_service.create_link_code(db, kakao_id, f"로컬{args.label}")
         if is_new:
@@ -124,8 +124,6 @@ def main() -> int:
         }
         user_id = user.id
         current_conditions = consent_service.list_conditions(db, user.id)
-    finally:
-        db.close()
 
     if args.json:
         print(json.dumps(session_payload, ensure_ascii=False))
@@ -143,10 +141,10 @@ def main() -> int:
 
 
 def _exists(getter, db, user_id: int) -> bool:
-    # health_service 의 조회 함수는 없으면 ValueError 를 던진다 (API 가 404 로 바꾼다).
+    # health_service 의 조회 함수는 없으면 NotFoundError 를 던진다 (API 는 404).
     try:
         getter(db, user_id)
-    except ValueError:
+    except NotFoundError:
         return False
     return True
 

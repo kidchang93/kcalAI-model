@@ -16,21 +16,13 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import func, select
 
-from models.auth_model import User
+from factories import make_user
 from models.consent_model import UserCondition
 from models.health_model import CareVisit, LabResult
 from models.recommendation_model import DietRecommendation
 from services import consent_service, lab_service, recommendation_service, visit_service
 
 TODAY = date(2026, 8, 19)
-
-
-@pytest.fixture
-def user(db):
-    row = User(kakao_id="revoke-test", nickname="철회테스터")
-    db.add(row)
-    db.flush()
-    return row
 
 
 @pytest.fixture
@@ -89,7 +81,7 @@ def test_revoke_destroys_recommendation_cache(db, consented):
 
     result = recommendation_service.get_recommendation(db, consented.id, TODAY, "lunch")
 
-    assert {"type": "condition", "code": "ckd", "label": "신장 질환"} in result.recommendation.excluded
+    assert {"type": "condition", "code": "ckd", "label": "신장 질환"} in result["excluded"]
     assert _recommendation_count(db, consented.id) == 1
 
     consent_service.revoke_consent(db, consented.id, consent_service.SENSITIVE_HEALTH)
@@ -99,9 +91,7 @@ def test_revoke_destroys_recommendation_cache(db, consented):
 
 def test_revoke_leaves_other_users_alone(db, consented):
     """남의 민감정보가 함께 파기되지 않는다."""
-    other = User(kakao_id="revoke-other", nickname="다른사람")
-    db.add(other)
-    db.flush()
+    other = make_user(db, kakao_id="revoke-other", nickname="다른사람")
     consent_service.create_consent(
         db, other.id, consent_service.SENSITIVE_HEALTH, consent_service.SENSITIVE_HEALTH_VERSION
     )
