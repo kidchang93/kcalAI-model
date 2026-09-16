@@ -135,9 +135,12 @@ def test_unmeasured_item_is_counted_but_not_summed(db, user):
     assert _axis(result, "sodium")["consumed_mg"] == 800.0
 
 
-def test_ckd_without_stage_has_no_limit(db, user):
-    """병기를 모르면 상한을 만들지 않는다 — 비투석 2,000 과 투석 3,000 중 하나를 임의로
-    고르면 한쪽에게는 반드시 틀린 기준이 된다."""
+def test_ckd_without_stage_still_gets_the_sodium_limit(db, user):
+    """**병기를 몰라도 나트륨 상한이 나온다** (2026-09-16).
+
+    예전에는 투석이 3,000 이라 고를 수 없어 상한을 비웠고, 투석 여부를 입력하지 않은 CKD
+    사용자에게는 가장 중요한 축이 빈 채로 남았다. 세 병기가 모두 2,000 인 지금은 고를 것이 없다.
+    """
     _add_condition(db, user, "ckd")
     _add_food(db, "테스트탕ZZ", sodium_mg=700, potassium_mg=300, phosphorus_mg=90)
     _log_meal(db, user, [("테스트탕ZZ", 1.0)])
@@ -145,8 +148,10 @@ def test_ckd_without_stage_has_no_limit(db, user):
     result = day_nutrition.get_day_nutrient_axes(db, user.id, TODAY)
     sodium = _axis(result, "sodium")
 
-    assert sodium["limit_mg"] is None
-    assert "투석 여부를 입력" in sodium["basis"]
+    assert sodium["limit_mg"] == 2000
+    # 병기 이름을 모르므로 "신장 질환"으로만 적고, 출처는 병기 무관 근거를 쓴다.
+    assert "신장 질환 기준 하루 2,000 mg" in sodium["basis"]
+    assert "KDOQI 2020" in sodium["basis"]
 
 
 def test_ckd_nondialysis_uses_2000(db, user):
@@ -160,8 +165,8 @@ def test_ckd_nondialysis_uses_2000(db, user):
     assert _axis(result, "sodium")["limit_mg"] == 2000
 
 
-def test_hemodialysis_relaxes_sodium_and_adds_references(db, user):
-    """투석은 나트륨이 3,000 으로 완화되고, 칼륨·인에는 **참고치만** 붙는다."""
+def test_hemodialysis_keeps_sodium_limit_and_adds_references(db, user):
+    """투석도 나트륨은 2,000 그대로이고(완화하지 않는다), 칼륨·인에는 **참고치만** 붙는다."""
     _add_condition(db, user, "ckd")
     _set_stage(db, user, "hemodialysis")
     _add_food(db, "테스트과일ZZ", potassium_mg=426, phosphorus_mg=22, sodium_mg=1)
@@ -170,7 +175,7 @@ def test_hemodialysis_relaxes_sodium_and_adds_references(db, user):
     result = day_nutrition.get_day_nutrient_axes(db, user.id, TODAY)
     potassium = _axis(result, "potassium")
 
-    assert _axis(result, "sodium")["limit_mg"] == 3000
+    assert _axis(result, "sodium")["limit_mg"] == 2000
     # 상한이 아니라 참고치다. 이 둘이 뒤바뀌면 앱이 게이지를 그린다.
     assert potassium["limit_mg"] is None
     assert potassium["reference_mg"] == 2000
@@ -231,16 +236,22 @@ class TestBasisCitesWhoDrewTheLine:
 
         assert "대한신장학회" in basis and "1권 p101·105" in basis
 
-    def test_hemodialysis_discloses_the_conflict_inside_the_book(self, db, user):
-        """2권 p96(3,000 mg)과 p114(2,000 mg 이하)가 엇갈린다. 값을 고르지 않고 충돌을 드러낸다."""
+    def test_hemodialysis_cites_the_sections_that_set_the_line(self, db, user):
+        """투석 나트륨의 근거는 KSN2 p114(염분 전용 섹션)와 KDOQI 2020 권고 6.5.1 이다.
+
+        2026-09-13~09-16 에는 값이 3,000(p96)이고 basis 가 p96·p114 의 충돌을 드러냈다. 그것은
+        충돌 노출이 아니라 느슨한 쪽을 고른 것이었다 — 상위 근거(KDOQI 2020 이 CKD 5D 를 같은
+        값으로 묶는다)를 확인하고 2,000 으로 정정했으므로 충돌 문구도 사라진다.
+        """
         _add_condition(db, user, "ckd")
         _set_stage(db, user, "hemodialysis")
         _log_meal(db, user, [("테스트미측정ZZ", 1.0)])
 
         sodium = _axis(day_nutrition.get_day_nutrient_axes(db, user.id, TODAY), "sodium")
 
-        assert sodium["limit_mg"] == 3000
-        assert "2권 p96" in sodium["basis"] and "p114" in sodium["basis"]
+        assert sodium["limit_mg"] == 2000
+        assert "2권 p114" in sodium["basis"] and "KDOQI 2020" in sodium["basis"]
+        assert "p96" not in sodium["basis"]
 
     def test_hypertension_cites_ksh_recommendation(self, db, user):
         _add_condition(db, user, "hypertension")

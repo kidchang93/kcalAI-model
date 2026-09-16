@@ -35,6 +35,10 @@ class ConsentResponse(BaseModel):
     # (`consent_service.serialize_consent`). 기본값을 두지 않는 이유: ORM 행을 그대로 넘기면
     # 조용히 true 가 되는 대신 검증에서 터지게 하려는 것이다.
     is_current: bool
+    # 이 동의로는 **기능이 막히는가**. is_current 와 다르다: 문구만 다듬은 개정이면 낡아도
+    # (is_current=false) 기능은 그대로 쓸 수 있어 false 다. 둘을 가르지 않으면 앱이 낡기만 한
+    # 동의에도 "다시 동의하기 전까지 쓸 수 없어요"라고 거짓 안내를 한다 (2026-09-16).
+    requires_reconsent: bool
 
     model_config = {"from_attributes": True}
 

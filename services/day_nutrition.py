@@ -248,9 +248,10 @@ def _axes_for_user(db: Session, user_id: int) -> list[str]:
 def _sodium_limit(conditions: set[str], stage: str | None) -> tuple[int | None, str | None]:
     """나트륨 1일 상한 — 여러 질환이 겹치면 **더 엄격한 쪽**을 쓴다.
 
-    CKD 는 병기가 있어야 값이 나온다(비투석 2,000 · 투석 3,000). 병기를 모르면서 다른 질환도
-    없으면 상한 없이 안내 문구만 준다 — 임의로 한쪽을 고르면 투석 환자에게는 과잉 제한이고
-    비투석 환자에게는 느슨하다.
+    **CKD 는 병기를 몰라도 값이 나온다** (2026-09-16). 세 병기의 나트륨 상한이 모두 2,000 으로
+    같아져서 고를 것이 없다 — 예전에는 투석이 3,000 이라 병기 미상이면 상한 없이 안내 문구만
+    줬고, 투석 여부를 입력하지 않은 CKD 사용자에게는 가장 중요한 축이 비어 있었다.
+    병기는 이제 기준선(basis) 문구와 칼륨·인 참고치·과일 분류에만 쓰인다.
 
     기준선 설명(basis)에는 **출처를 같은 줄에** 붙인다 — "신장 질환 투석 전(보존기) 기준 하루
     2,000 mg · 대한신장학회 … p101·105". 앱이 그은 선처럼 읽히면 우리가 판정하는 쪽이 된다
@@ -263,16 +264,20 @@ def _sodium_limit(conditions: set[str], stage: str | None) -> tuple[int | None, 
     if "ckd" in conditions:
         ckd_limit = ckd_food_rules.sodium_daily_limit_mg(stage)
 
-        if ckd_limit is not None:
-            candidates.append(
+        # 병기를 알면 그 이름과 출처를, 모르면 병기 무관 근거를 붙인다 — 값은 같다.
+        candidates.append(
+            (
+                ckd_limit,
                 (
-                    ckd_limit,
-                    f"신장 질환 {ckd_food_rules.CKD_STAGE_LABELS[stage]}",
-                    ckd_food_rules.SODIUM_LIMIT_CITATIONS[stage],
-                )
+                    f"신장 질환 {ckd_food_rules.CKD_STAGE_LABELS[stage]}"
+                    if stage in ckd_food_rules.CKD_STAGE_LABELS
+                    else "신장 질환"
+                ),
+                ckd_food_rules.SODIUM_LIMIT_CITATIONS.get(
+                    stage or "", "KDOQI 2020 권고 6.5.1 · 대한신장학회 영양-식생활 관리 1권 p101·105"
+                ),
             )
-        elif not candidates:
-            return None, ckd_food_rules.SODIUM_STAGE_UNKNOWN_NOTE
+        )
 
     if not candidates:
         return None, None

@@ -96,9 +96,16 @@ class TestStageTargets:
         assert r.stage_targets("hemodialysis")["protein_g_per_kg"] == (1.2, 1.2)
         assert r.stage_targets("peritoneal")["protein_g_per_kg"][1] >= 1.2
 
-    def test_sodium_limit_differs_by_stage(self):
+    def test_sodium_limit_is_the_same_for_every_stage(self):
+        """투석이라고 완화하지 않는다 (2026-09-16 정정).
+
+        KDOQI 2020 권고 6.5.1 이 CKD 3-5 와 **CKD 5D**(투석)를 한 값(<2.3 g/d)으로 묶고,
+        KSN2 p114 도 "혈액투석을 하는 경우에도 … 2,000 mg 이하 … 투석을 하지 않는 만성 콩팥병
+        환자와 동일하게"라고 적는다. 그전까지 쓰던 3,000 의 근거는 같은 책 p96 의 괄호 한 곳뿐이다.
+        """
         assert r.stage_targets("nondialysis")["sodium_mg_max"] == 2000
-        assert r.stage_targets("hemodialysis")["sodium_mg_max"] == 3000
+        assert r.stage_targets("hemodialysis")["sodium_mg_max"] == 2000
+        assert r.stage_targets("peritoneal")["sodium_mg_max"] == 2000
 
     def test_unknown_stage(self):
         assert r.stage_targets("unknown") is None

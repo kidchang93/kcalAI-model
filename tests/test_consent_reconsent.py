@@ -237,3 +237,51 @@ def test_writing_a_visit_note_under_outdated_consent_is_forbidden(client, db, us
     assert date_only.status_code == 200
     assert date_only.json()["scheduled_on"] == scheduled
     assert date_only.json()["outcome"] is None
+
+
+# ---- ⑥ 범위가 넓어지지 않은 개정은 막지 않는다 (2026-09-16) ----
+#
+# 위 ①~⑤ 는 "범위가 넓어진 개정"(v1.0 → v1.1)의 동작이다. 그런데 2026-09-16 전에는 판정이
+# "현재 버전이 아니면 무효" 하나뿐이라, 사실과 다른 문장을 바로잡는 정도의 개정에도 기존 동의자
+# **전원**이 재동의 전까지 막혔다. 개인정보 보호법 제23조가 막는 것은 알린 범위를 벗어난
+# 처리이지 문구 개정 자체가 아니다 — 그래서 재동의 대상 버전 집합으로 갈랐다.
+
+def test_plain_wording_revision_does_not_block_existing_consenters(client, db, user, monkeypatch):
+    """문구만 바뀐 개정(v1.1 → v1.2)에서 v1.1 동의자는 계속 쓸 수 있다."""
+    _add_legacy_consent(db, user.id, version=CURRENT_VERSION)
+
+    # 범위가 넓어지지 않은 개정: 현재 버전만 올리고 재동의 집합은 그대로 둔다.
+    monkeypatch.setattr(consent_service, "SENSITIVE_HEALTH_VERSION", "v1.2")
+    monkeypatch.setitem(
+        consent_service._CURRENT_VERSIONS, consent_service.SENSITIVE_HEALTH, "v1.2"
+    )
+
+    assert consent_service.get_consent_state(db, user.id) is consent_service.ConsentState.ACTIVE
+
+    for path in GATED_PATHS:
+        assert client.get(path).status_code == 200, path
+
+    # 막지는 않되 **바뀐 사실은 알린다** — 앱이 이 값으로 안내를 띄운다.
+    row = next(
+        item
+        for item in client.get("/api/me/consents").json()
+        if item["kind"] == consent_service.SENSITIVE_HEALTH
+    )
+    assert row["is_current"] is False
+
+
+def test_scope_widening_revision_still_blocks(db, user, monkeypatch):
+    """범위가 넓어진 개정은 옛 버전을 재동의 집합에 넣어 그대로 막는다."""
+    _add_legacy_consent(db, user.id, version=CURRENT_VERSION)
+
+    monkeypatch.setattr(consent_service, "SENSITIVE_HEALTH_VERSION", "v2.0")
+    monkeypatch.setitem(
+        consent_service._CURRENT_VERSIONS, consent_service.SENSITIVE_HEALTH, "v2.0"
+    )
+    monkeypatch.setattr(
+        consent_service,
+        "SENSITIVE_HEALTH_REVALIDATE_VERSIONS",
+        frozenset({LEGACY_VERSION, CURRENT_VERSION}),
+    )
+
+    assert consent_service.get_consent_state(db, user.id) is consent_service.ConsentState.OUTDATED

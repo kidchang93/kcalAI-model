@@ -32,11 +32,28 @@ GROUP_ACTIVITY_SHARE = "group_activity_share"
 #
 # 2026-09-13 (KCAL-22): terms·privacy 1.0 → 1.1(생성형 AI 사전고지, AI기본법 제31조①),
 # sensitive_health v1.0 → v1.1(검사 수치·진료 메모 항목과 경고·조언·리포트 목적 추가).
-# ⚠️ **sensitive_health 를 올리면 기존 동의자는 재동의 전까지 무효다** (`has_active_consent`).
+# ⚠️ sensitive_health 를 올릴 때 **범위가 넓어졌다면** 옛 버전을 SENSITIVE_HEALTH_REVALIDATE_VERSIONS
+# 에 넣어야 한다 — 그래야 재동의 전까지 무효가 된다. 넓어지지 않았다면 넣지 않는다.
 TERMS_VERSION = "1.1"
 PRIVACY_VERSION = "1.1"
 SENSITIVE_HEALTH_VERSION = "v1.1"
 GROUP_ACTIVITY_SHARE_VERSION = "v1.0"
+
+# **재동의를 강제하는 옛 민감정보 동의 버전.** 여기 있는 버전에 머문 동의만 무효(403)다.
+#
+# 2026-09-16까지는 "현재 버전이 아니면 전부 무효"였다. 그러면 문구를 한 글자만 고쳐도 — 사실과
+# 다른 문장을 바로잡거나 어려운 말을 쉽게 푸는 개정에도 — 기존 동의자 **전원**의 질환 기능이
+# 다시 동의할 때까지 멈춘다. 개인정보 보호법 제23조가 막는 것은 "알린 범위를 벗어난 처리"이지
+# 문구 개정 자체가 아니다. 그래서 개정을 두 갈래로 나눈다:
+#
+#   ① 수집 항목·이용 목적이 **넓어지는** 개정  → 이 집합에 옛 버전을 넣는다. 재동의 전까지 403.
+#      (예: v1.0 → v1.1 은 검사 수치·진료 메모를 항목에, 경고·조언·리포트를 목적에 더했다)
+#   ② 범위가 그대로이거나 **좁아지는** 개정   → 넣지 않는다. 기능은 계속 동작하고,
+#      `is_current: false` 로 앱이 "내용이 바뀌었어요"만 알린다.
+#
+# ⚠️ 판단 기준은 문구가 바뀌었는지가 아니라 **범위가 넓어졌는지**다. 새 항목을 받거나 새 목적에
+# 쓰기 시작한다면 반드시 여기 넣는다 — 그러지 않으면 알린 적 없는 범위로 처리하게 된다.
+SENSITIVE_HEALTH_REVALIDATE_VERSIONS = frozenset({"v1.0"})
 
 _CURRENT_VERSIONS = {
     TERMS: TERMS_VERSION,
@@ -64,7 +81,8 @@ class ConsentState(str, Enum):
     MISSING = "missing"
     # 최신 행이 철회됐다.
     REVOKED = "revoked"
-    # 최신 행이 살아 있지만 그 kind 의 현재 버전이 아니다.
+    # 최신 행이 살아 있지만 **범위가 넓어진 개정 이전**의 버전이라 다시 받아야 한다
+    # (단순 문구 개정으로 낡기만 한 동의는 ACTIVE 다 — SENSITIVE_HEALTH_REVALIDATE_VERSIONS).
     OUTDATED = "outdated"
 
 
@@ -105,6 +123,15 @@ def list_consents(db: Session, user_id: int) -> list[UserConsent]:
     )
 
 
+def requires_reconsent(kind: str, version: str) -> bool:
+    """이 버전의 동의로는 기능이 막히는가 (민감정보만 해당).
+
+    `is_current` 와 갈라 둔다 — 낡은 것과 무효인 것은 다르다. 문구를 다듬기만 한 개정이면
+    낡아도 유효하고, 앱은 "바뀌었어요"만 알리면 된다.
+    """
+    return kind == SENSITIVE_HEALTH and version in SENSITIVE_HEALTH_REVALIDATE_VERSIONS
+
+
 def serialize_consent(consent: UserConsent) -> dict:
     """동의 행의 응답. `is_current` 는 저장값이 아니라 **지금의 현재 버전**과 비교한 계산값이다.
 
@@ -120,6 +147,7 @@ def serialize_consent(consent: UserConsent) -> dict:
         "agreed_at": consent.agreed_at,
         "revoked_at": consent.revoked_at,
         "is_current": is_current_version(consent.kind, consent.version),
+        "requires_reconsent": requires_reconsent(consent.kind, consent.version),
     }
 
 
@@ -183,19 +211,23 @@ def get_consent_state(db: Session, user_id: int) -> ConsentState:
     if latest.revoked_at is not None:
         return ConsentState.REVOKED
 
-    if not is_current_version(SENSITIVE_HEALTH, latest.version):
+    # 버전이 낡았다고 전부 무효는 아니다 — 범위가 넓어진 개정만 재동의를 요구한다
+    # (SENSITIVE_HEALTH_REVALIDATE_VERSIONS 주석). 그 밖의 옛 버전은 ACTIVE 로 두고,
+    # 응답의 `is_current: false` 로 앱이 "내용이 바뀌었어요"를 알린다.
+    if latest.version in SENSITIVE_HEALTH_REVALIDATE_VERSIONS:
         return ConsentState.OUTDATED
 
     return ConsentState.ACTIVE
 
 
 def has_active_consent(db: Session, user_id: int) -> bool:
-    """민감정보 동의 유효 = 최신 행이 철회되지 않았고 **현재 버전**이다.
+    """민감정보 동의 유효 = 최신 행이 철회되지 않았고 **재동의 대상 버전이 아니다**.
 
     버전까지 보는 것은 민감정보뿐이다. 개인정보보호법 제23조는 민감정보를 **알린 목적·항목
     범위에서만** 처리하게 하므로, 문구가 넓어졌는데 옛 동의로 계속 처리하면 그 범위를 벗어난다 —
     v1.0 은 혈액형·질병·알러지를 "식단 추천에서 거르는 데"만 알렸고, 검사 수치·진료 메모와
-    경고·리포트 용도는 v1.1 에서야 알린다. terms·privacy 는 기능 게이트가 아니라 가입 조건이라
+    경고·리포트 용도는 v1.1 에서야 알린다 — 그래서 v1.0 만 재동의 대상이다. 범위가 넓어지지 않는
+    개정은 무효화하지 않는다(2026-09-16). terms·privacy 는 기능 게이트가 아니라 가입 조건이라
     버전으로 무효화하지 않는다(개정마다 전 회원이 막히는 건 제품 결정이다). group_activity_share
     판정은 `challenge_service` 가 따로 한다.
     """
