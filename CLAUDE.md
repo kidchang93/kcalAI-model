@@ -118,7 +118,7 @@ open http://127.0.0.1:8000/docs
 | `GEMINI_API_KEY` | 사실상 예 | 없음 | `services/gemini_client.py` — 이미지 인식(단일 백엔드)에 필요. `APP_ENV=production`이면 없을 때 기동 실패. **로그·응답에 미노출** |
 | `GEMINI_MODEL` | 아니오 | `gemini-flash-latest` | 〃 — 재현성 필요 시 핀 버전(예: `gemini-3.5-flash`) |
 | `GEMINI_TIMEOUT_MS` | 아니오 | `15000` | 〃 — Gemini 호출 타임아웃(ms) |
-| `TOSS_SECRET_KEY` | production 예 | 없음 | `services/toss_client.py` — 자동결제. **비밀값.** 이 값만으로 임의 청구가 가능하다. Basic `base64("{키}:")` 인증. `APP_ENV=production`이면 없을 때 기동 실패. **로그·응답에 미노출** |
+| `TOSS_SECRET_KEY` | 아니오 | 없음 | `services/toss_client.py` — 자동결제. **비밀값.** 이 값만으로 임의 청구가 가능하다. Basic `base64("{키}:")` 인증. **2026-09-29부터 운영 기동이 요구하지 않는다** — 유료화는 인앱 결제로 하고 웹 결제는 닫았다. 비우면 `/api/billing/*` 가 503. **로그·응답에 미노출** |
 | `TOSS_CLIENT_KEY` | production 예 | 없음 | 〃 — **공개값.** 결제창 SDK 초기화용으로 `/api/billing/checkout` 응답에 실려 앱에 내려간다 |
 | `TOSS_TIMEOUT_SECONDS` | 아니오 | `10` | 〃 — 토스 호출 타임아웃(초) |
 | `KAKAO_REST_API_KEY` | 예 | 없음 | `services/kakao_client.py` — 인가 URL에 실려 나가는 **공개값** |
@@ -253,7 +253,7 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 | 새 엔드포인트/스키마 추가 | `docs/DESIGN.md` → `docs/ARCHITECTURE.md` |
 | 코드 작성 직전 | `docs/CODE_STYLE.md` |
 | **출시 전 법적 요건 (연령·환불·프라이버시 매니페스트·스토어 심사·AI기본법)** | **`docs/LEGAL_COMPLIANCE.md`** (2026-07-25 조사, 07-26 §6 스토어 요건 추가, **09-13 §7 AI기본법** — 생성형 AI 사전고지는 과태료 조항이고, 무엇이 AI이고 무엇이 아닌지 표가 있다. LLM으로 조언·판정을 만들면 고영향 AI 판단이 뒤집힌다. ⚠️ 법률 자문이 아니며 출시 전 전문가 검토 필요. 만 14세 미만 차단은 **형사처벌이 걸린 항목**이라 근거를 읽고 손댈 것) |
-| **인앱결제(IAP) — 스토어 출시** | `docs/DATA_MODEL.md` **30장** (착수 전 설계). 지금 앱의 "결제는 웹에서" 문구가 anti-steering 위반이라 심사를 통과하지 못한다. ⏰ Android는 **2026-08-31**까지 Play Billing 8 필수 |
+| **인앱결제(IAP) — 스토어 출시** | `docs/DATA_MODEL.md` **30장** (착수 전 설계). **2026-09-29: 첫 출시는 결제 없이 나간다** — 토스 웹 결제는 닫고(앱 `isBillingSupported()`=false, 운영 기동 가드에서 토스 제외), 약관·처리방침 1.2에서 유료 조항을 뺐다. 가입 화면의 요금제 선택과 402의 '업그레이드' 문구도 없앴다. 유료화할 때 IAP로 이 자리를 채운다 |
 | 리뷰·머지 전 | `docs/REVIEW.md` |
 | 서브에이전트 실행 | `docs/SUBAGENTS.md` |
 | **누구를 위한 앱인가 · 방향 결정** | **`docs/PRODUCT_STRATEGY.md`** (2026-07-22 결정: 식이요법이 필요한 만성질환군. 신규 질환·기능을 붙이기 전에 읽는다) |

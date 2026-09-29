@@ -313,10 +313,12 @@ def my_subscription_view(db: Session, user_id: int) -> dict:
     }
 
 
+# 402 문구에 요금제·업그레이드를 쓰지 않는다(2026-09-29) — 출시는 무료이고 유료화는 인앱 결제로
+# 한다. 앱에서 판매 경로 없이 '업그레이드'를 권하면 스토어 심사(3.1.1)에 걸린다.
 def _quota_message(plan: Plan) -> str:
     return (
-        f"{plan.label_ko} 요금제는 하루 {plan.daily_vision_quota}건까지 사진 인식을 사용할 수 있습니다. "
-        "내일 다시 시도하거나 요금제를 업그레이드해주세요."
+        f"사진 인식은 하루 {plan.daily_vision_quota}건까지 쓸 수 있어요. "
+        "내일 0시에 다시 쓸 수 있고, 오늘은 직접 입력으로 기록할 수 있어요."
     )
 
 
@@ -339,8 +341,7 @@ def ensure_can_create_group(db: Session, owner_id: int) -> None:
         owned,
         plan.max_owned_groups,
         RESOURCE_OWNED_GROUPS,
-        f"{plan.label_ko} 요금제는 그룹을 {plan.max_owned_groups}개까지 만들 수 있습니다. "
-        "요금제를 업그레이드해주세요.",
+        f"그룹은 {plan.max_owned_groups}개까지 만들 수 있어요.",
     )
 
 
@@ -357,8 +358,7 @@ def ensure_can_add_member(db: Session, group: Group) -> None:
         max(member_count - 1, 0),
         plan.max_group_members,
         RESOURCE_GROUP_MEMBERS,
-        f"이 그룹은 {plan.label_ko} 요금제라 본인 외 {plan.max_group_members}명까지 참여할 수 있습니다. "
-        "그룹 소유자가 요금제를 업그레이드해야 합니다.",
+        f"이 그룹은 만든 사람 외 {plan.max_group_members}명까지 참여할 수 있어요.",
     )
 
 

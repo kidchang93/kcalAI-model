@@ -35,7 +35,6 @@ from services.errors import BadRequestError, ForbiddenError, NotFoundError
 from services.gemini_client import ensure_api_key
 from services.kakao_client import ensure_production_kakao_config
 from services.subscription_service import PlanLimitError
-from services.toss_client import ensure_production_toss_config
 
 # 관측 지표: 모든 요청의 경로·상태·응답시간을 구조적으로 남긴다.
 logger = get_logger(__name__)
@@ -45,14 +44,15 @@ APP_ENV = os.getenv("APP_ENV", "development")
 
 # 운영 기동 fail-fast: 개발 기본값(pepper·암호화 키·Gemini 키 부재·카카오/토스 미설정)을 그대로
 # 배포하면 서버가 뜨지 않는다. 비전은 Gemini 단일 백엔드라 키가 없으면 predict가 불가능하고,
-# **카카오는 유일한 인증 수단**이라 설정이 없으면 아무도 로그인하지 못한다. 토스 키가 없으면
-# 유료 요금제를 팔 수 없는데, 그 사실이 사용자의 결제 시도에서야 드러나면 안 된다.
+# **카카오는 유일한 인증 수단**이라 설정이 없으면 아무도 로그인하지 못한다.
+# 토스 키는 요구하지 않는다(2026-09-29) — 스토어 출시는 결제 없이 나가고 유료화는 인앱 결제로 한다
+# (docs/LEGAL_COMPLIANCE.md §6-4). 키가 없으면 /api/billing/* 가 503 이 되어 웹 결제가 닫힌다.
+# 토스를 다시 팔게 되면 ensure_production_toss_config() 를 여기 되돌린다.
 if APP_ENV == "production":
     ensure_production_auth_config()
     ensure_production_crypto_config()
     ensure_api_key()
     ensure_production_kakao_config()
-    ensure_production_toss_config()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

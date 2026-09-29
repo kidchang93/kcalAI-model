@@ -32,10 +32,12 @@ GROUP_ACTIVITY_SHARE = "group_activity_share"
 #
 # 2026-09-13 (KCAL-22): terms·privacy 1.0 → 1.1(생성형 AI 사전고지, AI기본법 제31조①),
 # sensitive_health v1.0 → v1.1(검사 수치·진료 메모 항목과 경고·조언·리포트 목적 추가).
+# 2026-09-29: terms·privacy 1.1 → 1.2(토스 유료 조항 제거 — 무료 출시, 사업자 정보 기재).
+# 범위가 좁아진 개정이고 약관 버전은 가입 시에만 검증하므로 기존 회원에게 재동의를 요구하지 않는다.
 # ⚠️ sensitive_health 를 올릴 때 **범위가 넓어졌다면** 옛 버전을 SENSITIVE_HEALTH_REVALIDATE_VERSIONS
 # 에 넣어야 한다 — 그래야 재동의 전까지 무효가 된다. 넓어지지 않았다면 넣지 않는다.
-TERMS_VERSION = "1.1"
-PRIVACY_VERSION = "1.1"
+TERMS_VERSION = "1.2"
+PRIVACY_VERSION = "1.2"
 SENSITIVE_HEALTH_VERSION = "v1.1"
 GROUP_ACTIVITY_SHARE_VERSION = "v1.0"
 
