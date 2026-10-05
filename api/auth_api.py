@@ -1,15 +1,25 @@
 import os
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Header, Query, status
+from fastapi import APIRouter, Header, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 
 from api.dependencies import DB, CurrentUser, extract_bearer_token
 from log_utils import get_logger
-from schemas.auth_schema import AuthTokenResponse, KakaoLoginRequest, KakaoSignupRequest
+from models.auth_model import AuthSession, User
+from schemas.auth_schema import (
+    AppleLoginRequest,
+    AppleSignupRequest,
+    AuthTokenResponse,
+    KakaoLoginRequest,
+    KakaoSignupRequest,
+)
 from schemas.common_schema import ErrorResponse, MessageResponse
+from services.apple_client import AppleUnavailableError
 from services.auth_service import (
     StateError,
+    apple_login,
+    apple_signup,
     create_link_code,
     create_state,
     kakao_login,
@@ -114,13 +124,7 @@ def _redirect_to_app(platform: str, params: dict[str, str]) -> RedirectResponse:
 )
 def login_with_kakao(request: KakaoLoginRequest, db: DB):
     # 미가입 카카오 계정은 404 — 앱은 404를 받으면 가입 화면(동의·요금제)으로 보낸다.
-    # DB에는 토큰 해시만 저장되므로 원문(raw_token)은 이 응답에서만 나간다.
-    user, auth_session, raw_token = kakao_login(db, request.link_code)
-    return {
-        "access_token": raw_token,
-        "expires_at": auth_session.expires_at,
-        "user": user,
-    }
+    return _token_response(*kakao_login(db, request.link_code))
 
 
 @router.post(
@@ -129,20 +133,57 @@ def login_with_kakao(request: KakaoLoginRequest, db: DB):
     responses={400: {"model": ErrorResponse}},
 )
 def signup_with_kakao(request: KakaoSignupRequest, db: DB):
-    user, auth_session, raw_token = kakao_signup(
-        db,
-        request.link_code,
-        request.agreed_terms,
-        request.agreed_privacy,
-        request.plan_code,
-        request.terms_version,
-        request.privacy_version,
+    return _token_response(
+        *kakao_signup(
+            db,
+            request.link_code,
+            request.agreed_terms,
+            request.agreed_privacy,
+            request.plan_code,
+            request.terms_version,
+            request.privacy_version,
+        )
     )
-    return {
-        "access_token": raw_token,
-        "expires_at": auth_session.expires_at,
-        "user": user,
-    }
+
+
+# Apple: 400(토큰 무효·만료, 코드 교환 실패)·404(미가입)는 서비스 예외를 전역 핸들러가 바꾼다.
+# 503 만 여기서 바꾼다 — Apple 공개키를 못 가져왔거나 SIWA 설정이 없다(문구는 서비스가 정한다).
+@router.post(
+    "/auth/apple/login",
+    response_model=AuthTokenResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+def login_with_apple(request: AppleLoginRequest, db: DB):
+    # 미가입 Apple 계정은 404 — 앱은 약관 동의 단계로 보낸다 (카카오와 같다).
+    try:
+        return _token_response(*apple_login(db, request.identity_token))
+    except AppleUnavailableError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
+        ) from error
+
+
+@router.post(
+    "/auth/apple/signup",
+    response_model=AuthTokenResponse,
+    responses={400: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+)
+def signup_with_apple(request: AppleSignupRequest, db: DB):
+    try:
+        return _token_response(*apple_signup(db, **request.model_dump()))
+    except AppleUnavailableError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
+        ) from error
+
+
+def _token_response(user: User, auth_session: AuthSession, raw_token: str) -> dict:
+    # DB에는 토큰 해시만 저장되므로 원문(raw_token)은 이 응답에서만 나간다.
+    return {"access_token": raw_token, "expires_at": auth_session.expires_at, "user": user}
 
 
 @router.post(

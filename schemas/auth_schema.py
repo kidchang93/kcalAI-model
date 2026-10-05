@@ -3,12 +3,9 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 
-class KakaoLoginRequest(BaseModel):
-    # 딥링크로 받은 1회용 연동 코드 (카카오 인가 코드가 아니다 — 그건 서버가 이미 소비했다).
-    link_code: str = Field(..., min_length=16, max_length=128)
+class SignupAgreementFields(BaseModel):
+    """카카오·Apple 가입이 공유하는 동의·요금제 필드. 라우트 바디로 직접 쓰지 않는다."""
 
-
-class KakaoSignupRequest(KakaoLoginRequest):
     # 가입 필수 동의. 기본값을 두지 않는다 — 앱이 보내지 않으면 422 로 막혀야 한다.
     agreed_terms: bool
     agreed_privacy: bool
@@ -25,9 +22,31 @@ class KakaoSignupRequest(KakaoLoginRequest):
     plan_code: str | None = None
 
 
+class KakaoLoginRequest(BaseModel):
+    # 딥링크로 받은 1회용 연동 코드 (카카오 인가 코드가 아니다 — 그건 서버가 이미 소비했다).
+    link_code: str = Field(..., min_length=16, max_length=128)
+
+
+class KakaoSignupRequest(KakaoLoginRequest, SignupAgreementFields):
+    pass
+
+
+class AppleLoginRequest(BaseModel):
+    # iOS 가 기기에서 받은 Apple identity token(JWT). 서버가 Apple 공개키로 서명을 검증한다.
+    identity_token: str = Field(..., min_length=1, max_length=4096)
+
+
+class AppleSignupRequest(AppleLoginRequest, SignupAgreementFields):
+    # 1회용·5분. 서버가 refresh token 으로 바꿔 두어야 탈퇴 때 Apple 에 폐기를 요청할 수 있다.
+    authorization_code: str = Field(..., min_length=1, max_length=512)
+    # Apple 이 첫 로그인에만 주는 이름을 앱이 조합한 값. 비거나 공백이면 null 로 저장한다.
+    # 이메일 필드는 두지 않는다 — 앱이 이메일 범위를 요청하지 않는다(최소 수집).
+    nickname: str | None = Field(default=None, max_length=50)
+
+
 class AuthUser(BaseModel):
     id: int
-    # 카카오 닉네임. 프로필 동의를 거부하면 없을 수 있다.
+    # 카카오 닉네임 또는 Apple 이름. 카카오 프로필 동의 거부·Apple 이름 미제공이면 없다.
     nickname: str | None = None
     created_at: datetime
 

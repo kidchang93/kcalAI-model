@@ -54,6 +54,21 @@ SMS(휴대폰 OTP)는 제거됐다. `APP_ENV=production`에서 카카오 키가 
 > ⚠️ **무료 티어 어뷰징 방어가 없다.** 카카오계정은 이메일만으로 만들 수 있어 Lite **5건/일**(리비전
 > 0016에서 3 → 5)은 계정 갈아타기로 우회된다. 감수한 트레이드오프다 (`docs/DATA_MODEL.md` 21·22장).
 
+### 0-1-2. Apple 로그인 (iOS) — 키가 없으면 **가입이 503** 이다 (2026-10-05)
+
+App Store 4.8 때문에 붙였다(`docs/LEGAL_COMPLIANCE.md` §6-6). 운영 기동은 이 키를 요구하지 않지만,
+없으면 Apple **가입**이 503 이다(로그인은 된다) — **심사 제출 전에 반드시 넣는다.**
+
+1. Apple Developer > Certificates, Identifiers & Profiles > **Keys** → 새 키, **Sign in with Apple** 체크,
+   Primary App ID 에 `com.kcalai.kcalairn` → `.p8` 다운로드(한 번만 받을 수 있다)
+2. 운영 `.env` 에 넣는다:
+   - `APPLE_TEAM_ID` — 멤버십 페이지의 Team ID
+   - `APPLE_SIWA_KEY_ID` — 위 키의 Key ID
+   - `APPLE_SIWA_PRIVATE_KEY_B64` — `base64 -i AuthKey_<KEYID>.p8 | tr -d '\n'`
+   - (`APPLE_BUNDLE_ID` 는 기본값 `com.kcalai.kcalairn` 이면 생략)
+3. ⚠️ **`.p8` 파일을 서버 디렉토리에 두지 않는다** — 배포가 작업 트리를 `rsync --delete` 해서 지워진다.
+   `.env` 만 보존된다.
+
 ### 0-2. 요금제 결제 — **연동됨** (2026-07-16)
 
 ~~미연동이라 누구나 API 한 번으로 Premium이 된다~~ → **해소**. 토스페이먼츠 자동결제가 붙었고

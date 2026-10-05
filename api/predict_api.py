@@ -54,7 +54,7 @@ async def predict(
     # 비전 인식은 Gemini 단일 백엔드다(YOLO 제거). 블로킹 HTTP 호출이라 스레드풀에서 돌린다.
     started = time.perf_counter()
     try:
-        results = await run_in_threadpool(identify_food, image_bytes, file.content_type)
+        results = await run_in_threadpool(identify_food, image_bytes)
     except VisionError as error:
         duration_ms = (time.perf_counter() - started) * 1000
         logger.error(

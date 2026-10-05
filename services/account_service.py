@@ -18,6 +18,7 @@ from models.health_model import (
 from models.pet_model import Pet, PetFeedingLog
 from models.recommendation_model import DietRecommendation
 from models.subscription_model import BillingKey, Payment, UserSubscription, VisionUsageDaily
+from services.apple_client import revoke_token
 from services.kakao_client import unlink
 
 
@@ -32,6 +33,8 @@ def delete_account(db: Session, user: User) -> None:
     #    `tests/test_account_service.py` 가 FK 전수와 이 목록을 대조해 회귀를 막는다.
     user_id = user.id
     kakao_id = user.kakao_id
+    # 행을 지우기 전에 꺼내 둔다(deferred 컬럼이라 여기서 읽힌다). 토큰은 users 행과 함께 파기된다.
+    apple_refresh_token = user.apple_refresh_token
     owned_group_ids = select(Group.id).where(Group.owner_id == user_id)
     owned_pet_ids = select(Pet.id).where(Pet.owner_id == user_id)
     my_meal_log_ids = select(MealLog.id).where(MealLog.user_id == user_id)
@@ -111,3 +114,8 @@ def delete_account(db: Session, user: User) -> None:
     #    unlink 는 실패해도 예외를 올리지 않고 로그만 남긴다 (수동 정리 대상).
     if kakao_id:
         unlink(kakao_id)
+
+    # 9) Apple 토큰 폐기 — Apple 로그인을 제공하는 앱의 계정 삭제 **의무**다. 카카오 unlink 와 같은
+    #    자리·같은 규칙(파기 커밋 후, 실패해도 예외 없이 로그만).
+    if apple_refresh_token:
+        revoke_token(apple_refresh_token)

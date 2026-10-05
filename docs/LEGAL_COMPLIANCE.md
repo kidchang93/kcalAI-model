@@ -262,7 +262,7 @@ Expo 는 앱 설정의 `expo.ios.privacyManifests` 필드로 이를 선언할 �
 
 > **If your app supports account creation, you must also offer account deletion within the app.**
 
-✅ `app/(tabs)/account.tsx` → `DELETE /api/me`. 개인정보 파기와 카카오 unlink까지 이어진다(DATA_MODEL 18장).
+✅ `app/(tabs)/account.tsx` → `DELETE /api/me`. 개인정보 파기와 카카오 unlink·**Apple 토큰 폐기**(2026-10-05, §6-6)까지 이어진다(DATA_MODEL 18장).
 
 ### 6-4. 결제 — 지금 설계로는 통과하지 못한다
 
@@ -284,6 +284,45 @@ Expo 는 앱 설정의 `expo.ios.privacyManifests` 필드로 이를 선언할 �
 ### 6-5. 한국 특례는 채택하지 않았다
 
 Apple은 전기통신사업법 개정에 따라 한국에서 제3자 PSP를 허용하며 **토스도 승인 목록에 있다**(KCP·Inicis·Toss·NICE, 수수료 26%). 그러나 한국 전용 별도 바이너리·월간 매출 보고·환불 전담·**웹뷰 금지**가 붙어 채택하지 않았다(30장의 비교표).
+
+### 6-6. 로그인 서비스 (4.8) — 소셜 로그인만 있으면 **대안 로그인이 필수다** (2026-10-05)
+
+> **4.8** Apps that use a third-party or social login service ... to set up or authenticate the user's primary account with the app **must also offer as an equivalent option another login service** with the following features:
+> - the login service **limits data collection to the user's name and email address**;
+> - the login service **allows users to keep their email address private** from all parties as part of setting up their account; and
+> - the login service **does not collect interactions with your app for advertising purposes** without consent.
+
+요지: 주 계정을 카카오 같은 소셜 로그인으로만 만들게 하면, 이름·이메일만 받고 이메일 숨기기를 허용하고
+광고 추적을 하지 않는 대안 로그인을 **동등한 선택지로** 함께 내야 한다. 예외(자체 계정 체계·교육/기업용·
+정부 신분증·특정 서비스 전용 클라이언트)는 우리에게 해당하지 않는다 — 인증 수단이 카카오 하나였다.
+
+| 요구 | 상태 |
+|---|---|
+| 대안 로그인 제공 | ✅ **Sign in with Apple 로 충족** (2026-10-05) — 서버 `POST /api/auth/apple/login`·`signup`, 리비전 0029 (`DATA_MODEL.md` 21장). Apple 로그인은 세 조건을 모두 갖춘다(이름·이메일만 제공, 이메일 가리기 릴레이, 광고 추적 없음) |
+| 수집 범위 — 이름·이메일 이하 | ✅ 이름(Apple 이 첫 로그인에만 주는 값 → 닉네임)과 Apple 식별자(`sub`)만 저장한다. **이메일은 요청하지도 저장하지도 않는다** — 4.8 이 허용하는 것보다 적다 |
+| 이메일 비공개 | ✅ 이메일 범위를 요청하지 않으므로 숨길 대상 자체가 없다 |
+| 광고 추적 없음 | ✅ 광고 없음 (§6-2) |
+| **계정 삭제 시 토큰 폐기** | ✅ 탈퇴(`DELETE /api/me`)가 파기 커밋 뒤 Apple `revoke` 를 부른다 — 계정 삭제 요건(§6-3)의 Apple 로그인 쪽 의무. 실패해도 파기는 막지 않는다 |
+| 동등한 노출 | ⏳ **앱 화면의 몫** — 로그인 화면에 카카오와 같은 무게로 Apple 버튼을 둔다(Apple HIG 버튼 규격). 앱 저장소에서 확인 |
+
+> ✅ 운영 `.env`에 SIWA 키(`APPLE_TEAM_ID`·`APPLE_SIWA_KEY_ID`·`APPLE_SIWA_PRIVATE_KEY_B64`)를 넣었다(2026-10-05).
+> 가짜 코드로 Apple `/auth/token`을 불러 `invalid_grant`(클라이언트 인정·코드만 거부)를 확인했다. 키가 빠지면 **Apple 가입이 503** 이다.
+
+### 6-7. 제3자 AI 로 보내는 개인정보 (5.1.2(i)) — **보내기 전 명시적 동의** (2025-11 개정, 2026-10-05 대응)
+
+> **5.1.2(i)** You must clearly disclose where personal data will be shared with third parties, **including with third-party AI**, and obtain explicit permission before doing so.
+
+처리방침에 적어 두는 것만으로는 부족하다 — **처음 보내기 전에** 화면에서 보내는 곳·보내는 것을 밝히고 동의를 받으며, 거절해도 앱을 쓸 수 있어야 하고 나중에 거둘 수 있어야 한다.
+
+| 요구 | 상태 |
+|---|---|
+| 보내기 전 동의 | ✅ 앱 기록 화면에서 사진의 '분석'을 누를 때 묻는다 — 고르기만 해서는 사진이 기기 밖으로 나가지 않는다. 문구는 앱 `constants/consent.ts`의 `AI_PHOTO_CONSENT_*`(보내는 곳 Google Gemini·보내는 것·보내지 않는 것·쓰는 곳) |
+| 거절해도 쓸 수 있음 | ✅ '사진 없이 직접 적기' — 음식 이름으로 기록한다 |
+| 거둘 수 있음 | ✅ 앱 내 정보 › 동의 관리의 '사진 AI 분석' |
+| 보내는 것 최소화 | ✅ 서버가 Gemini 로 보내기 전에 **EXIF(촬영 위치·기기)를 지운다** — `services/gemini_vision_service.strip_metadata`, 테스트 `tests/test_strip_metadata.py`. 회원 식별자·질병·검사 수치는 원래 싣지 않는다 |
+| 음식명 추정(`estimate`) | 동의 대상으로 보지 않았다 — 식별자 없는 음식명 한 단어라 개인정보가 아니다. 처리방침 5·6항에는 적어 둔다 |
+
+> 동의는 **기기에만** 남긴다(앱 `services/ai-photo-consent.ts`). 국외 이전의 법적 근거는 동의가 아니라 처리위탁 공개(개인정보 보호법 제28조의8 제1항 제3호, 처리방침 6항)라 서버 기록이 필요하지 않다고 봤다 — 근거가 동의로 바뀌면 `consent_service`의 동의 종류로 옮긴다.
 
 ---
 
@@ -363,7 +402,7 @@ Google Gemini로 음식을 인식하므로 **생성형 AI를 이용해 서비스
 - 전자상거래 등에서의 소비자보호에 관한 법률 제17·18조 — 국가법령정보센터
 - 「인터넷쇼핑몰 창업자 — 거래 관련 의무」 찾기쉬운 생활법령정보 (easylaw.go.kr)
 - Apple Privacy Manifest 요구사항 (2024-05-01 시행) · Expo 「Privacy manifests」 문서
-- Apple App Store Review Guidelines — 1.4.1(의료 앱) · 3.1.1·3.1.3(결제) · 5.1.1(v)(계정 삭제) · 5.1.3(건강 데이터)
+- Apple App Store Review Guidelines — 1.4.1(의료 앱) · 3.1.1·3.1.3(결제) · **4.8(로그인 서비스)** · 5.1.1(v)(계정 삭제) · 5.1.3(건강 데이터)
 - Apple 「Distributing apps using a third-party payment provider in South Korea」 (StoreKit External Purchase Entitlement)
 - Google Play Billing Library 8 전환 마감 (2026-08-31, 연장 시 11-01)
 - 인공지능 발전과 신뢰 기반 조성 등에 관한 기본법 제2·31·33·43조 및 시행령 제23조·별표2 — 국가법령정보센터 (law.go.kr, lsiSeq=282791·282879)

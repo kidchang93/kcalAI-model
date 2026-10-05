@@ -11,7 +11,7 @@ kcalAI-model/
 ├── api/
 │   ├── __init__.py             # 비워 둔다 (라우터는 main.py 가 서브모듈에서 직접 import)
 │   ├── dependencies.py         # get_current_user (Bearer 세션 토큰 검증), require_sensitive_consent, 별칭 CurrentUser·ConsentedUser·DB
-│   ├── auth_api.py             # /auth/kakao/** (OAuth start·callback·login·signup), /auth/logout
+│   ├── auth_api.py             # /auth/kakao/** (OAuth start·callback·login·signup), /auth/apple/{login,signup}, /auth/logout
 │   ├── predict_api.py          # /predict (업로드 검증 + Gemini 인식, 503 on 실패)
 │   ├── health_api.py           # /me/profile, /me/goal, /me/summary, /me/trends, /meals (PUT 전체 교체 포함), /weights
 │   ├── consent_api.py          # /me/consents, /me/health-profile, /me/conditions, /me/allergies
@@ -26,8 +26,9 @@ kcalAI-model/
 │   └── recommendation_api.py   # /recommendations (식단 추천, sensitive_health 동의 필수)
 ├── services/
 │   ├── errors.py               # BadRequestError·ForbiddenError·NotFoundError — main.py 전역 핸들러가 400·403·404 {detail} 로 변환
-│   ├── auth_service.py         # 카카오 연동코드·OAuth state 서명, 가입·로그인, 세션 생성·검증·폐기 (21장)
+│   ├── auth_service.py         # 카카오 연동코드·OAuth state 서명, 카카오·Apple 가입·로그인, 세션 생성·검증·폐기 (21장)
 │   ├── kakao_client.py         # 카카오 OAuth — 인가 URL·토큰 교환(client_secret)·프로필·연결끊기(unlink)
+│   ├── apple_client.py         # Sign in with Apple — identity token 검증(JWKS)·code 교환·토큰 폐기(revoke)
 │   ├── subscription_service.py # 요금제 한도 판정·비전 일일 쿼터(원자적 UPSERT), PlanLimitError (20장), 만료 강등 해석 get_effective_plan (24장)
 │   ├── payment_service.py      # 결제 내역 조회·응답 조립 (23장)
 │   ├── billing_service.py      # 자동결제 흐름 — checkout·confirm(빌링키 발급·저장·최초 청구)·cancel·갱신 배치, 달력 1개월 (24장)
@@ -60,7 +61,7 @@ kcalAI-model/
 │   ├── predict_schema.py       # DetectedFood, PredictionResponse
 │   └── gpt_schemas.py          # GptAnswer, GptResponse, GptError
 ├── models/
-│   ├── auth_model.py           # User(kakao_id·nickname), KakaoLinkCode, AuthSession
+│   ├── auth_model.py           # User(kakao_id·apple_sub·nickname·apple_refresh_token 암호문), KakaoLinkCode, AuthSession
 │   ├── health_model.py         # UserProfile, UserGoal, MealLog, MealItem, WeightLog, FoodNutrition
 │   ├── consent_model.py        # UserConsent, UserHealthProfile, UserCondition, UserAllergy
 │   ├── group_model.py          # Group, GroupMember, GroupPet
@@ -168,6 +169,24 @@ HF LLM으로 칼로리를 **서술 문자열**로 생성하던 라우트. 앱 �
 
 **회원 탈퇴 시 `kakao_client.unlink()`(어드민 키) 호출은 의무**다. 단 **우리 쪽 파기를 커밋한 뒤** 부르고, 실패해도 예외를 올리지 않는다 — 카카오 장애가 개인정보 파기(법정 의무)를 막으면 안 된다.
 
+### 인증 — Sign in with Apple (2026-10-05, 리비전 0029)
+
+App Store 4.8(소셜 로그인만 있으면 대안 필수) 때문에 iOS 에 붙였다. **서버 주도 OAuth 가 아니다** — iOS 가 기기에서 identity token 을 받아 앱이 보낸다.
+
+```
+앱 ── POST /api/auth/apple/login  {identity_token}
+       └─ apple_client.verify_identity_token()   JWKS(5분 캐시) → RS256·aud=번들ID·iss·exp → sub
+          ├─ apple_sub 회원 있음 → _start_session() → 200
+          └─ 없음 → NotFoundError → 404 (앱은 약관 동의로)
+앱 ── POST /api/auth/apple/signup {identity_token, authorization_code, nickname?, agreed_*, ...}
+       ├─ 동의·버전 → 토큰 검증 → 중복 sub 400
+       ├─ apple_client.exchange_code()           ES256 client secret 으로 code → refresh token
+       └─ User(apple_sub, nickname, apple_refresh_token=암호문) + 동의 + 구독   ← 한 트랜잭션
+  ← BadRequestError → 400, NotFoundError → 404 (전역), AppleUnavailableError → 503 (라우트)
+```
+
+탈퇴 시 `apple_client.revoke_token()`도 카카오 unlink 와 같은 자리·같은 규칙이다(파기 커밋 후, 실패해도 예외 없음).
+
 ### 자동결제 (`POST /api/billing/confirm`) — 2026-07-16, DATA_MODEL 24장
 
 ```
@@ -245,7 +264,7 @@ kcal/build-web.sh → npx expo export --platform web → kcalAI-model/webapp/
 | `diet_recommendations` | `id`, `user_id`(FK), `rec_date`, `meal_type`, `items`(JSONB), `excluded`(JSONB), `source` — `(user_id, rec_date, meal_type)` unique | 리비전 0006. 추천 캐시. 계약은 `docs/DATA_MODEL.md` 11장, 후보 생성·선정은 12·13장 (순수 규칙, `source` 항상 `rule`) |
 
 - 스키마 변경은 **Alembic 리비전으로만** 합니다 (`alembic/versions/`). `create_all`은 신규 테이블 생성용으로만 남아 있습니다.
-- 세션 토큰 검증은 `api/dependencies.py:get_current_user`가 담당합니다. `/api/predict`도 2026-07-12부터 Bearer 필수입니다 (무인증 공개 라우트는 Auth 가입·로그인 4종뿐).
+- 세션 토큰 검증은 `api/dependencies.py:get_current_user`가 담당합니다. `/api/predict`도 2026-07-12부터 Bearer 필수입니다 (무인증 공개 라우트는 Auth 카카오 4종·Apple 2종, `GET /api/plans`, 토스 웹훅뿐).
 - `/api/me/health-profile`·`/api/me/conditions`·`/api/me/allergies`는 유효한 `sensitive_health` 동의(최신 행의 `revoked_at IS NULL` **이고 `version`이 현재 버전** — 2026-09-13)가 없으면 **403**을 반환합니다. 401(미로그인)과 구분됩니다. 판정·문구는 `consent_service.ensure_sensitive_consent`가 정하고, `SensitiveConsentRequiredError`(`ForbiddenError`)를 `main.py` 전역 핸들러가 403으로 바꿀 뿐입니다 (DATA_MODEL 7장).
 - 동의 없이 열리는 라우트(`/api/me/summary`·`trends`·`report`, `/api/guides`)는 막지 않고 **읽는 서비스**(`day_nutrition`·`medical_report_service`·`guide_service`)가 동의 상태를 확인해 민감정보 자리만 비웁니다. 민감정보를 읽는 새 경로는 라우트 게이트나 서비스 확인 중 하나를 반드시 거칩니다.
 

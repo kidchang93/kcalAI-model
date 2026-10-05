@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from crypto import EncryptedString
 from database import Base, CreatedAt, UpdatedAt
 
 
@@ -10,9 +11,19 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    # 카카오 회원번호. 유일한 로그인 식별자다 (동의 없이 항상 제공되는 값).
+    # 카카오 회원번호. 카카오 회원의 로그인 식별자다 (동의 없이 항상 제공되는 값).
     kakao_id: Mapped[str | None] = mapped_column(
         String(32), unique=True, index=True, nullable=True
+    )
+    # Apple 사용자 식별자(identity token 의 `sub`). Apple 회원의 로그인 식별자다 (리비전 0029).
+    # 카카오 회원과 병합하지 않는다 — 같은 사람이라도 별개 회원이다.
+    apple_sub: Mapped[str | None] = mapped_column(
+        String(64), unique=True, index=True, nullable=True
+    )
+    # 탈퇴 때 Apple 에 폐기(revoke)를 요청하는 데만 쓴다. 자격증명이라 암호화한다. deferred 인
+    # 이유: 회원 행은 매 요청 인증마다 읽히는데, 그때마다 자격증명을 복호화할 이유가 없다.
+    apple_refresh_token: Mapped[str | None] = mapped_column(
+        EncryptedString(1024), nullable=True, deferred=True
     )
     # 카카오 닉네임. 그룹에서 다른 멤버에게 보이는 이름이다 (예전엔 마스킹한 휴대폰 번호였다).
     # 사용자가 프로필 동의를 거부하면 빈 값일 수 있어 nullable.

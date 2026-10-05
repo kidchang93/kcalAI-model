@@ -10,7 +10,10 @@ YOLO/torch는 제거됐고 폴백이 없다. 호출·재시도·파싱은 gemini
 절대 노출하지 않는다.
 """
 
+import io
+
 from google.genai import types
+from PIL import Image, ImageOps
 
 from schemas.predict_schema import DetectedFood
 from services.gemini_client import GeminiError, generate_json
@@ -66,7 +69,22 @@ def _as_portion(value: object) -> int | None:
         return None
 
 
-def identify_food(image_bytes: bytes, mime_type: str | None = None) -> list[DetectedFood]:
+def strip_metadata(image_bytes: bytes) -> bytes:
+    """촬영 위치·기기 같은 메타데이터(EXIF 등)를 지운 JPEG 를 돌려준다 — 제3자 AI 로는 픽셀만 보낸다.
+
+    앨범 사진은 GPS 좌표를 품고 올 수 있다. 앱이 사진 AI 분석 동의에서 "촬영 정보는 지우고 보낸다"고
+    약속하므로(App Store 5.1.2(i), 2026-10-05) 앱 설정에 기대지 않고 여기서 지운다. 회전 정보는
+    픽셀에 반영한 뒤 버린다. 업로드 검증(validate_image_upload)이 Pillow 디코드를 통과시킨 바이트만
+    오므로 여기서 열지 못할 일은 없다.
+    """
+    with Image.open(io.BytesIO(image_bytes)) as image:
+        upright = ImageOps.exif_transpose(image).convert("RGB")
+    out = io.BytesIO()
+    upright.save(out, format="JPEG", quality=90)
+    return out.getvalue()
+
+
+def identify_food(image_bytes: bytes) -> list[DetectedFood]:
     """이미지에서 서로 다른 음식(최대 10)을 DetectedFood(label, score, portion_g)로 반환.
 
     한 사진에 밥·국·반찬이 함께 있으면 각각을 별도 항목으로 돌려준다 — 같은 음식의 후보
@@ -76,7 +94,7 @@ def identify_food(image_bytes: bytes, mime_type: str | None = None) -> list[Dete
     try:
         data, _duration_ms = generate_json(
             contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type=mime_type or "image/jpeg"),
+                types.Part.from_bytes(data=strip_metadata(image_bytes), mime_type="image/jpeg"),
                 _PROMPT,
             ],
             response_schema=_RESPONSE_SCHEMA,

@@ -4,7 +4,7 @@
 
 ## 프로젝트 개요
 
-**kcalAI-model**은 헬스케어 앱의 식단 분석 기능을 지원하는 **FastAPI 기반 AI 추론 서버**입니다. 음식 이미지 인식(Gemini 비전), 칼로리·영양 추정(식약처 DB 조회), 카카오 로그인 인증, 요금제·쿼터를 담당하며 `k-calAI-RN` 앱이 주 소비자입니다. (2026-07-12에 `/api/s3/*`(NCP Object Storage 중단)와 레거시 `/api/gpt-predict`(HF LLM 서술 생성 — 앱 미사용)를 제거했습니다. `meals.photo_s3_key` 컬럼만 선반영 상태로 남아 있습니다.)
+**kcalAI-model**은 헬스케어 앱의 식단 분석 기능을 지원하는 **FastAPI 기반 AI 추론 서버**입니다. 음식 이미지 인식(Gemini 비전), 칼로리·영양 추정(식약처 DB 조회), 카카오·Apple 로그인 인증, 요금제·쿼터를 담당하며 `k-calAI-RN` 앱이 주 소비자입니다. (2026-07-12에 `/api/s3/*`(NCP Object Storage 중단)와 레거시 `/api/gpt-predict`(HF LLM 서술 생성 — 앱 미사용)를 제거했습니다. `meals.photo_s3_key` 컬럼만 선반영 상태로 남아 있습니다.)
 
 메인 제품이 아니라 상위 앱의 기능 서버라는 위치를 유지합니다. 제품 맥락은 `docs/SERVICE_POSITIONING.md`를 참조하세요.
 
@@ -17,7 +17,7 @@
 | ASGI 서버 | uvicorn 0.37.0 |
 | ORM | SQLAlchemy 2.0.36 (`DeclarativeBase`, `Mapped`) |
 | 데이터베이스 | PostgreSQL 16 (docker-compose) |
-| 인증 | 카카오 로그인 (REST, 서버 주도 OAuth) — `services/kakao_client.py` |
+| 인증 | 카카오 로그인 (REST, 서버 주도 OAuth) — `services/kakao_client.py` · **Sign in with Apple** (iOS, identity token 검증 — PyJWT) — `services/apple_client.py` |
 | 이미지 인식 | Google Gemini 비전 (`google-genai`, 단일 백엔드) — `services/gemini_vision_service.py` |
 | 영양 추정 | 식약처 DB 조회가 원칙. **미등록 라벨만** Gemini로 1회 추정 후 DB 동결 — `services/gemini_nutrition_service.py` (19장) |
 | Gemini 공용 어댑터 | 클라이언트·재시도·structured JSON 파싱 — `services/gemini_client.py` (비전·영양 추정이 공유) |
@@ -96,7 +96,7 @@ open http://127.0.0.1:8000/docs
 | 린트 | 없음 |
 | 포맷 | 없음 |
 
-테스트는 Postgres에 붙습니다 (인증 로직의 tz-aware datetime 충실도). 각 테스트는 외부 트랜잭션 + SAVEPOINT 롤백으로 격리되어 대상 DB를 오염시키지 않습니다. 공유 DB의 기존 데이터와 번호가 겹칠 수 있으니, 깔끔한 격리가 필요하면 `TEST_DATABASE_URL`로 전용 DB를 지정하세요. 현재 **395건**(2026-09-14)이며 커버리지는 `test_diabetes_food_rules.py`(당뇨 — 첨가당 이름 축·등급 부재·단위, 16장), `test_meal_ordering.py`(하루 끼니 목록 순서 — 같은 시각이면 만든 순, 4장), `test_auth_service.py`·`test_auth_api.py`(카카오 로그인, 21장), `test_subscription_service.py`(요금제·쿼터, 20장), `test_billing_service.py`(자동결제, 24장), `test_billing_webhook.py`(**웹훅 본문으로는 원장을 바꿀 수 없다**, 29장), `test_toss_client.py`(**토스 어댑터의 비밀값 미유출**, 2026-07-16), `test_payment_service.py`(결제 내역, 23장), `test_crypto.py`, `test_upload_validation.py`, `test_web_spa.py`, `test_day_nutrition.py`(하루 질환 축 — 병기별 기준선, 28장)입니다.
+테스트는 Postgres에 붙습니다 (인증 로직의 tz-aware datetime 충실도). 각 테스트는 외부 트랜잭션 + SAVEPOINT 롤백으로 격리되어 대상 DB를 오염시키지 않습니다. 공유 DB의 기존 데이터와 번호가 겹칠 수 있으니, 깔끔한 격리가 필요하면 `TEST_DATABASE_URL`로 전용 DB를 지정하세요. 현재 **443건**(2026-10-05)이며 커버리지는 `test_diabetes_food_rules.py`(당뇨 — 첨가당 이름 축·등급 부재·단위, 16장), `test_meal_ordering.py`(하루 끼니 목록 순서 — 같은 시각이면 만든 순, 4장), `test_auth_service.py`·`test_auth_api.py`(카카오 로그인, 21장), `test_apple_auth.py`(**Apple 로그인 — 만료·aud·iss·서명 위조·alg none 이 전부 400**, 탈퇴 시 토큰 폐기, 21장), `test_subscription_service.py`(요금제·쿼터, 20장), `test_billing_service.py`(자동결제, 24장), `test_billing_webhook.py`(**웹훅 본문으로는 원장을 바꿀 수 없다**, 29장), `test_toss_client.py`(**토스 어댑터의 비밀값 미유출**, 2026-07-16), `test_payment_service.py`(결제 내역, 23장), `test_crypto.py`, `test_upload_validation.py`, `test_strip_metadata.py`(**Gemini 로 보내는 사진에서 EXIF·GPS 가 빠진다** — App Store 5.1.2(i)), `test_web_spa.py`, `test_day_nutrition.py`(하루 질환 축 — 병기별 기준선, 28장)입니다.
 | 카카오 설정 진단 | `venv/bin/python scripts/check_kakao_config.py` (읽기 전용. 로그인 실패 시 **원인 판정** — 허용 IP 미등록/키 종류 혼동) |
 | 수동 검증 | `uvicorn main:app` 기동 + `/docs` 200 + `curl` 요청 |
 
@@ -126,23 +126,27 @@ open http://127.0.0.1:8000/docs
 | `KAKAO_ADMIN_KEY` | 예 | 없음 | 〃 — **비밀값.** 회원 탈퇴 시 카카오 연결 끊기(unlink) |
 | `KAKAO_REDIRECT_URI` | 예 | localhost | 〃 — 카카오 콘솔 등록값과 **문자 단위로 동일**해야 한다(다르면 KOE006). 운영은 https 강제 |
 | `APP_DEEPLINK_SCHEME` | 아니오 | `kcalairn` | `api/auth_api.py` — 콜백이 앱으로 되돌아가는 딥링크 스킴 |
+| `APPLE_BUNDLE_ID` | 아니오 | `com.kcalai.kcalairn` | `services/apple_client.py` — identity token 의 `aud` 이자 토큰 교환·폐기의 `client_id`. 앱 `app.json`의 `bundleIdentifier`와 같아야 한다 |
+| `APPLE_TEAM_ID` | 아니오 | 없음 | 〃 — client secret(ES256 JWT)의 `iss` |
+| `APPLE_SIWA_KEY_ID` | 아니오 | 없음 | 〃 — Sign in with Apple 키 ID (client secret 헤더 `kid`) |
+| `APPLE_SIWA_PRIVATE_KEY_B64` | 아니오 | 없음 | 〃 — **비밀값.** `.p8` 내용을 base64 한 줄로(`base64 -i AuthKey_XXXX.p8 \| tr -d '\n'`). 키 **파일**로 두지 않는다 — 배포가 작업 트리를 `rsync --delete` 해서 지워진다(`.env`는 보존). **위 셋이 비면 Apple 로그인(토큰 검증)은 되지만 Apple 가입은 503** — 가입 때 받아 둔 refresh token 이 있어야 탈퇴 때 폐기할 수 있다. 운영 기동 검사에는 넣지 않았다. **운영 `.env`에 2026-10-05 넣음** |
 | `AIHUB_API_KEY` | — | — | `.env`에만 있고 **코드에서 미사용** |
 
 (`ACCESS_KEY` 등 S3 자격증명 5종은 S3 제거로 더 이상 읽지 않습니다 — `.env`에 남아 있어도 무해합니다.)
 
 ---
 
-## API 목록 (openapi.json 실측, 2026-07-26 기준 **50개**)
+## API 목록 (openapi.json 실측, 2026-10-05 기준 경로 **58개** · 오퍼레이션 81개)
 
 계약 상세는 `docs/DATA_MODEL.md`가 정본입니다 (4장 CRUD, 7장 사용자 층, 9장 그룹·반려동물, 10장 메타, 11장 식단 추천, 15장 추이 집계, 16장 기록 경고 판정, 17장 그룹 라이프사이클, 18장 회원 탈퇴·펫 권장 칼로리, 23장 결제 내역, **24장 자동결제**, **29장 결제 웹훅**).
 
 | 도메인 | 라우트 | 정의 파일 |
 |--------|--------|-----------|
-| Auth | `GET /api/auth/kakao/start` · `GET /api/auth/kakao/callback` · `POST /api/auth/kakao/login` · `POST /api/auth/kakao/signup` · `POST /api/auth/logout` | `api/auth_api.py` |
+| Auth | `GET /api/auth/kakao/start` · `GET /api/auth/kakao/callback` · `POST /api/auth/kakao/login` · `POST /api/auth/kakao/signup` · `POST /api/auth/apple/login` (미가입 **404** · 토큰 무효 400 · Apple 공개키 조회 실패 503) · `POST /api/auth/apple/signup` (SIWA 설정 없으면 503) · `POST /api/auth/logout` | `api/auth_api.py` |
 | Subscription | `GET /api/plans` (**무인증** — 가입 화면이 로그인 전에 그린다) · `GET·PUT /api/me/subscription` (**PUT은 무료(lite) 다운그레이드만** — 유료 전환은 400, 결제를 거쳐야 한다. 24장) | `api/subscription_api.py` |
 | Payments | `GET /api/payments` (내 결제 내역, 최신순) · `GET /api/payments/{id}` (본인 것만, 없거나 남의 것이면 **404** 존재 은닉) — **읽기 전용 조회**. 원장은 빌링 흐름(24장)이 쓴다 (DATA_MODEL 23장) | `api/payment_api.py` |
 | Billing | `POST /api/billing/checkout` (결제창 값 발급) · `POST /api/billing/confirm` (카드 등록 + 최초 청구 → 구독 활성화) · `POST /api/billing/cancel` (자동갱신 해지, 기간까지는 유료) — 셋 다 Bearer. **금액은 서버가 `plans.price_krw`에서 정한다**(요청에 금액 필드 없음). 실패: 400 · **502**(결제사 오류) · 503(키 미설정) (DATA_MODEL 24장) · `POST /api/billing/webhook` (**무인증** — 토스가 부른다. 본문에서 `orderId`만 읽고 상태는 서버가 토스에 다시 조회해 확인한다. 200=처리·재전송 불필요 / 502·503=판단 못 함·재전송 유도. DATA_MODEL **29장**) | `api/billing_api.py` |
-| Predict | `POST /api/predict` (Bearer 필수, `sensitive_health` 동의 불필요, 업로드 검증 413/415/400. 사진 1장에서 **서로 다른 음식들**을 각각 인식해 `foods`(label·score·portion_g, 최대 10)로 반환 — 한 음식의 후보 나열이 아니다, 22장. **요금제 일일 쿼터 선차감 → 초과 시 402**(쿼터는 사진당 1건, 음식 개수 무관), 인식 실패 시 환불. 응답 후 **백그라운드로 인식된 전 음식 라벨을 영양 DB에 적재** — `prewarm_labels`, 19장) | `api/predict_api.py` |
+| Predict | `POST /api/predict` (Bearer 필수, `sensitive_health` 동의 불필요, 업로드 검증 413/415/400. 사진 1장에서 **서로 다른 음식들**을 각각 인식해 `foods`(label·score·portion_g, 최대 10)로 반환 — 한 음식의 후보 나열이 아니다, 22장. **요금제 일일 쿼터 선차감 → 초과 시 402**(쿼터는 사진당 1건, 음식 개수 무관), 인식 실패 시 환불. **Gemini 로는 EXIF(촬영 위치 등)를 지운 JPEG 만 보낸다** — `strip_metadata`, LEGAL_COMPLIANCE §6-7. 응답 후 **백그라운드로 인식된 전 음식 라벨을 영양 DB에 적재** — `prewarm_labels`, 19장) | `api/predict_api.py` |
 | Nutrition | `POST /api/nutrition/estimate` (Bearer만 — 질병·알러지 미사용이라 동의 불필요. 미등록 라벨은 LLM 1회 추정 후 `source='llm'`로 동결 적재, 실패 404 / 추정 백엔드 장애 503 — `docs/DATA_MODEL.md` 19장. **응답에 `serving_size_g: float\|None`**(1인분이 몇 g, ml은 밀도≈1로 g 취급, 미상 NULL)이 있어 앱이 사용자 입력 g으로 kcal을 재환산한다 — 리비전 0019, 앱 계약 변경) · `POST /api/nutrition/warnings` (Bearer + `sensitive_health` 동의 필수. **2026-07-22: 응답에 `notice: string|null` 추가**(`warnings` 배열 불변) + **고혈압 나트륨 등급** — 나트륨 `tier`는 고혈압·당뇨에만 매긴다(CKD는 병기별로 상한이 갈려 등급 없음). 1인분 경계는 지침 컷오프가 아닌 정책값이라 `notice` 고지가 필수다 — `docs/CHRONIC_NUTRITION_SOURCES.md` §6) | `api/nutrition_api.py` |
 | Health | `GET·PUT /api/me/profile` · `GET·PUT /api/me/goal` · `GET /api/me/summary` (**2026-07-23: `nutrients` 추가** — 질환 축 하루 누적. 나트륨만 `limit_mg`(상한 대비 게이지), 칼륨·인은 수치와 투석 참고치만. 해당 질환 없으면 null. `docs/DATA_MODEL.md` 28장) · `GET /api/me/trends`(**2026-07-25: `nutrients` 추가** — 질환 축 기간 추이) · `GET /api/me/report`(**진료 지참용 기간 리포트** — 질환·병기·축 요약·끼니 상세, 웹에서 인쇄/PDF) · `POST·GET /api/meals` · `PUT·DELETE /api/meals/{meal_id}` · `POST·GET /api/weights` | `api/health_api.py` |
 | Consent | `GET·POST /api/me/consents` (**2026-09-13: 각 항목에 `is_current` 추가** — 버전이 낡은 민감정보 동의는 재동의 전까지 무효, 403 문구가 "동의 내용이 바뀌었어요"로 갈린다. DATA_MODEL 7장) · `POST /api/me/consents/revoke` · `GET·PUT /api/me/health-profile` (**2026-07-23: `ckd_stage` 추가** — 신장병 병기, 비암호화 기능 키. ⚠️ 이 PUT은 **전체 교체**라 병기만 바꿀 때도 혈액형·Rh를 함께 보낸다) · `GET·PUT /api/me/conditions` · `GET·PUT /api/me/allergies` | `api/consent_api.py` |
@@ -156,9 +160,9 @@ open http://127.0.0.1:8000/docs
 | Coaching | `GET /api/me/coaching` (주간 조언 — **규칙 기반, LLM 없음**. Bearer + `sensitive_health` 동의 필수. DATA_MODEL 27장) | `api/coaching_api.py` |
 | Recommendations | `GET /api/recommendations` (Bearer + `sensitive_health` 동의 필수, 캐시 우선) | `api/recommendation_api.py` |
 
-Auth의 카카오 4종(`kakao/start`, `kakao/callback`, `kakao/login`, `kakao/signup`)과 `GET /api/plans`를 제외한 **전 라우트**가 Bearer 인증(`api/dependencies.py`의 `get_current_user`)을 요구합니다 (`/api/auth/logout`도 Bearer 필요). `/api/predict`는 2026-07-12에 Bearer 필수로 전환했습니다. 같은 날 `/api/s3/*` 8개 라우트(NCP Object Storage 중단)와 레거시 `/api/gpt-predict`(HF LLM 서술 생성 — 앱 미사용, HF_TOKEN 하드의존)를 제거했습니다.
+Auth의 카카오 4종(`kakao/start`, `kakao/callback`, `kakao/login`, `kakao/signup`)·Apple 2종(`apple/login`, `apple/signup`)과 `GET /api/plans`·`POST /api/billing/webhook`을 제외한 **전 라우트**가 Bearer 인증(`api/dependencies.py`의 `get_current_user`)을 요구합니다 (`/api/auth/logout`도 Bearer 필요). `/api/predict`는 2026-07-12에 Bearer 필수로 전환했습니다. 같은 날 `/api/s3/*` 8개 라우트(NCP Object Storage 중단)와 레거시 `/api/gpt-predict`(HF LLM 서술 생성 — 앱 미사용, HF_TOKEN 하드의존)를 제거했습니다.
 
-### 인증 = 카카오 로그인 단일 수단 (2026-07-14, 21장)
+### 인증 = 카카오 로그인 + Apple 로그인(iOS) (2026-07-14 카카오, 2026-10-05 Apple — 21장)
 
 휴대폰 OTP(SMS)를 **제거**했습니다 — `phone_verification_codes` 테이블, `services/sms_service.py`(Solapi), 가입·로그인 4라우트가 전부 사라졌습니다. 로그인 식별자는 **카카오 회원번호**(`users.kakao_id`)입니다.
 
@@ -167,6 +171,7 @@ Auth의 카카오 4종(`kakao/start`, `kakao/callback`, `kakao/login`, `kakao/si
 - 그룹 멤버 표시가 `phone_number_masked` → **`nickname`**(카카오 닉네임)으로 바뀌었습니다.
 - **회원 탈퇴 시 카카오 연결 끊기(unlink) 호출은 의무**입니다 (어드민 키 방식, `services/kakao_client.py`).
 - ⚠️ **무료 티어 어뷰징 방어가 없습니다.** 카카오계정은 이메일만으로 만들 수 있어 Lite 3건/일은 계정 갈아타기로 우회됩니다. 감수한 트레이드오프이며, 방어가 필요해지면 서버 측 레이트리밋으로 해결합니다 (21장).
+- **Sign in with Apple** (2026-10-05) — App Store 심사 4.8(소셜 로그인만 있으면 대안 로그인 필수, `docs/LEGAL_COMPLIANCE.md` §6-6) 때문에 붙였다. 카카오와 달리 **iOS 가 기기에서 identity token(JWT)을 받아 앱이 보낸다** — 서버는 Apple 공개키(JWKS)로 서명·`aud`(번들 ID)·`iss`·`exp`를 검증하고(`alg`는 RS256만), `sub`가 식별자(`users.apple_sub`)다. 그래서 연동 코드 테이블이 없다. 가입 때 `authorization_code`를 **refresh token 으로 교환해 암호화 저장**하고(`users.apple_refresh_token`, 리비전 0029), **탈퇴 시 Apple 에 폐기(revoke)한다 — 의무**. 이메일은 요청·저장하지 않는다. **카카오 회원과 병합하지 않는다**(같은 사람이라도 별개 회원).
 
 ### 요금제 한도 — 402 Payment Required (2026-07-14, 20장)
 
@@ -215,8 +220,9 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 - **API 계약을 바꾸면서 `k-calAI-RN`을 함께 확인하지 않고 끝내지 않는다.**
 - **무거운 ML 의존성(torch·ultralytics·transformers)을 다시 들이지 않는다.** 이미지 인식은 Gemini API로 처리합니다(Lightsail 경량 배포).
 - **네이티브 카카오 SDK를 도입하지 않는다.** 얻는 건 카톡 앱-투-앱 UX뿐인데 iOS/Android 네이티브 설정·키해시가 붙고 **웹 빌드가 깨집니다**(웹은 FastAPI가 서빙합니다). REST 방식으로 앱·웹을 통일합니다 (21장).
-- **카카오 `client_secret`·어드민 키를 앱에 넣지 않는다.** `EXPO_PUBLIC_*`는 번들에 평문 노출됩니다. 토큰 교환은 **서버에서만** 합니다.
-- **회원 탈퇴에서 카카오 unlink를 빼먹지 않는다.** 카카오 로그인 서비스의 의무입니다. 단 **파기를 커밋한 뒤** 호출하고, unlink 실패가 개인정보 파기를 막지 않게 합니다.
+- **카카오 `client_secret`·어드민 키, Apple `.p8` 키를 앱에 넣지 않는다.** `EXPO_PUBLIC_*`는 번들에 평문 노출됩니다. 토큰 교환은 **서버에서만** 합니다.
+- **회원 탈퇴에서 카카오 unlink·Apple 토큰 폐기(`apple_client.revoke_token`)를 빼먹지 않는다.** 각 로그인 서비스의 의무입니다. 단 **파기를 커밋한 뒤** 호출하고, 실패가 개인정보 파기를 막지 않게 합니다.
+- **Apple identity token 을 손으로 디코드하지 않는다.** 서명·`aud`·`iss`·`exp`·`alg` 검증은 `apple_client.verify_identity_token`(PyJWT + JWKS) 한 곳뿐입니다. 토큰 헤더의 `alg`를 믿는 순간 `alg: none` 위조로 남의 계정에 들어갑니다 — 회귀는 `tests/test_apple_auth.py`.
 - **동의 문서를 개정하면 서버 상수(`consent_service`의 `TERMS_VERSION`·`PRIVACY_VERSION`·`SENSITIVE_HEALTH_VERSION`·`GROUP_ACTIVITY_SHARE_VERSION`)와 앱 문서(`k-calAI-RN`의 `constants/legal.ts`·`constants/consent.ts`)를 같은 작업 단위에서 올린다.** 서버만 올리면 기존 앱 사용자의 가입·동의가 전부 400이 됩니다(`ensure_current_version`). 앱이 보낸 버전을 대조해 기록하는 이유는 증빙 때문입니다 — 앱이 v1.0을 띄워 놓고 서버가 "2.0에 동의함"으로 기록하면 그 이력은 거짓입니다 (18장 아래 절). **`SENSITIVE_HEALTH_VERSION` 인상 = 기존 동의자 전원 재동의 필요** — 최신 동의 행의 버전이 현재 버전이 아니면 재동의 전까지 무효(403)이므로(2026-09-13, `has_active_consent`, DATA_MODEL 7장), 서버·앱을 **동시에 배포**합니다.
 - **`users`를 참조하는 테이블을 추가하면 `account_service.delete_account`에 반드시 반영한다.** FK가 전부 `ON DELETE NO ACTION`이라, 빠뜨리면 그 데이터를 가진 회원은 `ForeignKeyViolation` → **500으로 영구히 탈퇴할 수 없습니다**(= 개인정보 파기 의무 위반). 2026-07-16에 `payments`·`billing_keys` 누락으로 실제 발생했습니다 — 리비전 0017이 테이블을 추가했는데 2026-07-11에 작성된 삭제 연쇄가 그대로였습니다. `tests/test_account_service.py`가 FK 전수와 삭제 목록을 대조하니, 새 테이블은 그 테스트의 `handled` 집합에도 추가하세요.
 - **민감정보를 담는 테이블을 추가하면 `consent_service._destroy_sensitive_data`에도 반영한다.** 추천 캐시(`diet_recommendations` — `excluded`에 질병·알러지 라벨이 저장된다)처럼 **민감정보에서 파생된 값을 저장하는 테이블도 포함한다** (2026-09-13까지 빠져 있었다). 탈퇴 연쇄(`account_service.delete_account`)와 **서로 다른 목록**이라 한쪽만 고치면 동의를 철회해도 데이터가 남습니다 — 2026-08-19에 `lab_results`(리비전 0027)가 그 상태였습니다. 조회가 403으로 막히는 것과 파기는 다릅니다. 그리고 **앱의 철회 확인 문구**(`k-calAI-RN`의 `app/me/consents.tsx`)를 같은 작업 단위에서 고치세요 — 무엇을 잃는지 모르고 누르면 고지가 아닙니다. 규약은 `tests/test_consent_revoke_destroys.py`.

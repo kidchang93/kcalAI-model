@@ -1,13 +1,19 @@
-"""인증 — 카카오 로그인 단일 수단.
+"""인증 — 카카오 로그인 + Sign in with Apple(iOS).
 
-SMS(휴대폰 OTP)는 2026-07-14에 제거했다. 인증 수단이 카카오 하나뿐이므로, 카카오 설정이
-없으면 아무도 로그인하지 못한다 (`ensure_production_kakao_config`).
+SMS(휴대폰 OTP)는 2026-07-14에 제거했다. 카카오가 웹·Android 의 유일한 수단이므로, 카카오 설정이
+없으면 그쪽은 아무도 로그인하지 못한다 (`ensure_production_kakao_config`). Apple 은 App Store
+심사 4.8(소셜 로그인만 있으면 대안 필수) 때문에 2026-10-05 에 붙였다.
 
-흐름 (DATA_MODEL.md 21장):
+카카오 흐름 (DATA_MODEL.md 21장):
   앱 → GET /api/auth/kakao/start        (서버가 state 서명 후 카카오로 302)
   카카오 → GET /api/auth/kakao/callback (서버가 코드 교환·프로필 조회 → **1회용 연동 코드** 발급)
   서버 → 앱 딥링크 (kcalairn://auth?code=...&is_new=true|false)
   앱 → POST /api/auth/kakao/login  또는  /api/auth/kakao/signup (연동 코드 → 세션 토큰)
+
+Apple 흐름 — 서버 주도 OAuth 가 아니다. iOS 가 기기에서 identity token 을 받아 앱이 보낸다:
+  앱 → POST /api/auth/apple/login  {identity_token}                       (미가입 404)
+  앱 → POST /api/auth/apple/signup {identity_token, authorization_code, ...}
+연동 코드 테이블이 없다 — 동의 화면 동안 토큰을 들고 있는 쪽이 앱이다 (identity token 10분).
 """
 
 import base64
@@ -24,6 +30,7 @@ from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from models.auth_model import AuthSession, KakaoLinkCode, User
+from services import apple_client
 from services.errors import BadRequestError, NotFoundError
 from services.consent_service import PRIVACY, TERMS, ensure_current_version, record_signup_consents
 from services.subscription_service import create_subscription
@@ -178,12 +185,7 @@ def kakao_login(db: Session, raw_code: str) -> tuple[User, AuthSession, str]:
     if link_code.nickname and link_code.nickname != user.nickname:
         user.nickname = link_code.nickname
 
-    session, raw_token = _create_session(user.id)
-    db.add(session)
-    db.commit()
-    db.refresh(user)
-    db.refresh(session)
-    return user, session, raw_token
+    return _start_session(db, user)
 
 
 def kakao_signup(
@@ -195,24 +197,82 @@ def kakao_signup(
     terms_version: str | None = None,
     privacy_version: str | None = None,
 ) -> tuple[User, AuthSession, str]:
-    # 동의는 회원 행을 만들기 전에 본다 — 미동의 요청이 연동 코드만 소비하고 끝나지 않게 한다.
-    if not (agreed_terms and agreed_privacy):
-        raise BadRequestError("서비스 이용약관과 개인정보 처리방침에 모두 동의해야 가입할 수 있습니다.")
-
-    # 버전 대조도 **코드 소비 전**이다. 옛 문서를 띄운 앱의 요청이 1회용 코드만 태우고 400 이
-    # 되면, 사용자는 카카오 로그인부터 다시 해야 한다.
-    if terms_version is not None:
-        ensure_current_version(TERMS, terms_version)
-
-    if privacy_version is not None:
-        ensure_current_version(PRIVACY, privacy_version)
-
+    _ensure_signup_agreements(agreed_terms, agreed_privacy, terms_version, privacy_version)
     link_code = _consume_link_code(db, raw_code)
 
     if _get_user_by_kakao_id(db, link_code.kakao_id) is not None:
         raise BadRequestError("이미 가입된 카카오 계정입니다. 로그인으로 진행해주세요.")
 
     user = User(kakao_id=link_code.kakao_id, nickname=link_code.nickname)
+    return _create_member(db, user, plan_code, terms_version, privacy_version)
+
+
+def apple_login(db: Session, identity_token: str) -> tuple[User, AuthSession, str]:
+    apple_sub = apple_client.verify_identity_token(identity_token)
+    user = _get_user_by_apple_sub(db, apple_sub)
+
+    if user is None:
+        raise NotFoundError("가입되지 않은 Apple 계정입니다. 회원가입을 먼저 진행해주세요.")
+
+    return _start_session(db, user)
+
+
+def apple_signup(
+    db: Session,
+    identity_token: str,
+    authorization_code: str,
+    agreed_terms: bool,
+    agreed_privacy: bool,
+    nickname: str | None = None,
+    terms_version: str | None = None,
+    privacy_version: str | None = None,
+    plan_code: str | None = None,
+) -> tuple[User, AuthSession, str]:
+    _ensure_signup_agreements(agreed_terms, agreed_privacy, terms_version, privacy_version)
+    apple_sub = apple_client.verify_identity_token(identity_token)
+
+    # 교환 전에 막는다 — 이미 회원이면 refresh token 을 새로 받을 이유가 없다.
+    if _get_user_by_apple_sub(db, apple_sub) is not None:
+        raise BadRequestError("이미 가입된 Apple 계정입니다. 로그인으로 진행해주세요.")
+
+    # 회원 행보다 먼저다: 탈퇴 때 폐기할 토큰 없이 Apple 회원이 생기면 안 된다.
+    refresh_token = apple_client.exchange_code(authorization_code)
+    # 이름은 Apple 이 첫 로그인에만 준다(앱이 조합해 보낸다). 이메일은 요청하지도 받지도 않는다.
+    user = User(
+        apple_sub=apple_sub,
+        nickname=(nickname or "").strip() or None,
+        apple_refresh_token=refresh_token,
+    )
+    return _create_member(db, user, plan_code, terms_version, privacy_version)
+
+
+def _ensure_signup_agreements(
+    agreed_terms: bool,
+    agreed_privacy: bool,
+    terms_version: str | None,
+    privacy_version: str | None,
+) -> None:
+    """가입 요청을 외부 자원(연동 코드·Apple 토큰)을 쓰기 **전에** 거른다.
+
+    미동의·옛 문서 요청이 1회용 코드만 태우고 400 이 되면, 사용자는 로그인부터 다시 해야 한다.
+    """
+    if not (agreed_terms and agreed_privacy):
+        raise BadRequestError("서비스 이용약관과 개인정보 처리방침에 모두 동의해야 가입할 수 있습니다.")
+
+    if terms_version is not None:
+        ensure_current_version(TERMS, terms_version)
+
+    if privacy_version is not None:
+        ensure_current_version(PRIVACY, privacy_version)
+
+
+def _create_member(
+    db: Session,
+    user: User,
+    plan_code: str | None,
+    terms_version: str | None,
+    privacy_version: str | None,
+) -> tuple[User, AuthSession, str]:
     db.add(user)
     db.flush()
 
@@ -220,13 +280,7 @@ def kakao_signup(
     # 회원)가 생기면 안 된다. 없는 plan_code 는 여기서 BadRequestError → 400.
     record_signup_consents(db, user.id, terms_version, privacy_version)
     create_subscription(db, user.id, plan_code)
-
-    session, raw_token = _create_session(user.id)
-    db.add(session)
-    db.commit()
-    db.refresh(user)
-    db.refresh(session)
-    return user, session, raw_token
+    return _start_session(db, user)
 
 
 # ---- 세션 ----
@@ -265,6 +319,19 @@ def revoke_session_token(db: Session, token: str) -> None:
 
 def _get_user_by_kakao_id(db: Session, kakao_id: str) -> User | None:
     return db.scalar(select(User).where(User.kakao_id == kakao_id))
+
+
+def _get_user_by_apple_sub(db: Session, apple_sub: str) -> User | None:
+    return db.scalar(select(User).where(User.apple_sub == apple_sub))
+
+
+def _start_session(db: Session, user: User) -> tuple[User, AuthSession, str]:
+    session, raw_token = _create_session(user.id)
+    db.add(session)
+    db.commit()
+    db.refresh(user)
+    db.refresh(session)
+    return user, session, raw_token
 
 
 def _create_session(user_id: int) -> tuple[AuthSession, str]:

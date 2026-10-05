@@ -1049,7 +1049,13 @@ UNIQUE(`user_id`, `rec_date`, `meal_type`).
 | 10 | `group_members` | `user_id` (남의 그룹 멤버십) | 물리 삭제 — **그룹 자체는 보존** |
 | 11 | `groups` | `owner_id` | 물리 삭제 |
 | 12 | `pets` | `owner_id` (soft delete된 펫 포함) | 물리 삭제 |
-| 13 | `users` | `id` | 물리 삭제 |
+| 13 | `users` | `id` | 물리 삭제 — `apple_sub`·`apple_refresh_token`(리비전 0029)도 이 행과 함께 파기된다 |
+
+#### 외부 로그인 연결 해제 — 파기 커밋 **뒤**에 (2026-10-05 Apple 추가)
+
+카카오 회원은 `unlink`(어드민 키), Apple 회원은 삭제 전에 꺼내 둔 refresh token 으로 `revoke` 를 부른다
+(21장). 둘 다 **우리 쪽 파기를 커밋한 뒤** 부르고, 실패해도 예외를 올리지 않는다 — 외부 장애가
+개인정보 파기(법정 의무)를 막으면 안 된다. Apple 은 토큰을 이미 파기했으므로 실패하면 재시도할 수 없다.
 
 #### 타인 데이터에 남는 참조 — 실측 근거
 
@@ -1550,6 +1556,84 @@ CSRF 방어용 `state`는 `{platform, nonce, exp}`를 `AUTH_CODE_PEPPER`로 HMAC
 1. **카카오 콘솔 설정** — Redirect URI 등록(`http://localhost:8000/api/auth/kakao/callback`, 운영은 https), 클라이언트 시크릿 생성, 어드민 키 확보. 이게 끝나야 실호출 e2e가 된다.
 2. **연결 해제 웹훅** — 사용자가 카카오 [연결된 서비스 관리]에서 직접 끊으면 우리 DB가 모른다. 웹훅으로 동기화하는 것은 후속 과제.
 3. 무료 티어 어뷰징 대응(IP·디바이스 레이트리밋)은 실제 남용이 관측되면 착수한다.
+
+### Sign in with Apple (2026-10-05 확정 — 리비전 0029)
+
+**왜**: App Store 심사 4.8 — 소셜 로그인(카카오)만 쓰는 앱은 동등한 대안 로그인을 함께 제공해야 한다
+(`docs/LEGAL_COMPLIANCE.md` §6-6). Apple 로그인으로 충족한다. 웹·Android 는 카카오 그대로다.
+
+**카카오와 흐름이 다르다** — 서버 주도 OAuth 가 아니라, **iOS 가 기기에서** identity token(JWT)과
+authorization code 를 받고 앱이 서버로 보낸다. 서버는 서명만 검증하면 되므로 콜백·state·연동 코드
+테이블이 없다. 신규 회원의 약관 동의 동안 토큰을 들고 있는 쪽은 앱이다.
+
+```
+iOS(expo-apple-authentication) → identity_token, authorization_code, fullName(첫 로그인만)
+앱 → POST /api/auth/apple/login  {identity_token}                 → 200 세션 | 404 미가입(→ 약관 동의)
+앱 → POST /api/auth/apple/signup {identity_token, authorization_code, nickname?, agreed_*, ...} → 200 세션
+```
+
+#### 토큰 검증 — `services/apple_client.verify_identity_token`
+
+- `jwt.PyJWKClient("https://appleid.apple.com/auth/keys")` 로 kid 에 맞는 공개키를 찾고
+  `jwt.decode(..., algorithms=["RS256"], audience=APPLE_BUNDLE_ID, issuer="https://appleid.apple.com")`.
+  `exp`·`iat`·`sub` 는 필수 클레임이다. **`alg` 는 토큰 헤더를 믿지 않는다**(none·HS256 위조 차단).
+- JWK Set 은 5분 캐시(라이브러리 기본). 모르는 kid 의 강제 갱신은 라이브러리가 **30초 쿨다운**으로 묶는다
+  — 무인증 라우트라 위조 kid 로 Apple 을 대신 두드리게 만드는 통로가 되면 안 된다.
+- JWKS 조회의 CA 는 requests 와 같은 **certifi** 다. PyJWKClient 는 urllib 라 OS CA 저장소를 보는데,
+  python.org 빌드(macOS)는 그걸로 Apple 인증서 검증에 실패했다(2026-10-05 로컬 실측).
+- 로그에는 **예외 타입명만** 남긴다 — 무인증 라우트라 공격자가 만든 문자열(kid 등)이 메시지에 실린다.
+
+#### API 계약 (앱 `k-calAI-RN` 과 같은 작업 단위 — 무인증)
+
+| 경로 | 바디 | 응답 |
+|---|---|---|
+| `POST /api/auth/apple/login` | `{identity_token: str(1~4096)}` | 200 `AuthTokenResponse`(카카오와 같다) · **404** "가입되지 않은 Apple 계정입니다. 회원가입을 먼저 진행해주세요." · 400 "Apple 로그인 정보가 만료되었습니다. 다시 시도해주세요." · 503 "Apple 로그인을 지금 확인할 수 없어요. 잠시 후 다시 시도해주세요." |
+| `POST /api/auth/apple/signup` | `{identity_token, authorization_code: str(1~512), nickname?: str\|null(≤50), agreed_terms: bool, agreed_privacy: bool, terms_version?, privacy_version?, plan_code?}` — `agreed_*` 는 기본값 없이 필수(카카오와 같다) | 200 `AuthTokenResponse` · 400(아래 순서) · 503 |
+
+가입 처리 순서 — 외부 자원(1회용 코드)을 쓰기 전에 거를 수 있는 것부터 거른다:
+
+1. 동의 둘 다 true 가 아니면 400 (카카오와 같은 문구), terms/privacy 버전 대조(`ensure_current_version`)
+2. identity token 검증 — 실패 400, JWKS 조회 실패 503
+3. 같은 `sub` 회원이 있으면 400 "이미 가입된 Apple 계정입니다. 로그인으로 진행해주세요." (교환하지 않는다)
+4. **authorization code → refresh token 교환** (`POST /auth/token`, client secret 은 ES256 JWT·5분) —
+   실패 400 "만료" 문구(앱이 Apple 로그인을 다시 띄운다. 코드는 1회용·5분). 단 Apple 이 `invalid_client`
+   를 주면 **우리 키 설정이 틀린 것**이라 재시도로 풀리지 않으므로 503 "Apple 로그인을 지금 쓸 수 없어요."
+5. 회원(`apple_sub`, `nickname`, 암호화한 refresh token)·가입 동의·구독을 **한 트랜잭션**으로 → 세션 발급
+
+- **SIWA 설정(`APPLE_TEAM_ID`·`APPLE_SIWA_KEY_ID`·`APPLE_SIWA_PRIVATE_KEY_B64`)이 비면 가입은 503**
+  "Apple 로그인을 지금 쓸 수 없어요." — 설정 없이 가입을 받으면 탈퇴 때 폐기할 토큰이 없다. 로그인
+  (토큰 검증만)은 설정 없이도 동작한다. `APP_ENV=production` 기동 검사에는 넣지 않았다(운영 `.env` 에
+  아직 없어 기동이 막히면 안 된다).
+- `nickname` 은 Apple 이 **첫 로그인에만** 주는 이름을 앱이 조합해 보낸다. 비거나 공백이면 null.
+  로그인 때 갱신하지 않는다(Apple 이 다시 주지 않는다).
+- **이메일은 받지도 저장하지도 않는다** — 앱이 이메일 범위를 요청하지 않는다(최소 수집).
+- identity token 은 발급 10분, authorization code 는 5분·1회용이다. 동의 화면에 오래 머물면 가입이 400 이
+  되고, 앱이 Apple 로그인을 다시 띄운다.
+
+#### 테이블 (리비전 0029)
+
+| 컬럼 | 타입 | 비고 |
+|---|---|---|
+| `users.apple_sub` | `String(64)` UNIQUE INDEX, nullable | identity token 의 `sub`. Apple 회원의 로그인 식별자 |
+| `users.apple_refresh_token` | `String(1024)`, nullable | **암호문**(`crypto.EncryptedString`, 키 `HEALTH_ENCRYPTION_KEY`). ORM 은 `deferred` — 매 요청 인증마다 자격증명을 복호화하지 않는다 |
+
+카카오 컬럼·`kakao_link_codes` 는 그대로다. 기존 회원은 둘 다 NULL.
+
+#### 회원 탈퇴 — Apple 토큰 폐기는 **의무**
+
+Apple 로그인을 제공하는 앱은 계정 삭제 시 토큰을 폐기해야 한다. `account_service.delete_account` 가
+카카오 unlink 와 **같은 자리·같은 규칙**으로 `POST /auth/revoke`(`token_type_hint=refresh_token`)를
+부른다 — 파기를 **커밋한 뒤**, 실패해도 예외 없이 로그만. 토큰은 그 시점에 이미 파기됐으므로 **재시도할
+수 없다**. 실패하면 Apple 쪽 연결은 사용자가 설정 > Apple ID > Apple로 로그인에서 끊을 수 있다.
+
+#### 한계
+
+- **카카오 계정과 Apple 계정을 병합하지 않는다.** 같은 사람이 둘로 가입하면 별개 회원이고, 기록이
+  나뉜다. 병합하려면 로그인 상태에서 다른 수단을 '연결'하는 흐름이 필요하다 — 요구가 생기면 착수한다.
+- **nonce 를 쓰지 않는다.** identity token 이 유출되면 만료(10분)까지 재사용될 수 있다. 앱이
+  `nonce`(SHA-256)를 넣어 요청하고 서버가 대조하면 막힌다 — 계약 변경이라 앱과 함께 한다.
+- Apple 의 계정 상태 알림(server-to-server notification — 사용자가 Apple 쪽에서 연결 해제·계정 삭제)은
+  받지 않는다. 카카오 연결 해제 웹훅과 같은 후속 과제다.
 
 ---
 

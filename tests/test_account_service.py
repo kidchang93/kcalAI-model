@@ -5,7 +5,7 @@
 실제로 발생했다 — 리비전 0017 이 `payments`·`billing_keys` 를 추가했는데 2026-07-11에 작성된 삭제
 연쇄가 그대로였다. 결제를 시도한 적 있는 회원(청구 실패 포함)이 전부 해당됐다.
 
-**카카오 unlink 는 호출하지 않는다** — 외부 API 다. `_no_unlink` 픽스처가 대체한다.
+**카카오 unlink·Apple revoke 는 호출하지 않는다** — 외부 API 다. `_no_unlink` 픽스처가 대체한다.
 
 카카오 회원번호는 다른 테스트와 겹치지 않도록 8400000xxx 대역을 쓴다.
 """
@@ -26,8 +26,9 @@ _make_payment = make_payment
 
 @pytest.fixture(autouse=True)
 def _no_unlink(monkeypatch):
-    """탈퇴는 카카오 unlink 를 부른다(의무). 테스트에서 실제 호출은 하지 않는다."""
+    """탈퇴는 카카오 unlink·Apple revoke 를 부른다(의무). 테스트에서 실제 호출은 하지 않는다."""
     monkeypatch.setattr(account_service, "unlink", lambda kakao_id: None)
+    monkeypatch.setattr(account_service, "revoke_token", lambda refresh_token: None)
 
 
 def _make_billing_key(db, user_id: int) -> BillingKey:
