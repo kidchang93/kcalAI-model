@@ -2,7 +2,7 @@ import random
 from datetime import date
 from math import ceil
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from models.health_model import FoodNutrition
@@ -24,6 +24,22 @@ CANDIDATE_POOL_SIZE = 40
 # 30 kcal 은 "한 입이라도 먹은 것으로 칠 수 있는 최소치"로 잡은 값이다. 후보 풀에서만 빼는
 # 것이라 사용자가 차를 직접 기록하는 데는 아무 영향이 없다.
 MIN_RECOMMENDABLE_KCAL = 30
+
+# 이름에 이 글자가 있으면 "변형·상품 행"으로 보고 같은 그룹의 대표 메뉴 뒤로 보낸다. **정책값이다**
+# (지침 근거가 아니다, 2026-10-05).
+#
+# 식약처 음식 DB 의 한 그룹에는 '잔치국수'·'흰죽'·'연근조림' 같은 대표 메뉴와 '닭튀김_마늘 치킨'·
+# '감자튀김_포테이트(R)'·'쌀죽(흰죽) 새일미' 같은 변형·제조사 상품 행이 섞여 있다. 질환 태그 정렬만
+# 하면 수치가 조금 낮은 상품 행이 앞을 차지해 "이번 끼니에 뭘 먹을까"의 답이 낯선 상품명이 된다.
+# 원본은 변형을 '메뉴_변형', 규격·상품명을 '(…)'로 적어서, 이름 모양을 대표성의 대용 신호로 쓴다.
+# 실측(로컬): 식사 그룹 후보 2,011개 중 845개가 대표 메뉴이고 14개 그룹 모두에 있다.
+#
+# 필터가 아니라 **정렬의 첫 키**다 — 대표 메뉴가 쿼터보다 적은 그룹은 변형 행이 채운다. 알러지·
+# 칼륨/인 상한은 여전히 필터라 안전성은 이 정렬과 무관하다.
+#
+# 한계: 이름 모양은 '흔함'이 아니다. '올갱이국' 같은 지역 음식도 대표 메뉴로 잡힌다. 진짜 신호는
+# 원본 CSV 의 지역·제조사 컬럼이나 실제 기록 빈도인데, 둘 다 지금 DB 에 없다 — 다음 단계다.
+VARIANT_NAME_MARKERS = ("_", "(")
 
 # breakfast/lunch/dinner 는 가능하면 이 계열 1개를 포함한다 (13장 구성 다양성).
 STAPLE_GROUPS = ("밥류", "죽 및 스프류")
@@ -262,9 +278,15 @@ def _candidate_pool(
     for keyword in ckd_exclude_keywords:
         filters.append(FoodNutrition.food_label.not_like(f"%{keyword}%"))
 
-    # 태그가 여럿이면 질병 sort_order 순서대로 순차 정렬 키가 된다. 실측 없는 행은 뒤로.
+    # 첫 키: 대표 메뉴(0)가 변형·상품 행(1)보다 앞 (VARIANT_NAME_MARKERS 주석 참고).
+    # ⚠️ LIKE 를 쓰지 않는다 — '_' 는 LIKE 의 한 글자 와일드카드라 모든 행이 걸린다.
+    is_variant = or_(
+        *(func.strpos(FoodNutrition.food_label, marker) > 0 for marker in VARIANT_NAME_MARKERS)
+    )
+    order_by = [case((is_variant, 1), else_=0).asc()]
+
+    # 그다음 태그가 여럿이면 질병 sort_order 순서대로 순차 정렬 키가 된다. 실측 없는 행은 뒤로.
     seen_columns: set[str] = set()
-    order_by = []
     for condition in conditions:
         for tag in condition.dietary_tags:
             column = TAG_SORT_COLUMNS.get(tag)

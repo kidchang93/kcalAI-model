@@ -31,7 +31,7 @@ from services import consent_service, lab_service, visit_service
 from timeutil import UTC, today_kst
 
 LEGACY_VERSION = "v1.0"
-CURRENT_VERSION = "v1.1"
+CURRENT_VERSION = "v1.2"
 
 OUTDATED_MESSAGE = "건강 정보 동의 내용이 바뀌었어요. 내 정보 → 동의 관리에서 다시 동의해 주세요."
 REQUIRED_MESSAGE = "건강 민감정보 이용 동의가 필요합니다. 동의 후 다시 시도해주세요."
@@ -247,13 +247,13 @@ def test_writing_a_visit_note_under_outdated_consent_is_forbidden(client, db, us
 # 처리이지 문구 개정 자체가 아니다 — 그래서 재동의 대상 버전 집합으로 갈랐다.
 
 def test_plain_wording_revision_does_not_block_existing_consenters(client, db, user, monkeypatch):
-    """문구만 바뀐 개정(v1.1 → v1.2)에서 v1.1 동의자는 계속 쓸 수 있다."""
+    """문구만 바뀐 개정(가상의 v1.2 → v1.3)에서 v1.2 동의자는 계속 쓸 수 있다."""
     _add_legacy_consent(db, user.id, version=CURRENT_VERSION)
 
     # 범위가 넓어지지 않은 개정: 현재 버전만 올리고 재동의 집합은 그대로 둔다.
-    monkeypatch.setattr(consent_service, "SENSITIVE_HEALTH_VERSION", "v1.2")
+    monkeypatch.setattr(consent_service, "SENSITIVE_HEALTH_VERSION", "v1.3")
     monkeypatch.setitem(
-        consent_service._CURRENT_VERSIONS, consent_service.SENSITIVE_HEALTH, "v1.2"
+        consent_service._CURRENT_VERSIONS, consent_service.SENSITIVE_HEALTH, "v1.3"
     )
 
     assert consent_service.get_consent_state(db, user.id) is consent_service.ConsentState.ACTIVE
@@ -285,3 +285,18 @@ def test_scope_widening_revision_still_blocks(db, user, monkeypatch):
     )
 
     assert consent_service.get_consent_state(db, user.id) is consent_service.ConsentState.OUTDATED
+
+
+# ---- ⑦ v1.1 → v1.2 는 범위가 넓어진 개정이다 (2026-10-05) ----
+#
+# 진료 메모에 '진료 때 물어볼 것'(care_visits.questions)이 더해졌다. v1.1 에 동의한 사람은 그 항목을
+# 알림받은 적이 없으므로, 재동의 전까지 v1.0 동의자와 똑같이 막혀야 한다.
+
+def test_v1_1_consent_is_outdated_after_questions_were_added(client, db, user):
+    _add_legacy_consent(db, user.id, version="v1.1")
+
+    assert "v1.1" in consent_service.SENSITIVE_HEALTH_REVALIDATE_VERSIONS
+    assert consent_service.get_consent_state(db, user.id) is consent_service.ConsentState.OUTDATED
+
+    for path in GATED_PATHS:
+        assert client.get(path).status_code == 403, path

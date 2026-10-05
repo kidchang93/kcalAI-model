@@ -133,7 +133,7 @@ def test_unknown_kind_passes_through(db):
 
 
 def test_version_formats_differ_by_kind_and_that_is_intentional(db):
-    """terms·privacy 는 '1.2', sensitive_health 는 'v1.1' 이다 (2026-09-29 무료 출시 개정 후).
+    """terms·privacy 는 '1.2', sensitive_health 는 'v1.2' 이다 (2026-10-05 '진료 때 물어볼 것' 개정 후).
 
     기존 데이터가 그렇게 쌓여 있어 통일하려면 마이그레이션이 필요하다. 검증은 kind 별 비교라
     지장이 없다 — 이 테스트는 그 사실을 문서화하고, 무심코 한쪽만 바꾸면 실패한다.
@@ -143,4 +143,4 @@ def test_version_formats_differ_by_kind_and_that_is_intentional(db):
     """
     assert consent_service.TERMS_VERSION == "1.2"
     assert consent_service.PRIVACY_VERSION == "1.2"
-    assert consent_service.SENSITIVE_HEALTH_VERSION == "v1.1"
+    assert consent_service.SENSITIVE_HEALTH_VERSION == "v1.2"

@@ -220,8 +220,9 @@ class CareVisit(Base):
     같은 이유로 `clinic_label` 은 자유 텍스트다: 병원 목록을 두면 순서가 생기고 순서에는
     이해관계가 붙는다.
 
-    지금 API 가 여는 것은 `scheduled_on` 하나다. 나머지는 §4-3 에서 설계가 확정된 자리이고,
-    진료 질문·결과 기록을 붙일 때 그대로 쓴다.
+    API 가 여는 것은 `scheduled_on`·`outcome`(진료에서 들은 것, 2026-08-19)·`questions`(물어볼 것,
+    줄바꿈 목록, 2026-10-05) 셋이다. 메모 두 칸은 자유 텍스트라 `sensitive_health` 동의를 따른다.
+    `clinic_label`·`visited_on`·`report_from`/`report_to` 는 §4-3 에서 설계가 확정된 자리이고 아직 닫혀 있다.
     """
 
     __tablename__ = "care_visits"

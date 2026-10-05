@@ -7,11 +7,11 @@ from timeutil import today_kst
 
 router = APIRouter()
 
-# **`sensitive_health` 동의를 요구하지 않는다.** 검사 수치(`/api/me/labs`)와 다른 판단이고,
-# 근거는 이 라우트가 다루는 값이 **날짜 하나**라는 점이다 — 질병명도 수치도 없다. 동의를
-# 요구하면 온보딩 직후 홈에 D-day 를 못 그리는데, 그러면 이 기능이 존재하는 이유(오늘
-# 기록할 이유를 만드는 것)가 첫날부터 사라진다. 가이드(`/api/guides`)를 동의 없이 여는 것과
-# 같은 층위다.
+# **라우트에 `sensitive_health` 동의를 걸지 않는다.** 검사 수치(`/api/me/labs`)와 다른 판단이고,
+# 근거는 **날짜**에는 질병명도 수치도 없다는 점이다. 동의를 요구하면 온보딩 직후 홈에 D-day 를
+# 못 그리는데, 그러면 이 기능이 존재하는 이유(오늘 기록할 이유를 만드는 것)가 첫날부터 사라진다.
+# 가이드(`/api/guides`)를 동의 없이 여는 것과 같은 층위다. 자유 텍스트인 메모 두 칸
+# (`outcome`·`questions`)만 필드 단위로 동의를 요구하고, 동의가 없으면 읽을 때 가린다.
 #
 # ⚠️ 다만 `clinic_label`(병원 이름)을 API 로 여는 순간 이 판단을 다시 해야 한다 —
 # "OO신장내과"는 질환을 추론하게 하므로 그때는 민감정보에 가깝다.
@@ -22,12 +22,14 @@ _NOTICE = (
 )
 
 
-def _to_response(visit, *, can_see_outcome: bool) -> NextVisitResponse:
+def _to_response(visit, *, can_see_memo: bool) -> NextVisitResponse:
+    # 동의가 없으면(버전이 낡은 동의 포함) 메모 두 칸을 가린다. **지우지는 않는다** — 다시 동의하면
+    # 그대로 보인다.
+    show_memo = visit is not None and can_see_memo
     return NextVisitResponse(
         scheduled_on=visit.scheduled_on if visit is not None else None,
-        # 동의가 없으면(버전이 낡은 동의 포함) 본문을 가린다. **지우지는 않는다** — 다시 동의하면
-        # 그대로 보인다.
-        outcome=visit.outcome if visit is not None and can_see_outcome else None,
+        outcome=visit.outcome if show_memo else None,
+        questions=visit.questions if show_memo else None,
         notice=_NOTICE,
     )
 
@@ -41,16 +43,17 @@ def get_next_visit(current_user: CurrentUser, db: DB):
     """
     return _to_response(
         visit_service.get_next_visit(db, current_user.id),
-        can_see_outcome=consent_service.has_active_consent(db, current_user.id),
+        can_see_memo=consent_service.has_active_consent(db, current_user.id),
     )
 
 
 @router.put("/me/next-visit", response_model=NextVisitResponse)
 def put_next_visit(request: NextVisitRequest, current_user: CurrentUser, db: DB):
-    # **날짜만 보내면 동의가 필요 없다.** 메모를 실어 보낼 때만 요구한다 — 자유 텍스트라
-    # 질병 정보가 들어올 수 있기 때문이고, 반대로 날짜에까지 동의를 걸면 온보딩 직후
-    # 홈 D-day 가 사라진다. 버전이 낡은 동의도 동의가 없는 것으로 본다(require_sensitive_consent 와 같은 판정).
-    if request.outcome is not None and request.outcome.strip():
+    # **날짜만 보내면 동의가 필요 없다.** 내용이 있는 메모(outcome·questions)를 실어 보낼 때만
+    # 요구한다 — 자유 텍스트라 질병 정보가 들어올 수 있기 때문이고, 반대로 날짜에까지 동의를 걸면
+    # 온보딩 직후 홈 D-day 가 사라진다. 지우는 것(빈 문자열)은 동의 없이도 된다. 버전이 낡은
+    # 동의도 동의가 없는 것으로 본다(require_sensitive_consent 와 같은 판정).
+    if any(memo is not None and memo.strip() for memo in (request.outcome, request.questions)):
         consent_service.ensure_sensitive_consent(db, current_user.id)
 
     has_consent = consent_service.has_active_consent(db, current_user.id)
@@ -58,7 +61,7 @@ def put_next_visit(request: NextVisitRequest, current_user: CurrentUser, db: DB)
     visit = visit_service.set_next_visit(
         db, user_id=current_user.id, today=today_kst(), **request.model_dump()
     )
-    return _to_response(visit, can_see_outcome=has_consent)
+    return _to_response(visit, can_see_memo=has_consent)
 
 
 @router.delete("/me/next-visit", status_code=204)

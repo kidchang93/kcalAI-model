@@ -46,21 +46,27 @@ def test_revoke_destroys_lab_results(db, consented):
     assert remaining == []
 
 
-def test_revoke_clears_visit_note_but_keeps_the_date(db, consented):
-    """진료 메모는 지우되 **날짜는 남긴다**.
+def test_revoke_clears_visit_notes_but_keeps_the_date(db, consented):
+    """진료 메모 두 칸(들은 것·물어볼 것)은 지우되 **날짜는 남긴다**.
 
     날짜는 민감정보가 아니라고 판단해 동의 없이도 쓰게 했다(31장). 철회했다고 진료 일정까지
-    잃게 하는 것은 필요 이상의 파기다.
+    잃게 하는 것은 필요 이상의 파기다. 물어볼 것(2026-10-05)도 자유 텍스트라 들은 것과 같이 파기한다.
     """
     scheduled = TODAY + timedelta(days=14)
     visit_service.set_next_visit(
-        db, consented.id, scheduled, today=TODAY, outcome="칼륨 조심하라고 하심"
+        db,
+        consented.id,
+        scheduled,
+        today=TODAY,
+        outcome="칼륨 조심하라고 하심",
+        questions="투석 전날 과일 먹어도 되나요?",
     )
 
     consent_service.revoke_consent(db, consented.id, consent_service.SENSITIVE_HEALTH)
 
     visit = db.query(CareVisit).filter(CareVisit.user_id == consented.id).one()
     assert visit.outcome is None
+    assert visit.questions is None
     assert visit.scheduled_on == scheduled
 
 

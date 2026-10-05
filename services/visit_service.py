@@ -41,28 +41,42 @@ def get_next_visit(db: Session, user_id: int) -> CareVisit | None:
 def set_next_visit(
     db: Session,
     user_id: int,
-    scheduled_on: date,
+    scheduled_on: date | None,
     today: date,
     outcome: str | None = None,
+    questions: str | None = None,
 ) -> CareVisit:
-    """예정 진료일을 등록하거나 바꾼다 (사용자당 하나이므로 upsert 가 아니라 덮어쓰기다)."""
-    if scheduled_on < today - timedelta(days=_PAST_LIMIT_DAYS):
-        raise ScheduleOutOfRangeError("진료 예정일을 다시 확인해주세요.")
+    """예정 진료의 날짜·메모를 바꾼다 (사용자당 하나이므로 upsert 가 아니라 덮어쓰기다).
 
-    if scheduled_on > today + timedelta(days=_FUTURE_LIMIT_DAYS):
+    세 값 모두 **None 은 "안 건드림"**이다. 날짜 없이 메모만 오면 날짜 없는 예정 행을 만든다 —
+    진료일을 정하기 전에 물어볼 것부터 담는 사람이 있다 (2026-10-05).
+    """
+    if scheduled_on is None and outcome is None and questions is None:
+        raise BadRequestError("저장할 진료일이나 메모를 입력해주세요.")
+
+    if scheduled_on is not None and not (
+        today - timedelta(days=_PAST_LIMIT_DAYS)
+        <= scheduled_on
+        <= today + timedelta(days=_FUTURE_LIMIT_DAYS)
+    ):
         raise ScheduleOutOfRangeError("진료 예정일을 다시 확인해주세요.")
 
     visit = get_next_visit(db, user_id)
 
     if visit is None:
-        visit = CareVisit(user_id=user_id, scheduled_on=scheduled_on)
+        visit = CareVisit(user_id=user_id)
         db.add(visit)
-    else:
+
+    if scheduled_on is not None:
         visit.scheduled_on = scheduled_on
 
-    # None 은 "안 건드림", 빈 문자열은 "지움"이다 — 날짜만 고치는 요청이 메모를 날리면 안 된다.
+    # 빈 문자열은 "지움"이다 — 날짜만 고치는 요청이 메모를 날리면 안 되고, 잘못 적은 메모를
+    # 지울 방법도 있어야 한다.
     if outcome is not None:
         visit.outcome = outcome.strip() or None
+
+    if questions is not None:
+        visit.questions = questions.strip() or None
 
     db.commit()
     db.refresh(visit)

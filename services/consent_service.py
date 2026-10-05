@@ -34,11 +34,13 @@ GROUP_ACTIVITY_SHARE = "group_activity_share"
 # sensitive_health v1.0 → v1.1(검사 수치·진료 메모 항목과 경고·조언·리포트 목적 추가).
 # 2026-09-29: terms·privacy 1.1 → 1.2(토스 유료 조항 제거 — 무료 출시, 사업자 정보 기재).
 # 범위가 좁아진 개정이고 약관 버전은 가입 시에만 검증하므로 기존 회원에게 재동의를 요구하지 않는다.
+# 2026-10-05: sensitive_health v1.1 → v1.2(진료 메모에 '진료 때 물어볼 것' — care_visits.questions).
+# 수집 항목이 넓어진 개정이라 v1.1 을 SENSITIVE_HEALTH_REVALIDATE_VERSIONS 에 넣었다(재동의 전까지 403).
 # ⚠️ sensitive_health 를 올릴 때 **범위가 넓어졌다면** 옛 버전을 SENSITIVE_HEALTH_REVALIDATE_VERSIONS
 # 에 넣어야 한다 — 그래야 재동의 전까지 무효가 된다. 넓어지지 않았다면 넣지 않는다.
 TERMS_VERSION = "1.2"
 PRIVACY_VERSION = "1.2"
-SENSITIVE_HEALTH_VERSION = "v1.1"
+SENSITIVE_HEALTH_VERSION = "v1.2"
 GROUP_ACTIVITY_SHARE_VERSION = "v1.0"
 
 # **재동의를 강제하는 옛 민감정보 동의 버전.** 여기 있는 버전에 머문 동의만 무효(403)다.
@@ -49,13 +51,14 @@ GROUP_ACTIVITY_SHARE_VERSION = "v1.0"
 # 문구 개정 자체가 아니다. 그래서 개정을 두 갈래로 나눈다:
 #
 #   ① 수집 항목·이용 목적이 **넓어지는** 개정  → 이 집합에 옛 버전을 넣는다. 재동의 전까지 403.
-#      (예: v1.0 → v1.1 은 검사 수치·진료 메모를 항목에, 경고·조언·리포트를 목적에 더했다)
+#      (예: v1.0 → v1.1 은 검사 수치·진료 메모를 항목에, 경고·조언·리포트를 목적에 더했다.
+#       v1.1 → v1.2 는 진료 메모에 '진료 때 물어볼 것'을 더했다 — 2026-10-05)
 #   ② 범위가 그대로이거나 **좁아지는** 개정   → 넣지 않는다. 기능은 계속 동작하고,
 #      `is_current: false` 로 앱이 "내용이 바뀌었어요"만 알린다.
 #
 # ⚠️ 판단 기준은 문구가 바뀌었는지가 아니라 **범위가 넓어졌는지**다. 새 항목을 받거나 새 목적에
 # 쓰기 시작한다면 반드시 여기 넣는다 — 그러지 않으면 알린 적 없는 범위로 처리하게 된다.
-SENSITIVE_HEALTH_REVALIDATE_VERSIONS = frozenset({"v1.0"})
+SENSITIVE_HEALTH_REVALIDATE_VERSIONS = frozenset({"v1.0", "v1.1"})
 
 _CURRENT_VERSIONS = {
     TERMS: TERMS_VERSION,
@@ -290,11 +293,11 @@ def _destroy_sensitive_data(db: Session, user_id: int) -> None:
     db.execute(delete(UserAllergy).where(UserAllergy.user_id == user_id))
     # 검사 수치는 그 자체가 건강 민감정보다 — 행째 파기한다.
     db.execute(delete(LabResult).where(LabResult.user_id == user_id))
-    # 진료 메모(`outcome`)만 비운다. **행을 지우지 않는 이유**는 `scheduled_on`(날짜)이
-    # 민감정보가 아니어서다 — 동의 없이도 D-day 는 계속 쓸 수 있어야 하고, 철회했다고
-    # 진료 일정까지 잃게 하는 것은 필요 이상의 파기다 (`docs/DATA_MODEL.md` 31장).
+    # 진료 메모 두 칸(`outcome`·`questions`)만 비운다. **행을 지우지 않는 이유**는
+    # `scheduled_on`(날짜)이 민감정보가 아니어서다 — 동의 없이도 D-day 는 계속 쓸 수 있어야 하고,
+    # 철회했다고 진료 일정까지 잃게 하는 것은 필요 이상의 파기다 (`docs/DATA_MODEL.md` 31장).
     db.execute(
-        update(CareVisit).where(CareVisit.user_id == user_id).values(outcome=None)
+        update(CareVisit).where(CareVisit.user_id == user_id).values(outcome=None, questions=None)
     )
     # 추천 캐시는 **민감정보에서 파생된 값을 저장한다** (2026-09-13 추가). `excluded` 에 질병·알러지의
     # 코드와 라벨("신장 질환")이, `items[].reason` 에 질병 태그에서 나온 문구("칼륨이 낮은 순")가
