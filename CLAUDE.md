@@ -273,7 +273,7 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 | `release` | ~~배포 브랜치~~ **방치됨** (2026-07-12에 멈춤, master보다 22커밋 뒤). 쓰지 마세요 (서버 git pull 방식이던 `deploy/redeploy.sh`는 2026-09-14에 삭제 — 운영 서버 트리에 `.git`이 없습니다) |
 | `ck-local` | 로컬 작업 브랜치 |
 
-**배포는 `bash deploy/local_deploy.sh --web --migrate`** (Lightsail, 운영 `https://api.kcalai.link`). SSH 설정은 `deploy/deploy.local.env`에 있습니다. 절차·주의는 **`deploy/DEPLOY.md`가 정본**입니다.
+**배포는 `/kcal-release web` 스킬로 한다**(2026-10-05 — 사전 점검·3.10 pytest·확인 스크립트 포함). 내부에서 `bash deploy/local_deploy.sh --web --migrate` (Lightsail, 운영 `https://api.kcalai.link`)를 부른다. SSH 설정은 `deploy/deploy.local.env`에 있습니다. 절차·주의는 **`deploy/DEPLOY.md`가 정본**입니다.
 
 - ⚠️ **이 스크립트는 git이 아니라 현재 작업 트리를 rsync합니다** — 브랜치도 커밋 여부도 보지 않습니다. 배포 전 `git status`로 확인하세요. 커밋하지 않은 편집도 그대로 운영에 올라갑니다.
 - **`git push`는 배포를 트리거하지 않습니다.** push는 GitHub 원격만 갱신합니다.
