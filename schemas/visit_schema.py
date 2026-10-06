@@ -26,3 +26,16 @@ class NextVisitResponse(BaseModel):
     # **D-day 를 서버가 계산하지 않는다.** 서버 시각은 UTC 이고 사용자는 자기 지역의 '오늘'로
     # 남은 날을 센다 — 서버가 계산하면 자정 전후로 하루가 어긋난다. 날짜만 주고 앱이 센다.
     notice: str
+
+
+class PastVisit(BaseModel):
+    # 다녀온 날. 닫히지 않은 채 날짜가 지난 예정 행은 그 예정일이다 (32-6).
+    visited_on: date
+    # next-visit 과 같은 규칙 — 동의가 없으면 null 로 가린다(저장값은 유지).
+    questions: str | None
+    outcome: str | None
+
+
+class PastVisitsResponse(BaseModel):
+    # 최신순.
+    visits: list[PastVisit]

@@ -1,14 +1,22 @@
+import hashlib
+import hmac
+import uuid
 from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from log_utils import get_logger
 from models.group_model import Group, GroupMember, GroupPet
 from models.pet_model import Pet
 from models.subscription_model import Plan, UserSubscription, VisionUsageDaily
+from services import appstore_client
 from services.errors import BadRequestError
 from timeutil import KST, UTC, today_kst
+
+logger = get_logger(__name__)
 
 # 가입 시 요금제를 고르지 않으면 무료 플랜으로 시작한다.
 DEFAULT_PLAN_CODE = "lite"
@@ -19,11 +27,23 @@ STATUS_ACTIVE = "active"
 STATUS_CANCELED = "canceled"  # 자동갱신 해지 — 기간 만료까지는 유료 유지
 STATUS_PAST_DUE = "past_due"  # 갱신 실패 — 유예 중
 
+# user_subscriptions.provider (32-2). NULL = 무료. 갱신 배치는 toss 만 청구한다.
+PROVIDER_TOSS = "toss"
+PROVIDER_APPSTORE = "appstore"
+
+# 지금 파는 유료는 플러스 하나다 (32장). pro·premium 은 숨겼다(is_active=false) — 지우지 않았다.
+PLUS_PLAN_CODE = "plus"
+# App Store Connect 의 구독 상품 ID. 이 둘이 아니면 플러스를 주지 않는다.
+PLUS_PRODUCT_IDS = frozenset(
+    {"com.kcalai.kcalairn.plus.monthly", "com.kcalai.kcalairn.plus.yearly"}
+)
+
 # 402 본문의 resource 값 — 앱이 어떤 업그레이드 화면을 띄울지 이걸로 분기한다.
 RESOURCE_VISION_DAILY = "vision_daily"
 RESOURCE_OWNED_GROUPS = "owned_groups"
 RESOURCE_GROUP_MEMBERS = "group_members"
 RESOURCE_PETS = "pets"
+RESOURCE_REPORT_COMPARE = "report_compare"
 
 
 class PlanLimitError(Exception):
@@ -151,10 +171,14 @@ def create_subscription(db: Session, user_id: int, plan_code: str | None) -> Use
 
     가입 트랜잭션 안에서도 불리므로 commit 하지 않는다 (호출자가 커밋한다).
     """
-    # 없는 plan_code 는 여기서 BadRequestError → 400 (기존 계약 유지).
-    plan = get_purchasable_plan(db, plan_code or DEFAULT_PLAN_CODE)
+    # 없는 plan_code 는 여기서 BadRequestError → 400 (기존 계약 유지). 판매 중단된 유료 코드(pro 를 고르던
+    # 옛 앱)는 400 이 아니다 — 어차피 유료는 무료로 시작하므로 가입을 막을 이유가 없다 (0031).
+    plan = db.scalar(select(Plan).where(Plan.code == (plan_code or DEFAULT_PLAN_CODE)))
 
-    if plan.price_krw > 0:
+    if plan is None:
+        raise BadRequestError("존재하지 않는 요금제입니다.")
+
+    if plan.price_krw > 0 or not plan.is_active:
         plan = get_purchasable_plan(db, DEFAULT_PLAN_CODE)
 
     subscription = UserSubscription(user_id=user_id, plan_code=plan.code)
@@ -183,7 +207,9 @@ def change_plan(db: Session, user_id: int, plan_code: str) -> UserSubscription:
     subscription = get_subscription(db, user_id)
     subscription.plan_code = plan.code
     # 무료로 내려가면 청구 상태를 비운다 — 남겨 두면 갱신 배치가 이미 무료인 회원을 청구 대상으로
-    # 집어 든다(next_billing_at 이 살아 있으므로).
+    # 집어 든다(next_billing_at 이 살아 있으므로). App Store 거래 식별자는 남긴다 — Apple 쪽 구독은 여기서
+    # 끝나지 않으므로, 알림이 오면 그 거래로 다시 회원을 찾아야 한다(해지는 App Store 에서 한다).
+    subscription.provider = None
     subscription.status = STATUS_ACTIVE
     subscription.current_period_end = None
     subscription.next_billing_at = None
@@ -310,7 +336,229 @@ def my_subscription_view(db: Session, user_id: int) -> dict:
         "current_period_end": subscription.current_period_end,
         "next_billing_at": subscription.next_billing_at,
         "cancel_at_period_end": subscription.cancel_at_period_end,
+        # App Store 구독 (32-3). 앱은 구매할 때 app_account_token 을 StoreKit 에 넘긴다.
+        "provider": subscription.provider,
+        "store_product_id": subscription.store_product_id,
+        "is_trial": subscription.is_trial,
+        "app_account_token": app_account_token(user_id),
     }
+
+
+# ---- App Store 인앱 구독 (DATA_MODEL 32-3·32-4) ----
+# 유료 부여 경로는 토스 confirm(실제 청구)과 **Apple 이 확인해 준 구독**뿐이다. 앱이 보낸 transactionId 와
+# 알림 본문은 조회 키일 뿐이고, 상태·기간은 우리 키로 Apple 에 다시 물은 응답만 쓴다.
+
+APPSTORE_CONFLICT_MESSAGE = (
+    "다른 계정에서 구독한 이용권이에요. 처음 구독한 계정으로 로그인해주세요."
+)
+APPSTORE_NOT_FOUND_MESSAGE = "구매 내역을 찾을 수 없어요. 구매를 다시 확인해주세요."
+APPSTORE_NOT_PLUS_MESSAGE = "케어테이블 플러스 구매 내역이 아니에요."
+
+# App Store Server API 의 구독 status → 우리 status. 만료 강등은 여전히 기간으로 **읽을 때** 해석한다
+# (get_effective_plan) — 여기서 plan_code 를 lite 로 쓰지 않는다.
+_APPLE_STATUS = {
+    1: STATUS_ACTIVE,
+    2: STATUS_CANCELED,  # 만료
+    3: STATUS_PAST_DUE,  # 결제 재시도
+    4: STATUS_PAST_DUE,  # 유예(이 동안은 이용권 유지 — 기간이 gracePeriodExpiresDate 까지 늘어난다)
+    5: STATUS_CANCELED,  # 환불·취소
+}
+
+
+class AppStoreConflictError(Exception):
+    """이 구독은 다른 회원 것이다. api 가 409 로 바꾼다(메시지는 사용자 문구).
+
+    `BadRequestError` 를 상속하지 않는다 — 400 전역 핸들러에 잡히면 "다시 시도"와 "계정을 바꿔라"가
+    구분되지 않는다.
+    """
+
+
+def app_account_token(user_id: int) -> str:
+    """StoreKit `appAccountToken` 으로 쓸 회원별 고정 UUID — HMAC(pepper, "appstore:{id}") 앞 16바이트.
+
+    같은 Apple ID 로 다른 회원 계정에서 '구매 복원'을 눌러 남의 구독을 가져가는 것을 막는다. 추측할 수
+    없어야 해서 user_id 를 그대로 쓰지 않는다. ⚠️ `AUTH_CODE_PEPPER` 를 바꾸면 이 값이 전부 바뀌어 기존
+    구독자의 복원이 409 가 된다 — pepper 교체는 이 영향을 함께 본다.
+    """
+    # auth_service 가 이 모듈(create_subscription)을 import 하므로 여기서 늦게 가져온다(순환 회피).
+    from services.auth_service import AUTH_CODE_PEPPER
+
+    digest = hmac.new(
+        AUTH_CODE_PEPPER.encode("utf-8"), f"appstore:{user_id}".encode("utf-8"), hashlib.sha256
+    ).digest()
+    return str(uuid.UUID(bytes=digest[:16]))
+
+
+def verify_appstore_purchase(db: Session, user_id: int, transaction_id: str) -> UserSubscription:
+    """앱이 받은 transactionId 를 Apple 에 다시 물어 플러스를 붙인다 (32-3).
+
+    실패: BadRequestError(거래 없음·번들·상품 불일치 → 400) · AppStoreConflictError(남의 구독 → 409) ·
+    AppStoreUnavailableError(키 미설정·Apple 조회 실패 → 503). **결제 원장(payments)에는 쓰지 않는다** —
+    대금·영수증·환불은 Apple 이 하고 기록도 Apple 이 갖는다.
+    """
+    found = appstore_client.get_transaction(transaction_id)
+
+    if found is None:
+        raise BadRequestError(APPSTORE_NOT_FOUND_MESSAGE)
+
+    transaction, environment = found
+
+    if transaction.get("bundleId") != appstore_client.APPLE_BUNDLE_ID:
+        logger.error(f"appstore verify bundle mismatch user_id={user_id}")
+        raise BadRequestError(APPSTORE_NOT_PLUS_MESSAGE)
+
+    if transaction.get("productId") not in PLUS_PRODUCT_IDS:
+        raise BadRequestError(APPSTORE_NOT_PLUS_MESSAGE)
+
+    original_id = str(transaction.get("originalTransactionId") or "")
+
+    if not original_id:
+        raise BadRequestError(APPSTORE_NOT_FOUND_MESSAGE)
+
+    # 토큰이 **비어 있으면** 통과시킨다 — 앱 밖(App Store 프로모션·오퍼 코드)에서 시작한 구매에는 토큰이
+    # 없다. 그때 소유권은 아래 originalTransactionId UNIQUE(먼저 확인한 회원)가 지킨다.
+    token = transaction.get("appAccountToken")
+
+    if token and str(token).lower() != app_account_token(user_id):
+        logger.info(f"appstore verify token mismatch user_id={user_id} original={original_id}")
+        raise AppStoreConflictError(APPSTORE_CONFLICT_MESSAGE)
+
+    owner_id = db.scalar(
+        select(UserSubscription.user_id).where(
+            UserSubscription.store_original_transaction_id == original_id
+        )
+    )
+
+    if owner_id is not None and owner_id != user_id:
+        logger.info(f"appstore verify owned by other user_id={user_id} original={original_id}")
+        raise AppStoreConflictError(APPSTORE_CONFLICT_MESSAGE)
+
+    status = appstore_client.get_subscription_status(original_id, environment)
+    subscription = get_subscription(db, user_id)
+
+    if status is None:
+        # 거래는 있는데 구독 상태 조회가 비었다. 확인한 거래만으로 기간을 정한다(자동갱신은 모름).
+        _apply_appstore_state(subscription, original_id, environment, transaction, None, {})
+    else:
+        _apply_appstore_state(
+            subscription, original_id, environment, status.transaction, status.status, status.renewal
+        )
+
+    try:
+        db.commit()
+    except IntegrityError:
+        # 같은 구독을 두 회원이 동시에 확인했다 — UNIQUE 가 늦게 온 쪽을 막았다.
+        db.rollback()
+        raise AppStoreConflictError(APPSTORE_CONFLICT_MESSAGE) from None
+
+    logger.info(
+        f"appstore verify ok user_id={user_id} original={original_id} env={environment} "
+        f"status={subscription.status}"
+    )
+    return subscription
+
+
+def handle_appstore_notification(db: Session, signed_payload: str | None) -> str:
+    """App Store Server Notifications V2 (32-4). **본문을 믿지 않는다** — originalTransactionId 하나만 꺼내고,
+    우리 원장에 없는 거래면 Apple 을 부르지 않고 버린다(증폭 통로 차단, 29장). 있으면 다시 조회한 결과로만
+    갱신한다. 반환값은 로그용 라벨이다 — 응답에 싣지 않는다(무인증 호출자에게 거래의 존재를 알려 주지 않는다).
+
+    AppStoreUnavailableError 는 올려 보낸다 → 503 → Apple 이 재전송한다.
+    """
+    original_id = _notification_original_transaction_id(signed_payload)
+
+    if original_id is None:
+        return "ignored"
+
+    subscription = db.scalar(
+        select(UserSubscription).where(UserSubscription.store_original_transaction_id == original_id)
+    )
+
+    if subscription is None:
+        return "unknown"
+
+    # 환경도 본문이 아니라 원장(verify 때 Apple 이 답한 환경)을 쓴다.
+    environment = subscription.store_environment or appstore_client.PRODUCTION
+    status = appstore_client.get_subscription_status(original_id, environment)
+
+    if status is None:
+        # 우리 원장엔 있는데 Apple 이 모른다 — 재전송해도 같은 답이라 닫는다. 원장은 건드리지 않는다.
+        logger.error(f"appstore notification original unknown to apple original={original_id}")
+        return "not-found"
+
+    _apply_appstore_state(
+        subscription, original_id, environment, status.transaction, status.status, status.renewal
+    )
+    db.commit()
+    logger.info(
+        f"appstore notification applied user_id={subscription.user_id} original={original_id} "
+        f"status={subscription.status}"
+    )
+    return "updated"
+
+
+def _notification_original_transaction_id(signed_payload: str | None) -> str | None:
+    # 서명 검증 없이 읽는다(32-4) — 이 값으로는 우리 원장을 찾을 뿐, 상태는 Apple 조회가 정한다.
+    try:
+        payload = appstore_client.decode_jws(signed_payload)
+        transaction = appstore_client.decode_jws(payload["data"]["signedTransactionInfo"])
+    except (ValueError, TypeError, KeyError):
+        return None
+
+    original_id = transaction.get("originalTransactionId")
+    return str(original_id) if original_id else None
+
+
+def _apply_appstore_state(
+    subscription: UserSubscription,
+    original_id: str,
+    environment: str,
+    transaction: dict,
+    apple_status: int | None,
+    renewal: dict,
+) -> None:
+    """Apple 이 확인해 준 상태를 구독 행에 옮긴다. `next_billing_at` 은 비운다 — 우리가 청구하지 않는다."""
+    revoked_at = _from_apple_ms(transaction.get("revocationDate"))
+    ends = [
+        moment
+        for moment in (
+            _from_apple_ms(transaction.get("expiresDate")),
+            _from_apple_ms(renewal.get("gracePeriodExpiresDate")),
+        )
+        if moment is not None
+    ]
+    # 환불·취소면 그 시각에 끝난다. 만료 시각을 모르면 **지금 끝난 것**으로 둔다 — 기간이 NULL 인 유료
+    # 구독은 만료되지 않는 것으로 해석되므로(get_effective_plan), 모른다고 무기한을 줄 수는 없다.
+    period_end = revoked_at or (max(ends) if ends else datetime.now(UTC))
+    auto_renew_off = renewal.get("autoRenewStatus") == 0
+    status = _APPLE_STATUS.get(apple_status, STATUS_ACTIVE)
+
+    if status == STATUS_ACTIVE and auto_renew_off:
+        # 토스 해지와 같은 모양 — 기간까지는 플러스, 그 뒤엔 읽을 때 무료로 해석된다.
+        status = STATUS_CANCELED
+
+    subscription.plan_code = PLUS_PLAN_CODE
+    subscription.provider = PROVIDER_APPSTORE
+    subscription.status = status
+    subscription.current_period_end = period_end
+    subscription.next_billing_at = None
+    subscription.cancel_at_period_end = auto_renew_off
+    subscription.store_original_transaction_id = original_id
+    subscription.store_product_id = transaction.get("productId")
+    subscription.store_environment = environment
+    # offerType 1 = 도입 오퍼. 우리 도입 오퍼는 7일 무료 체험 하나라, 할인 유형이 없던 옛 페이로드도 체험으로 본다.
+    subscription.is_trial = (
+        transaction.get("offerType") == 1
+        and transaction.get("offerDiscountType", "FREE_TRIAL") == "FREE_TRIAL"
+    )
+
+
+def _from_apple_ms(value: object) -> datetime | None:
+    # Apple 날짜는 UNIX epoch 밀리초다.
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+
+    return datetime.fromtimestamp(value / 1000, tz=UTC)
 
 
 # 402 문구에 요금제·업그레이드를 쓰지 않는다(2026-09-29) — 출시는 무료이고 유료화는 인앱 결제로

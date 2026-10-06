@@ -41,7 +41,8 @@ def _seed_plans(engine) -> None:
 
     `create_all`은 테이블만 만들고 시드는 넣지 않는다. 그래서 TEST_DATABASE_URL로 **깨끗한 DB**를
     쓰면 `plans`가 비어 한도 판정이 전부 "존재하지 않는 요금제입니다"로 깨진다 — 지금까지 통과한
-    건 개발 DB에 0014를 이미 올려둔 덕이었다. 값은 alembic 0014·DATA_MODEL.md 20장과 같다.
+    건 개발 DB에 0014를 이미 올려둔 덕이었다. 값은 alembic 0014·0031·DATA_MODEL.md 20·32장과 같다
+    (0031 이 pro·premium 을 판매 중단했다 — 깨끗한 DB 에서도 같은 상태가 되게 한다).
     """
     with engine.begin() as connection:
         connection.execute(
@@ -49,8 +50,9 @@ def _seed_plans(engine) -> None:
                 "INSERT INTO plans (code, label_ko, price_krw, daily_vision_quota, "
                 "max_group_members, max_pets, max_owned_groups, sort_order, is_active) VALUES "
                 "('lite', 'Lite', 0, 3, 1, 1, 1, 1, true), "
-                "('pro', 'Pro', 5000, 30, 5, 5, 3, 2, true), "
-                "('premium', 'Premium', 10000, 100, 10, 10, 5, 3, true) "
+                "('pro', 'Pro', 5000, 30, 5, 5, 3, 2, false), "
+                "('premium', 'Premium', 10000, 100, 10, 10, 5, 3, false), "
+                "('plus', '플러스', 4900, 30, 5, 5, 3, 4, true) "
                 "ON CONFLICT (code) DO NOTHING"
             )
         )

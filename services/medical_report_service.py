@@ -20,12 +20,12 @@
 기록으로 쓰이려면 그래야 한다.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from timeutil import UTC
+from timeutil import UTC, today_kst
 from models.health_model import MealLog
 from services import (
     ckd_food_rules,
@@ -34,6 +34,8 @@ from services import (
     lab_panels,
     lab_service,
     meta_service,
+    subscription_service,
+    visit_service,
 )
 
 REPORT_NOTICE = (
@@ -50,14 +52,80 @@ REPORT_OUTDATED_CONSENT_NOTICE = (
     "건강 정보 동의 내용이 바뀌어 다시 동의하기 전까지 질환·병기·검사 수치는 이 기록에 싣지 않았습니다."
 )
 
+# ---- 리포트 기간 (DATA_MODEL 32-5) — 서버가 정한다. 앱만 막으면 웹 인쇄로 샌다. ----
 
-def build_report(db: Session, user_id: int, start_date: date, end_date: date) -> dict:
-    """기간 리포트. 범위 검증(역순·최대 92일 — 분기 단위 진료를 커버한다)은 `get_trends` 가 한다.
+# 출시 전이라 기존 회원(운영자·관계자뿐)에게 30일을 남기는 예외를 두지 않는다(2026-10-06 사용자 결정).
+FREE_REPORT_DAYS = 14
+PLUS_REPORT_DAYS = 365
+# 플러스 기본 기간 — 지난 진료가 없거나 상한보다 오래됐을 때.
+PLUS_FALLBACK_DAYS = 90
+
+COMPARE_PLUS_ONLY_MESSAGE = "지난 진료 구간과 나란히 보기는 플러스에서 쓸 수 있어요."
+
+
+def resolve_report_range(
+    db: Session,
+    user_id: int,
+    start_date: date | None,
+    end_date: date | None,
+    today: date,
+) -> tuple[date, date, dict]:
+    """리포트 기간을 정한다 → (시작, 끝, 응답의 `range`).
+
+    요청 기간이 상한보다 길면 **시작일을 당겨 자른다** — 400 이 아니다. 무료 사용자는 오류가 아니라 2주
+    리포트를 받아야 한다. 역순(끝 < 시작)은 자르지 않고 `get_trends` 의 400 에 맡긴다.
+    """
+    is_plus = subscription_service.get_user_plan(db, user_id).price_krw > 0
+    max_days = PLUS_REPORT_DAYS if is_plus else FREE_REPORT_DAYS
+    last_visit_on, _ = visit_service.recent_visit_dates(db, user_id, today)
+
+    end = end_date or today
+    default_start = _default_start(is_plus, max_days, last_visit_on, end)
+    start = start_date or default_start
+    clamped = (end - start).days + 1 > max_days
+
+    if clamped:
+        start = end - timedelta(days=max_days - 1)
+
+    return start, end, {
+        "plan": "plus" if is_plus else "free",
+        "max_days": max_days,
+        "last_visit_on": last_visit_on,
+        "clamped": clamped,
+        "default_start_date": default_start,
+    }
+
+
+
+def _default_start(is_plus: bool, max_days: int, last_visit_on: date | None, end: date) -> date:
+    # 플러스 = 지난 진료일부터. 무료 = 상한만큼 최근 — 무료에 '지난 진료부터'를 주면 상한에 잘려 늘 같다.
+    if (
+        is_plus
+        and last_visit_on is not None
+        and last_visit_on <= end
+        and (end - last_visit_on).days + 1 <= max_days
+    ):
+        return last_visit_on
+
+    return end - timedelta(days=(PLUS_FALLBACK_DAYS if is_plus else max_days) - 1)
+
+
+def build_report(
+    db: Session,
+    user_id: int,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    today: date | None = None,
+) -> dict:
+    """기간 리포트. 기간은 `resolve_report_range` 가 요금제로 자르고, 역순 검증은 `get_trends` 가 한다.
 
     **질환·병기·검사 수치·질환 축은 민감정보 동의가 ACTIVE 일 때만 싣는다** (DATA_MODEL 7장).
     라우트는 막지 않는다 — 동의하지 않은 사용자도 칼로리·끼니 기록은 진료에 가져갈 수 있어야 한다.
     """
-    trends = health_service.get_trends(db, user_id, start_date, end_date)
+    start_date, end_date, report_range = resolve_report_range(
+        db, user_id, start_date, end_date, today or today_kst()
+    )
+    trends = health_service.get_trends(db, user_id, start_date, end_date, max_days=PLUS_REPORT_DAYS)
 
     consent_state = consent_service.get_consent_state(db, user_id)
     readable = consent_state is consent_service.ConsentState.ACTIVE
@@ -78,11 +146,7 @@ def build_report(db: Session, user_id: int, start_date: date, end_date: date) ->
         "kcal": {
             "target": trends["target_kcal"],
             # 기록한 날만 나눈다 — 기간 추이와 같은 규칙 (기록 없는 날은 0이 아니라 '모름'이다).
-            "average": (
-                round(sum(day["consumed_kcal"] for day in recorded) / len(recorded))
-                if recorded
-                else None
-            ),
+            "average": _kcal_average(recorded),
             "recorded_days": len(recorded),
             "total_days": len(trends["days"]),
         },
@@ -98,7 +162,70 @@ def build_report(db: Session, user_id: int, start_date: date, end_date: date) ->
         "labs": _labs_for_report(db, user_id, start_date, end_date) if readable else [],
         "meals": _meals_in_range(db, user_id, start_date, end_date),
         "notice": _report_notice(consent_state),
+        "range": report_range,
     }
+
+
+def build_compare(db: Session, user_id: int, today: date | None = None) -> dict:
+    """지난 진료 구간(직전 진료일 → 지난 진료일 전날)과 이번 구간(지난 진료일 → 오늘)을 같은 모양으로 (32-5).
+
+    플러스 전용 — 무료면 PlanLimitError(402). **판정하지 않는다** — 좋아졌다·나빠졌다를 서버가 말하지 않는다.
+    지난 진료가 하나뿐이면 previous 는 None(앱이 비교 표를 숨긴다), 하나도 없으면 이번 구간은 최근 90일이다.
+    """
+    today = today or today_kst()
+    plan = subscription_service.get_user_plan(db, user_id)
+
+    if plan.price_krw <= 0:
+        raise subscription_service.PlanLimitError(
+            COMPARE_PLUS_ONLY_MESSAGE,
+            resource=subscription_service.RESOURCE_REPORT_COMPARE,
+            plan_code=plan.code,
+            limit=0,
+        )
+
+    last_visit_on, previous_visit_on = visit_service.recent_visit_dates(db, user_id, today)
+    current_start = last_visit_on or today - timedelta(days=PLUS_FALLBACK_DAYS - 1)
+    previous = None
+
+    if last_visit_on is not None and previous_visit_on is not None and previous_visit_on < last_visit_on:
+        previous = _interval(db, user_id, previous_visit_on, last_visit_on - timedelta(days=1))
+
+    return {"current": _interval(db, user_id, current_start, today), "previous": previous}
+
+
+def _interval(db: Session, user_id: int, start: date, end: date) -> dict:
+    # 한 구간도 리포트 상한(365일)을 넘기지 않는다 — 1년 넘게 진료가 없었으면 최근 1년만 본다.
+    start = max(start, end - timedelta(days=PLUS_REPORT_DAYS - 1))
+    trends = health_service.get_trends(db, user_id, start, end, max_days=PLUS_REPORT_DAYS)
+    recorded = [day for day in trends["days"] if day["meal_count"] > 0]
+    # 질환 축은 get_trends 가 동의를 보고 None 을 준다 — 동의가 없으면 빈 목록이다.
+    axes = trends["nutrients"]["axes"] if trends["nutrients"] else []
+
+    return {
+        "start_date": start,
+        "end_date": end,
+        "total_days": len(trends["days"]),
+        "recorded_days": len(recorded),
+        "kcal_daily_avg": _kcal_average(recorded),
+        "nutrients": [
+            {
+                "nutrient": axis["nutrient"],
+                "label": axis["label"],
+                "unit": "mg",
+                # 리포트와 같은 규칙 — 기록한 날만 나눈 평균.
+                "daily_avg": axis["average_mg"],
+                "measured_days": sum(1 for day in axis["days"] if day["measured_items"] > 0),
+            }
+            for axis in axes
+        ],
+    }
+
+
+def _kcal_average(recorded_days: list[dict]) -> int | None:
+    if not recorded_days:
+        return None
+
+    return round(sum(day["consumed_kcal"] for day in recorded_days) / len(recorded_days))
 
 
 def _report_notice(consent_state: consent_service.ConsentState) -> str:

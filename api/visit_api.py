@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
 from api.dependencies import DB, CurrentUser
-from schemas.visit_schema import NextVisitRequest, NextVisitResponse
+from schemas.visit_schema import NextVisitRequest, NextVisitResponse, PastVisit, PastVisitsResponse
 from services import consent_service, visit_service
 from timeutil import today_kst
 
@@ -68,3 +68,20 @@ def put_next_visit(request: NextVisitRequest, current_user: CurrentUser, db: DB)
 def delete_next_visit(current_user: CurrentUser, db: DB):
     """예정을 지운다. 지울 것이 없어도 204 다 — 삭제는 멱등해야 한다."""
     visit_service.clear_next_visit(db, current_user.id)
+
+
+@router.get("/me/visits", response_model=PastVisitsResponse)
+def list_past_visits(current_user: CurrentUser, db: DB):
+    """지난 진료 목록 (DATA_MODEL 32-6). 메모 두 칸은 next-visit 과 같은 규칙으로 동의가 없으면 가린다."""
+    can_see_memo = consent_service.has_active_consent(db, current_user.id)
+    visits = visit_service.list_past_visits(db, current_user.id, today_kst())
+    return PastVisitsResponse(
+        visits=[
+            PastVisit(
+                visited_on=visit_service.visit_day(visit),
+                questions=visit.questions if can_see_memo else None,
+                outcome=visit.outcome if can_see_memo else None,
+            )
+            for visit in visits
+        ]
+    )

@@ -66,3 +66,27 @@ class BillingWebhookAck(BaseModel):
     """
 
     received: bool = True
+
+
+class AppStoreVerifyRequest(BaseModel):
+    """StoreKit 이 준 transactionId. **조회 키일 뿐이다** — 상태·기간은 서버가 Apple 에 다시 물어본다 (32-3).
+
+    숫자만 받는다 — 이 값은 Apple 조회 URL 경로에 실린다(경로 조작 차단).
+    """
+
+    transaction_id: str = Field(..., pattern=r"^[0-9]{1,40}$")
+
+
+class AppStoreNotification(BaseModel):
+    """App Store Server Notifications V2 본문 (32-4). **믿지 않는다** — originalTransactionId 를 꺼낼 뿐이다.
+
+    선택값인 이유는 토스 웹훅과 같다 — 모르는 모양이 와도 422 로 거절하면 Apple 이 재전송만 한다.
+    """
+
+    signed_payload: str | None = Field(default=None, alias="signedPayload", max_length=65536)
+
+    model_config = {"populate_by_name": True, "extra": "ignore"}
+
+
+class AppStoreNotificationAck(BaseModel):
+    """`{}` — 처리 결과를 싣지 않는다 (무인증 호출자에게 거래의 존재 여부를 알려 주지 않는다)."""

@@ -256,3 +256,101 @@ def test_api_empty_body_is_400(client):
 
         assert response.status_code == 400, body
         assert response.json()["detail"] == "저장할 진료일이나 메모를 입력해주세요."
+
+
+# ---- 지난 진료 이력 (32-6) — 덮어쓰지 않고 남긴다 ----
+
+def test_new_date_after_a_past_visit_closes_it(db, user):
+    """예정일이 지난 행에 더 늦은 날짜가 오면 그 행을 닫고 새 예정을 만든다 — 메모는 닫힌 행에 남는다."""
+    past = TODAY - timedelta(days=3)
+    visit_service.set_next_visit(
+        db, user.id, past, today=TODAY - timedelta(days=10), outcome="칼륨 조심", questions="약 계속?"
+    )
+
+    visit_service.set_next_visit(db, user.id, TODAY + timedelta(days=90), today=TODAY)
+
+    upcoming = visit_service.get_next_visit(db, user.id)
+    history = visit_service.list_past_visits(db, user.id, TODAY)
+
+    assert _visit_rows(db, user.id) == 2
+    assert upcoming.scheduled_on == TODAY + timedelta(days=90)
+    assert upcoming.outcome is None and upcoming.questions is None
+    assert [visit.visited_on for visit in history] == [past]
+    assert history[0].outcome == "칼륨 조심"
+    assert history[0].questions == "약 계속?"
+
+
+def test_outcome_sent_with_the_next_date_belongs_to_the_closed_visit(db, user):
+    """앱 편집기는 날짜와 '들은 것'을 함께 보낸다 — 들은 것은 다녀온 진료의 메모다."""
+    past = TODAY - timedelta(days=1)
+    visit_service.set_next_visit(db, user.id, past, today=TODAY - timedelta(days=5))
+
+    visit_service.set_next_visit(
+        db, user.id, TODAY + timedelta(days=60), today=TODAY, outcome="저염식 유지"
+    )
+
+    assert visit_service.list_past_visits(db, user.id, TODAY)[0].outcome == "저염식 유지"
+    assert visit_service.get_next_visit(db, user.id).outcome is None
+
+
+def test_correcting_a_past_date_does_not_invent_a_visit(db, user):
+    """같거나 이른 날짜는 지난 날짜를 고치는 것이다 — 닫으면 오타 하나가 없던 진료를 남긴다."""
+    visit_service.set_next_visit(db, user.id, TODAY - timedelta(days=3), today=TODAY - timedelta(days=5))
+
+    visit_service.set_next_visit(db, user.id, TODAY - timedelta(days=4), today=TODAY)
+
+    assert _visit_rows(db, user.id) == 1
+    assert visit_service.get_next_visit(db, user.id).scheduled_on == TODAY - timedelta(days=4)
+
+
+def test_recent_visit_dates_include_an_unclosed_past_schedule(db, user):
+    """다음 날짜를 아직 안 넣은 지난 예정도 다녀온 진료다 — 빼면 '지난 진료일'이 한 바퀴 밀린다."""
+    first = TODAY - timedelta(days=100)
+    second = TODAY - timedelta(days=10)
+    visit_service.set_next_visit(db, user.id, first, today=first - timedelta(days=1))
+    visit_service.set_next_visit(db, user.id, second, today=second - timedelta(days=1))
+    visit_service.set_next_visit(db, user.id, TODAY + timedelta(days=80), today=TODAY)
+
+    assert visit_service.recent_visit_dates(db, user.id, TODAY) == (second, first)
+
+
+def test_todays_open_visit_is_not_yet_past(db, user):
+    """오늘 잡힌 진료는 아직 '지난' 진료가 아니다 — 오늘 리포트는 지난 진료부터 오늘까지다."""
+    visit_service.set_next_visit(db, user.id, TODAY, today=TODAY)
+
+    assert visit_service.recent_visit_dates(db, user.id, TODAY) == (None, None)
+    assert visit_service.recent_visit_dates(db, user.id, TODAY + timedelta(days=1)) == (TODAY, None)
+
+
+def test_api_lists_past_visits_and_hides_memos_without_consent(client, db, user):
+    past = today_kst() - timedelta(days=7)
+    visit_service.set_next_visit(db, user.id, past, today=past, outcome="싱겁게", questions="운동?")
+    visit_service.set_next_visit(db, user.id, today_kst() + timedelta(days=30), today=today_kst())
+
+    hidden = client.get("/api/me/visits").json()["visits"]
+
+    assert hidden == [{"visited_on": past.isoformat(), "questions": None, "outcome": None}]
+
+    _consent(db, user)
+    shown = client.get("/api/me/visits").json()["visits"]
+
+    assert shown == [{"visited_on": past.isoformat(), "questions": "운동?", "outcome": "싱겁게"}]
+    # 기존 next-visit 계약은 그대로다 — 새 예정 행이 나온다.
+    assert client.get("/api/me/next-visit").json()["scheduled_on"] == (
+        today_kst() + timedelta(days=30)
+    ).isoformat()
+
+
+def test_consent_revoke_clears_memos_on_every_visit_row(db, user):
+    """파기는 user_id 전체 행이다 — 이력이 여러 행이어도 메모가 남지 않는다."""
+    _consent(db, user)
+    past = TODAY - timedelta(days=3)
+    visit_service.set_next_visit(db, user.id, past, today=past, outcome="들은 것", questions="물을 것")
+    visit_service.set_next_visit(db, user.id, TODAY + timedelta(days=30), today=TODAY, questions="다음 질문")
+
+    consent_service.revoke_consent(db, user.id, consent_service.SENSITIVE_HEALTH)
+
+    rows = db.scalars(select(CareVisit).where(CareVisit.user_id == user.id)).all()
+
+    assert len(rows) == 2
+    assert all(row.outcome is None and row.questions is None for row in rows)

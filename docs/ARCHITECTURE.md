@@ -13,7 +13,7 @@ kcalAI-model/
 │   ├── dependencies.py         # get_current_user (Bearer 세션 토큰 검증), require_sensitive_consent, 별칭 CurrentUser·ConsentedUser·DB
 │   ├── auth_api.py             # /auth/kakao/** (OAuth start·callback·login·signup), /auth/apple/{login,signup}, /auth/logout
 │   ├── predict_api.py          # /predict (업로드 검증 + Gemini 인식, 503 on 실패)
-│   ├── health_api.py           # /me/profile, /me/goal, /me/summary, /me/trends, /meals (PUT 전체 교체 포함), /weights
+│   ├── health_api.py           # /me/profile, /me/goal, /me/summary, /me/trends, /me/report(+/compare, 32-5), /meals (PUT 전체 교체 포함), /weights
 │   ├── consent_api.py          # /me/consents, /me/health-profile, /me/conditions, /me/allergies
 │   ├── group_api.py            # /groups/** (생성·목록·상세·참여·펫 참여 + 탈퇴·삭제·멤버 제거·펫 해제)
 │   ├── pet_api.py              # /pets/** (등록·목록·수정·삭제·급여 기록)
@@ -22,15 +22,19 @@ kcalAI-model/
 │   ├── account_api.py          # DELETE /me (회원 탈퇴 — 계정 파기, DATA_MODEL 18장)
 │   ├── subscription_api.py     # /plans (무인증), /me/subscription (조회·변경 — PUT은 무료 다운그레이드만, 20·24장)
 │   ├── payment_api.py          # /payments, /payments/{id} (결제 내역 읽기 전용, DATA_MODEL 23장)
-│   ├── billing_api.py          # /billing/{checkout,confirm,cancel} (자동결제, 24장. BadRequestError→400(전역)·TossError→502·미설정→503)
+│   ├── billing_api.py          # /billing/{checkout,confirm,cancel,webhook} (토스, 24·29장) + /billing/appstore/{verify,notifications} (App Store 구독, 32장. AppStoreConflictError→409·AppStoreUnavailableError→503)
+│   ├── visit_api.py            # /me/next-visit (31장), /me/visits (지난 진료, 32-6)
 │   └── recommendation_api.py   # /recommendations (식단 추천, sensitive_health 동의 필수)
 ├── services/
 │   ├── errors.py               # BadRequestError·ForbiddenError·NotFoundError — main.py 전역 핸들러가 400·403·404 {detail} 로 변환
 │   ├── auth_service.py         # 카카오 연동코드·OAuth state 서명, 카카오·Apple 가입·로그인, 세션 생성·검증·폐기 (21장)
 │   ├── kakao_client.py         # 카카오 OAuth — 인가 URL·토큰 교환(client_secret)·프로필·연결끊기(unlink)
 │   ├── apple_client.py         # Sign in with Apple — identity token 검증(JWKS)·code 교환·토큰 폐기(revoke)
+│   ├── appstore_client.py      # App Store Server API — 거래·구독 상태 조회(ES256 JWT, 운영→샌드박스 폴백), JWS 페이로드 무검증 읽기. **키·토큰 미로깅**
 │   ├── mail_client.py          # 메일 발송(SMTP, stdlib) — 이메일 가입·비밀번호 재설정 인증 코드
-│   ├── subscription_service.py # 요금제 한도 판정·비전 일일 쿼터(원자적 UPSERT), PlanLimitError (20장), 만료 강등 해석 get_effective_plan (24장)
+│   ├── subscription_service.py # 요금제 한도 판정·비전 일일 쿼터(원자적 UPSERT), PlanLimitError (20장), 만료 강등 해석 get_effective_plan (24장), App Store 구독 확인·알림·app_account_token (32장)
+│   ├── medical_report_service.py # 진료 리포트 — 요금제별 기간 자르기(resolve_report_range)·구간 비교(build_compare) (32-5)
+│   ├── visit_service.py        # 진료 일정 — 예정 1건 + 지난 진료 닫기·이력 (31장·32-6)
 │   ├── payment_service.py      # 결제 내역 조회·응답 조립 (23장)
 │   ├── billing_service.py      # 자동결제 흐름 — checkout·confirm(빌링키 발급·저장·최초 청구)·cancel·갱신 배치, 달력 1개월 (24장)
 │   ├── toss_client.py          # 토스페이먼츠 어댑터 — 빌링키 발급·청구, Basic base64("{시크릿}:"), TossError. **키·빌링키 미로깅**
@@ -48,7 +52,7 @@ kcalAI-model/
 │   └── upload_validation.py    # 업로드 이미지 크기·타입·디코드 검증 (라우트가 호출)
 ├── schemas/
 │   ├── auth_schema.py          # KakaoLoginRequest, KakaoSignupRequest, AuthTokenResponse
-│   ├── subscription_schema.py  # PlanItem, MySubscriptionResponse(+status·기간·다음청구, 24장), PlanLimitErrorResponse (20장)
+│   ├── subscription_schema.py  # PlanItem, MySubscriptionResponse(+status·기간·다음청구 24장, +provider·store_product_id·is_trial·app_account_token 32장), PlanLimitErrorResponse (20장)
 │   ├── payment_schema.py       # PaymentItem, PaymentsResponse (23장)
 │   ├── billing_schema.py       # BillingCheckoutRequest/Response, BillingConfirmRequest (**금액 필드 없음** — 서버가 정한다, 24장)
 │   ├── health_schema.py
@@ -68,7 +72,7 @@ kcalAI-model/
 │   ├── group_model.py          # Group, GroupMember, GroupPet
 │   ├── pet_model.py            # Pet, PetFeedingLog
 │   ├── meta_model.py           # ConditionType, AllergenType (참조 테이블)
-│   ├── subscription_model.py   # Plan(참조 테이블), UserSubscription(1:1, +빌링 상태), VisionUsageDaily (20장), BillingKey🔒, Payment (0017·23·24장)
+│   ├── subscription_model.py   # Plan(참조 테이블), UserSubscription(1:1, +빌링 상태, +provider·App Store 거래 0031), VisionUsageDaily (20장), BillingKey🔒, Payment (0017·23·24장)
 │   └── recommendation_model.py # DietRecommendation (추천 캐시)
 ├── alembic/                    # DB 마이그레이션 (0001 auth → 0002 health → 0003 consent → 0004 group/pet → 0005 option ref → 0006 diet rec → 0007 food nutrition mfds → 0008 food_label pg_trgm → 0009 meal_items confidence → 0010 condition exclude_keywords → 0011 otp attempt_count → 0012 session token 해시 → 0013 혈액형·Rh 암호화 → 0014 요금제·쿼터 → 0015 카카오 로그인)
 ├── scripts/
@@ -222,6 +226,32 @@ App Store 4.8(소셜 로그인만 있으면 대안 필수) 때문에 iOS 에 붙
 
 **시크릿 키·빌링키는 로그·응답에 절대 나가지 않는다** — 실패 로그는 `status=400 code=REJECT_CARD_COMPANY` 형태로 결제사 코드만 남긴다.
 
+### App Store 인앱 구독 (`POST /api/billing/appstore/*`) — 2026-10-06, DATA_MODEL 32장
+
+```
+앱  GET /api/me/subscription → app_account_token (HMAC(pepper, "appstore:{id}") 앞 16바이트 UUID)
+앱  StoreKit 구매(appAccountToken=위 값) → transactionId
+앱 ── POST /api/billing/appstore/verify {transaction_id}          Bearer, 숫자만(URL 경로에 실린다)
+  └─ subscription_service.verify_appstore_purchase()
+       ├─ appstore_client.get_transaction()      운영 → 4040010 이면 샌드박스. 없음 → 400
+       ├─ bundleId·productId(plus.monthly/yearly) 확인 → 400
+       ├─ appAccountToken ≠ 이 회원 토큰 · originalTransactionId 가 남의 것 → AppStoreConflictError → 409
+       ├─ appstore_client.get_subscription_status()   status·최신 거래·갱신 정보
+       └─ user_subscriptions: plan=plus, provider=appstore, period_end=expires/유예/환불 시각, next_billing_at=NULL
+  ← 200 MySubscriptionResponse (앱은 이때만 finishTransaction) / 503 AppStoreUnavailableError(키 미설정·Apple 장애)
+
+Apple ── POST /api/billing/appstore/notifications {signedPayload}  무인증
+  └─ handle_appstore_notification()   본문은 originalTransactionId 만 꺼낸다(서명 미검증)
+       ├─ 원장에 없음 → Apple 미호출, 200 {}        (증폭 차단, 29장과 같은 규약)
+       └─ 있음 → 원장의 환경으로 get_subscription_status() 재조회 → 갱신 → 200 {} / 실패 503(Apple 재전송)
+```
+
+**결제 원장(`payments`)에 쓰지 않는다** — 대금·영수증·환불은 Apple 이 한다. 갱신 배치(`charge_due_subscriptions`)는 `provider='toss'` 만 청구하므로 IAP 구독은 대상이 아니다. 만료는 토스와 같이 `get_effective_plan` 이 **읽을 때 해석**한다.
+
+### 진료 리포트 기간 (`GET /api/me/report`) — 2026-10-06, DATA_MODEL 32-5
+
+`medical_report_service.resolve_report_range()` 가 실효 요금제(`get_user_plan`)·지난 진료일(`visit_service.recent_visit_dates`)로 기간을 정하고, 상한을 넘으면 시작일을 당긴다(400 이 아니다). 추이는 `health_service.get_trends(..., max_days=365)` — `/me/trends` 는 92일 그대로다. "오늘"은 앱과 같은 KST 날짜(`today_kst`)다.
+
 ### 환경 게이트 (`APP_ENV`, 2026-07-12)
 
 `main.py`가 `APP_ENV`(기본 `development`)를 읽어 두 가지를 분기합니다.
@@ -279,7 +309,7 @@ kcal/build-web.sh → npx expo export --platform web → kcalAI-model/webapp/
 | `diet_recommendations` | `id`, `user_id`(FK), `rec_date`, `meal_type`, `items`(JSONB), `excluded`(JSONB), `source` — `(user_id, rec_date, meal_type)` unique | 리비전 0006. 추천 캐시. 계약은 `docs/DATA_MODEL.md` 11장, 후보 생성·선정은 12·13장 (순수 규칙, `source` 항상 `rule`) |
 
 - 스키마 변경은 **Alembic 리비전으로만** 합니다 (`alembic/versions/`). `create_all`은 신규 테이블 생성용으로만 남아 있습니다.
-- 세션 토큰 검증은 `api/dependencies.py:get_current_user`가 담당합니다. `/api/predict`도 2026-07-12부터 Bearer 필수입니다 (무인증 공개 라우트는 Auth 카카오 4종·Apple 2종, `GET /api/plans`, 토스 웹훅뿐).
+- 세션 토큰 검증은 `api/dependencies.py:get_current_user`가 담당합니다. `/api/predict`도 2026-07-12부터 Bearer 필수입니다 (무인증 공개 라우트는 Auth 카카오 4종·Apple 2종·이메일 7종, `GET /api/plans`, 토스 웹훅, App Store 알림뿐).
 - `/api/me/health-profile`·`/api/me/conditions`·`/api/me/allergies`는 유효한 `sensitive_health` 동의(최신 행의 `revoked_at IS NULL` **이고 `version`이 현재 버전** — 2026-09-13)가 없으면 **403**을 반환합니다. 401(미로그인)과 구분됩니다. 판정·문구는 `consent_service.ensure_sensitive_consent`가 정하고, `SensitiveConsentRequiredError`(`ForbiddenError`)를 `main.py` 전역 핸들러가 403으로 바꿀 뿐입니다 (DATA_MODEL 7장).
 - 동의 없이 열리는 라우트(`/api/me/summary`·`trends`·`report`, `/api/guides`)는 막지 않고 **읽는 서비스**(`day_nutrition`·`medical_report_service`·`guide_service`)가 동의 상태를 확인해 민감정보 자리만 비웁니다. 민감정보를 읽는 새 경로는 라우트 게이트나 서비스 확인 중 하나를 반드시 거칩니다.
 
@@ -324,6 +354,7 @@ kcal.api.predict_api · kcal.services.toss_client · …  (get_logger 가 kcal. 
 | 시스템 | 용도 | 접점 |
 |--------|------|------|
 | PostgreSQL 16 | 사용자·인증코드·세션 | `database.py`, `docker-compose.yml` |
+| App Store Server API | 인앱 구독 거래·상태 조회 (운영 `api.storekit.itunes.apple.com` · 샌드박스 `api.storekit-sandbox.itunes.apple.com`) | `services/appstore_client.py` |
 | NCP 서버 | 운영 배포 대상 | `.github/workflows/deploy.yml` |
 
 > NCP Object Storage 연동은 2026-07-12에 제거됐습니다 (자원 중단 확정).

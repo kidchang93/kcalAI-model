@@ -21,6 +21,7 @@
 | 이미지 인식 | Google Gemini 비전 (`google-genai`, 단일 백엔드) — `services/gemini_vision_service.py` |
 | 영양 추정 | 식약처 DB 조회가 원칙. **미등록 라벨만** Gemini로 1회 추정 후 DB 동결 — `services/gemini_nutrition_service.py` (19장) |
 | Gemini 공용 어댑터 | 클라이언트·재시도·structured JSON 파싱 — `services/gemini_client.py` (비전·영양 추정이 공유) |
+| 유료 구독 | **App Store 인앱 구독(플러스)** — App Store Server API 조회(ES256 JWT, PyJWT·requests) `services/appstore_client.py` (32장). 토스 자동결제는 신규 판매를 닫고 원장·환불만 유지 (24·29장) |
 | 설정 로딩 | `python-dotenv`의 `load_dotenv()` |
 | 배포 | AWS Lightsail (Ubuntu, systemd + Caddy) — `deploy/DEPLOY.md` |
 | 테스트 | pytest (`venv/bin/python -m pytest`) |
@@ -96,7 +97,7 @@ open http://127.0.0.1:8000/docs
 | 린트 | 없음 |
 | 포맷 | 없음 |
 
-테스트는 Postgres에 붙습니다 (인증 로직의 tz-aware datetime 충실도). 각 테스트는 외부 트랜잭션 + SAVEPOINT 롤백으로 격리되어 대상 DB를 오염시키지 않습니다. 공유 DB의 기존 데이터와 번호가 겹칠 수 있으니, 깔끔한 격리가 필요하면 `TEST_DATABASE_URL`로 전용 DB를 지정하세요. 현재 **471건**(2026-10-06)이며 커버리지는 `test_email_auth.py`(**이메일 가입 — 코드 5회 대입 차단·닉네임 중복확인은 코드가 있어야 하고 시도 횟수를 쓴다·가입 여부가 응답으로 새지 않는다·로그인 잠금·재설정 시 세션 폐기·평문 SMTP 거부**, 21장), `test_diabetes_food_rules.py`(당뇨 — 첨가당 이름 축·등급 부재·단위, 16장), `test_meal_ordering.py`(하루 끼니 목록 순서 — 같은 시각이면 만든 순, 4장), `test_auth_service.py`·`test_auth_api.py`(카카오 로그인, 21장), `test_apple_auth.py`(**Apple 로그인 — 만료·aud·iss·서명 위조·alg none 이 전부 400**, 탈퇴 시 토큰 폐기, 21장), `test_subscription_service.py`(요금제·쿼터, 20장), `test_billing_service.py`(자동결제, 24장), `test_billing_webhook.py`(**웹훅 본문으로는 원장을 바꿀 수 없다**, 29장), `test_toss_client.py`(**토스 어댑터의 비밀값 미유출**, 2026-07-16), `test_payment_service.py`(결제 내역, 23장), `test_crypto.py`, `test_upload_validation.py`, `test_strip_metadata.py`(**Gemini 로 보내는 사진에서 EXIF·GPS 가 빠진다** — App Store 5.1.2(i)), `test_web_spa.py`, `test_day_nutrition.py`(하루 질환 축 — 병기별 기준선, 28장)입니다.
+테스트는 Postgres에 붙습니다 (인증 로직의 tz-aware datetime 충실도). 각 테스트는 외부 트랜잭션 + SAVEPOINT 롤백으로 격리되어 대상 DB를 오염시키지 않습니다. 공유 DB의 기존 데이터와 번호가 겹칠 수 있으니, 깔끔한 격리가 필요하면 `TEST_DATABASE_URL`로 전용 DB를 지정하세요. 현재 **530건**(2026-10-06)이며 커버리지는 `test_appstore_purchase.py`(**App Store 구독 — 남의 구독은 409·알림 본문은 믿지 않고 재조회로만 갱신·모르는 거래는 Apple 미호출·갱신 배치가 IAP 를 청구하지 않음·샌드박스 폴백·토큰 미유출**, 32장), `test_report_range.py`(리포트 기간 — 무료 14·플러스 365 자르기·기본 기간·구간 비교 402, 32-5), `test_email_auth.py`(**이메일 가입 — 코드 5회 대입 차단·닉네임 중복확인은 코드가 있어야 하고 시도 횟수를 쓴다·가입 여부가 응답으로 새지 않는다·로그인 잠금·재설정 시 세션 폐기·평문 SMTP 거부**, 21장), `test_diabetes_food_rules.py`(당뇨 — 첨가당 이름 축·등급 부재·단위, 16장), `test_meal_ordering.py`(하루 끼니 목록 순서 — 같은 시각이면 만든 순, 4장), `test_auth_service.py`·`test_auth_api.py`(카카오 로그인, 21장), `test_apple_auth.py`(**Apple 로그인 — 만료·aud·iss·서명 위조·alg none 이 전부 400**, 탈퇴 시 토큰 폐기, 21장), `test_subscription_service.py`(요금제·쿼터, 20장), `test_billing_service.py`(자동결제, 24장), `test_billing_webhook.py`(**웹훅 본문으로는 원장을 바꿀 수 없다**, 29장), `test_toss_client.py`(**토스 어댑터의 비밀값 미유출**, 2026-07-16), `test_payment_service.py`(결제 내역, 23장), `test_crypto.py`, `test_upload_validation.py`, `test_strip_metadata.py`(**Gemini 로 보내는 사진에서 EXIF·GPS 가 빠진다** — App Store 5.1.2(i)), `test_web_spa.py`, `test_day_nutrition.py`(하루 질환 축 — 병기별 기준선, 28장)입니다.
 | 카카오 설정 진단 | `venv/bin/python scripts/check_kakao_config.py` (읽기 전용. 로그인 실패 시 **원인 판정** — 허용 IP 미등록/키 종류 혼동) |
 | 수동 검증 | `uvicorn main:app` 기동 + `/docs` 200 + `curl` 요청 |
 
@@ -130,6 +131,8 @@ open http://127.0.0.1:8000/docs
 | `APPLE_TEAM_ID` | 아니오 | 없음 | 〃 — client secret(ES256 JWT)의 `iss` |
 | `APPLE_SIWA_KEY_ID` | 아니오 | 없음 | 〃 — Sign in with Apple 키 ID (client secret 헤더 `kid`) |
 | `APPLE_SIWA_PRIVATE_KEY_B64` | 아니오 | 없음 | 〃 — **비밀값.** `.p8` 내용을 base64 한 줄로(`base64 -i AuthKey_XXXX.p8 \| tr -d '\n'`). 키 **파일**로 두지 않는다 — 배포가 작업 트리를 `rsync --delete` 해서 지워진다(`.env`는 보존). **위 셋이 비면 Apple 로그인(토큰 검증)은 되지만 Apple 가입은 503** — 가입 때 받아 둔 refresh token 이 있어야 탈퇴 때 폐기할 수 있다. 운영 기동 검사에는 넣지 않았다. **운영 `.env`에 2026-10-05 넣음** |
+| `APPLE_IAP_KEY_ID`·`APPLE_IAP_ISSUER_ID` | 아니오 | 없음 | `services/appstore_client.py` — App Store Server API 인증 JWT(ES256)의 `kid`·`iss`. **인앱 결제 키**라 SIWA 키와 다르다 (32-3) |
+| `APPLE_IAP_PRIVATE_KEY_B64` | 아니오 | 없음 | 〃 — **비밀값.** 인앱 결제 `.p8` 을 base64 한 줄로. **셋이 비면 `/api/billing/appstore/verify`·알림 재조회가 503**(구매 확인 불가). 운영 기동 검사에는 넣지 않았다. **로그·응답에 미노출** |
 | `SMTP_HOST`·`SMTP_PORT`(465)·`SMTP_USERNAME`·`SMTP_PASSWORD`·`MAIL_FROM` | 아니오 | 없음 | `services/mail_client.py` — 이메일 가입·재설정 인증 메일. **`SMTP_PASSWORD`는 비밀값.** 운영은 네이버 메일 SMTP(`smtp.naver.com:465`, 네이버 메일 설정에서 POP3/SMTP 사용 켜기, 2단계 인증 계정은 애플리케이션 비밀번호). 465 외 포트는 **STARTTLS 필수**(평문은 localhost 만). 비면 이메일 가입·재설정만 **503** — 카카오·Apple 은 그대로라 운영 기동 검사에는 넣지 않았다. ⚠️ SMTP 제공자를 바꾸면 처리방침 5장(위탁)·6장(국외 이전)을 함께 고친다 |
 | `MAIL_DAILY_LIMIT` | 아니오 | `300` | `services/auth_service.py` — 발송 계정 전체의 지난 24시간 인증 메일 한도(넘으면 503). 제공자의 하루 발송 한도보다 낮게 |
 | `AIHUB_API_KEY` | — | — | `.env`에만 있고 **코드에서 미사용** |
@@ -138,19 +141,19 @@ open http://127.0.0.1:8000/docs
 
 ---
 
-## API 목록 (openapi.json 실측, 2026-10-06 기준 경로 **65개** · 오퍼레이션 88개)
+## API 목록 (openapi.json 실측, 2026-10-06 기준 경로 **69개** · 오퍼레이션 92개)
 
-계약 상세는 `docs/DATA_MODEL.md`가 정본입니다 (4장 CRUD, 7장 사용자 층, 9장 그룹·반려동물, 10장 메타, 11장 식단 추천, 15장 추이 집계, 16장 기록 경고 판정, 17장 그룹 라이프사이클, 18장 회원 탈퇴·펫 권장 칼로리, 23장 결제 내역, **24장 자동결제**, **29장 결제 웹훅**).
+계약 상세는 `docs/DATA_MODEL.md`가 정본입니다 (4장 CRUD, 7장 사용자 층, 9장 그룹·반려동물, 10장 메타, 11장 식단 추천, 15장 추이 집계, 16장 기록 경고 판정, 17장 그룹 라이프사이클, 18장 회원 탈퇴·펫 권장 칼로리, 23장 결제 내역, **24장 자동결제**, **29장 결제 웹훅**, 31장 진료 일정, **32장 플러스 — App Store 구독·리포트 기간·진료 이력**).
 
 | 도메인 | 라우트 | 정의 파일 |
 |--------|--------|-----------|
 | Auth | `GET /api/auth/kakao/start` · `GET /api/auth/kakao/callback` · `POST /api/auth/kakao/login` · `POST /api/auth/kakao/signup` · `POST /api/auth/apple/login` (미가입 **404** · 토큰 무효 400 · Apple 공개키 조회 실패 503) · `POST /api/auth/apple/signup` (SIWA 설정 없으면 503) · `POST /api/auth/email/signup/code`·`signup/verify`·`signup/nickname`(닉네임 중복확인 — 확인된 가입 코드 필요)·`signup`·`login`·`password-reset/code`·`password-reset` (이메일 — 코드 요청 **429**·발송 불가 **503**, 나머지 실패 400. 21장 '이메일 가입') · `POST /api/auth/logout` | `api/auth_api.py` |
-| Subscription | `GET /api/plans` (**무인증** — 가입 화면이 로그인 전에 그린다) · `GET·PUT /api/me/subscription` (**PUT은 무료(lite) 다운그레이드만** — 유료 전환은 400, 결제를 거쳐야 한다. 24장) | `api/subscription_api.py` |
+| Subscription | `GET /api/plans` (**무인증** — 가입 화면이 로그인 전에 그린다. 2026-10-06부터 lite·plus 둘) · `GET·PUT /api/me/subscription` (**PUT은 무료(lite) 다운그레이드만** — 유료 전환은 400, 결제를 거쳐야 한다. 24장. **GET 응답에 `provider`·`store_product_id`·`is_trial`·`app_account_token` 추가** — 32-3) | `api/subscription_api.py` |
 | Payments | `GET /api/payments` (내 결제 내역, 최신순) · `GET /api/payments/{id}` (본인 것만, 없거나 남의 것이면 **404** 존재 은닉) — **읽기 전용 조회**. 원장은 빌링 흐름(24장)이 쓴다 (DATA_MODEL 23장) | `api/payment_api.py` |
-| Billing | `POST /api/billing/checkout` (결제창 값 발급) · `POST /api/billing/confirm` (카드 등록 + 최초 청구 → 구독 활성화) · `POST /api/billing/cancel` (자동갱신 해지, 기간까지는 유료) — 셋 다 Bearer. **금액은 서버가 `plans.price_krw`에서 정한다**(요청에 금액 필드 없음). 실패: 400 · **502**(결제사 오류) · 503(키 미설정) (DATA_MODEL 24장) · `POST /api/billing/webhook` (**무인증** — 토스가 부른다. 본문에서 `orderId`만 읽고 상태는 서버가 토스에 다시 조회해 확인한다. 200=처리·재전송 불필요 / 502·503=판단 못 함·재전송 유도. DATA_MODEL **29장**) | `api/billing_api.py` |
+| Billing | `POST /api/billing/checkout` (결제창 값 발급) · `POST /api/billing/confirm` (카드 등록 + 최초 청구 → 구독 활성화) · `POST /api/billing/cancel` (자동갱신 해지, 기간까지는 유료) — 셋 다 Bearer. **금액은 서버가 `plans.price_krw`에서 정한다**(요청에 금액 필드 없음). 실패: 400 · **502**(결제사 오류) · 503(키 미설정) (DATA_MODEL 24장) · `POST /api/billing/webhook` (**무인증** — 토스가 부른다. 본문에서 `orderId`만 읽고 상태는 서버가 토스에 다시 조회해 확인한다. 200=처리·재전송 불필요 / 502·503=판단 못 함·재전송 유도. DATA_MODEL **29장**) · `POST /api/billing/appstore/verify` (Bearer, `{transaction_id}` 숫자 → `MySubscriptionResponse`. 서버가 Apple 에 다시 조회해 플러스를 붙인다 — 400 플러스 상품 아님·번들 불일치·거래 없음 / **409 다른 회원의 구독** / 503 인앱 결제 키 미설정·Apple 조회 실패. 32-3) · `POST /api/billing/appstore/notifications` (**무인증** — Apple 이 부른다. `{signedPayload}` 에서 거래 번호만 꺼내 원장에 있을 때만 재조회 → 200 `{}` / 503. 32-4) | `api/billing_api.py` |
 | Predict | `POST /api/predict` (Bearer 필수, `sensitive_health` 동의 불필요, 업로드 검증 413/415/400. 사진 1장에서 **서로 다른 음식들**을 각각 인식해 `foods`(label·score·portion_g, 최대 10)로 반환 — 한 음식의 후보 나열이 아니다, 22장. **요금제 일일 쿼터 선차감 → 초과 시 402**(쿼터는 사진당 1건, 음식 개수 무관), 인식 실패 시 환불. **Gemini 로는 EXIF(촬영 위치 등)를 지운 JPEG 만 보낸다** — `strip_metadata`, LEGAL_COMPLIANCE §6-7. 응답 후 **백그라운드로 인식된 전 음식 라벨을 영양 DB에 적재** — `prewarm_labels`, 19장) | `api/predict_api.py` |
 | Nutrition | `POST /api/nutrition/estimate` (Bearer만 — 질병·알러지 미사용이라 동의 불필요. 미등록 라벨은 LLM 1회 추정 후 `source='llm'`로 동결 적재, 실패 404 / 추정 백엔드 장애 503 — `docs/DATA_MODEL.md` 19장. **응답에 `serving_size_g: float\|None`**(1인분이 몇 g, ml은 밀도≈1로 g 취급, 미상 NULL)이 있어 앱이 사용자 입력 g으로 kcal을 재환산한다 — 리비전 0019, 앱 계약 변경) · `POST /api/nutrition/warnings` (Bearer + `sensitive_health` 동의 필수. **2026-07-22: 응답에 `notice: string|null` 추가**(`warnings` 배열 불변) + **고혈압 나트륨 등급** — 나트륨 `tier`는 고혈압·당뇨에만 매긴다(CKD는 병기별로 상한이 갈려 등급 없음). 1인분 경계는 지침 컷오프가 아닌 정책값이라 `notice` 고지가 필수다 — `docs/CHRONIC_NUTRITION_SOURCES.md` §6) | `api/nutrition_api.py` |
-| Health | `GET·PUT /api/me/profile` · `GET·PUT /api/me/goal` · `GET /api/me/summary` (**2026-07-23: `nutrients` 추가** — 질환 축 하루 누적. 나트륨만 `limit_mg`(상한 대비 게이지), 칼륨·인은 수치와 투석 참고치만. 해당 질환 없으면 null. `docs/DATA_MODEL.md` 28장) · `GET /api/me/trends`(**2026-07-25: `nutrients` 추가** — 질환 축 기간 추이) · `GET /api/me/report`(**진료 지참용 기간 리포트** — 질환·병기·축 요약·끼니 상세, 웹에서 인쇄/PDF) · `POST·GET /api/meals` · `PUT·DELETE /api/meals/{meal_id}` · `POST·GET /api/weights` | `api/health_api.py` |
+| Health | `GET·PUT /api/me/profile` · `GET·PUT /api/me/goal` · `GET /api/me/summary` (**2026-07-23: `nutrients` 추가** — 질환 축 하루 누적. 나트륨만 `limit_mg`(상한 대비 게이지), 칼륨·인은 수치와 투석 참고치만. 해당 질환 없으면 null. `docs/DATA_MODEL.md` 28장) · `GET /api/me/trends`(**2026-07-25: `nutrients` 추가** — 질환 축 기간 추이) · `GET /api/me/report`(**진료 지참용 기간 리포트** — 질환·병기·축 요약·끼니 상세, 웹에서 인쇄/PDF. **2026-10-06: `start_date`·`end_date` 생략 가능, 요금제 상한(무료 14 · 약관 1.4 이전 가입 30 · 플러스 365일)을 넘으면 시작일을 당겨 자르고 응답 `range` 에 근거를 싣는다** — 32-5) · `GET /api/me/report/compare`(지난 진료 구간과 이번 구간, **플러스 전용 — 무료 402 `resource=report_compare`**) · `POST·GET /api/meals` · `PUT·DELETE /api/meals/{meal_id}` · `POST·GET /api/weights` | `api/health_api.py` |
 | Consent | `GET·POST /api/me/consents` (**2026-09-13: 각 항목에 `is_current` 추가** — 버전이 낡은 민감정보 동의는 재동의 전까지 무효, 403 문구가 "동의 내용이 바뀌었어요"로 갈린다. DATA_MODEL 7장) · `POST /api/me/consents/revoke` · `GET·PUT /api/me/health-profile` (**2026-07-23: `ckd_stage` 추가** — 신장병 병기, 비암호화 기능 키. ⚠️ 이 PUT은 **전체 교체**라 병기만 바꿀 때도 혈액형·Rh를 함께 보낸다) · `GET·PUT /api/me/conditions` · `GET·PUT /api/me/allergies` | `api/consent_api.py` |
 | Groups | `POST·GET /api/groups` · `POST /api/groups/join` · `GET·DELETE /api/groups/{group_id}` · `DELETE /api/groups/{group_id}/members/me` · `DELETE /api/groups/{group_id}/members/{user_id}` · `POST /api/groups/{group_id}/pets` · `DELETE /api/groups/{group_id}/pets/{pet_id}` | `api/group_api.py` |
 | Pets | `POST·GET /api/pets` · `PUT·DELETE /api/pets/{pet_id}` · `POST·GET /api/pets/{pet_id}/feedings` | `api/pet_api.py` |
@@ -159,10 +162,11 @@ open http://127.0.0.1:8000/docs
 | Exercises | `GET /api/exercise-types` · `POST·GET /api/exercises` · `PUT·DELETE /api/exercises/{id}` · `GET /api/me/exercise-summary` · `GET·PUT /api/me/exercise-goal` (운동 기록·주간 목표 — 식단과 같은 규약: UTC 자정 경계·soft delete·404 존재 은닉. **플랫폼 중립** — 앱·웹 동일, 기기 연동은 `source`가 느는 입력 경로일 뿐. DATA_MODEL 25장, `docs/ACTIVITY_GUIDANCE.md`) | `api/exercise_api.py` |
 | Challenges | `POST·GET /api/groups/{id}/challenges` · `GET·DELETE /api/groups/{id}/challenges/{cid}` (그룹 운동 챌린지. ⚠️ **순위는 제3자 노출**이라 `group_activity_share` 동의자만 담긴다 — DATA_MODEL 26장) | `api/challenge_api.py` |
 | Labs | `GET /api/me/lab-panels` (입력 가능한 검사 항목·단위·정상범위 — **앱이 의학 용어와 수치를 갖지 않는다**) · `POST·GET /api/me/labs` · `DELETE /api/me/labs/{id}` (검사 수치. Bearer + **`sensitive_health` 동의 필수**. 같은 날 같은 항목은 **덮어쓴다**. 항목 정의는 `services/lab_panels.py`가 단일 진실 — 대한신장학회 e북 1권 I-20 p47–49 인용. ⚠️ **정상/비정상을 판정하지 않는다** — 범위를 나란히 놓을 뿐이다. `docs/CARE_LOOP.md` §4, 리비전 0027) |
+| Visits | `GET·PUT·DELETE /api/me/next-visit` (다음 진료 1건 — 31장. **예정일이 지난 행에 더 늦은 날짜가 오면 닫고 새 행**, 32-6) · `GET /api/me/visits` (지난 진료 목록 최신순 `{visits:[{visited_on, questions, outcome}]}` — 메모는 민감정보 동의가 없으면 null) | `api/visit_api.py` |
 | Coaching | `GET /api/me/coaching` (주간 조언 — **규칙 기반, LLM 없음**. Bearer + `sensitive_health` 동의 필수. DATA_MODEL 27장) | `api/coaching_api.py` |
 | Recommendations | `GET /api/recommendations` (Bearer + `sensitive_health` 동의 필수, 캐시 우선) | `api/recommendation_api.py` |
 
-Auth의 카카오 4종(`kakao/start`, `kakao/callback`, `kakao/login`, `kakao/signup`)·Apple 2종(`apple/login`, `apple/signup`)·이메일 7종(`email/**`)과 `GET /api/plans`·`POST /api/billing/webhook`을 제외한 **전 라우트**가 Bearer 인증(`api/dependencies.py`의 `get_current_user`)을 요구합니다 (`/api/auth/logout`도 Bearer 필요). `/api/predict`는 2026-07-12에 Bearer 필수로 전환했습니다. 같은 날 `/api/s3/*` 8개 라우트(NCP Object Storage 중단)와 레거시 `/api/gpt-predict`(HF LLM 서술 생성 — 앱 미사용, HF_TOKEN 하드의존)를 제거했습니다.
+Auth의 카카오 4종(`kakao/start`, `kakao/callback`, `kakao/login`, `kakao/signup`)·Apple 2종(`apple/login`, `apple/signup`)·이메일 7종(`email/**`)과 `GET /api/plans`·`POST /api/billing/webhook`·`POST /api/billing/appstore/notifications`를 제외한 **전 라우트**가 Bearer 인증(`api/dependencies.py`의 `get_current_user`)을 요구합니다 (`/api/auth/logout`도 Bearer 필요). `/api/predict`는 2026-07-12에 Bearer 필수로 전환했습니다. 같은 날 `/api/s3/*` 8개 라우트(NCP Object Storage 중단)와 레거시 `/api/gpt-predict`(HF LLM 서술 생성 — 앱 미사용, HF_TOKEN 하드의존)를 제거했습니다.
 
 ### 인증 = 카카오 로그인 + Apple 로그인(iOS) + 이메일 (2026-07-14 카카오, 2026-10-05 Apple, 2026-10-06 이메일 — 21장)
 
@@ -183,8 +187,11 @@ Auth의 카카오 4종(`kakao/start`, `kakao/callback`, `kakao/login`, `kakao/si
 | code | 가격 | 비전 LLM/일 | 그룹 추가 인원(본인 제외) | 반려동물 | 소유 그룹 |
 |---|---:|---:|---:|---:|---:|
 | `lite` | 무료 | 5 | 1 | 1 | 1 |
-| `pro` | 5,000원 | 30 | 5 | 5 | 3 |
-| `premium` | 10,000원 | 100 | 10 | 10 | 5 |
+| `plus` | 4,900원(월 표시값 — 청구는 Apple) | 30 | 5 | 5 | 3 |
+| ~~`pro`~~ | 5,000원 | 30 | 5 | 5 | 3 |
+| ~~`premium`~~ | 10,000원 | 100 | 10 | 10 | 5 |
+
+`pro`·`premium` 은 리비전 0031(2026-10-06)에 **판매 중단**(`is_active=false` — 지우지 않았다, 기존 구독 해석 `get_plan` 은 그대로). 지금 파는 유료는 **플러스 하나**이고 App Store 인앱 구독으로만 판다 (32장).
 
 Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장). 쿼터는 **KST 자정** 리셋(`timeutil.today_kst()`)이며, 그룹 자원의 한도는 **그룹 소유자의 요금제**로 판정합니다. 가입(`signup/verify`)은 이제 `agreed_terms`·`agreed_privacy`가 **필수**입니다.
 
@@ -233,7 +240,7 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 - **민감정보를 담는 테이블을 추가하면 `consent_service._destroy_sensitive_data`에도 반영한다.** 추천 캐시(`diet_recommendations` — `excluded`에 질병·알러지 라벨이 저장된다)처럼 **민감정보에서 파생된 값을 저장하는 테이블도 포함한다** (2026-09-13까지 빠져 있었다). 탈퇴 연쇄(`account_service.delete_account`)와 **서로 다른 목록**이라 한쪽만 고치면 동의를 철회해도 데이터가 남습니다 — 2026-08-19에 `lab_results`(리비전 0027)가 그 상태였습니다. 조회가 403으로 막히는 것과 파기는 다릅니다. 그리고 **앱의 철회 확인 문구**(`k-calAI-RN`의 `app/me/consents.tsx`)를 같은 작업 단위에서 고치세요 — 무엇을 잃는지 모르고 누르면 고지가 아닙니다. 규약은 `tests/test_consent_revoke_destroys.py`.
 - **민감정보(질병·병기·알러지·검사 수치·진료 메모)를 읽는 새 경로는 `require_sensitive_consent`를 걸거나, 서비스에서 동의 상태(`consent_service.has_active_consent`/`get_consent_state`)를 확인한다.** "동의가 없으면 데이터도 없다"에 기대지 마세요 — 버전이 낡은 동의는 데이터를 가진 채 무효라, 2026-09-13에 `/api/me/labs`는 403인데 같은 칼륨 수치가 `/api/me/report`에 200으로 실렸습니다. 동의 없이 열려야 하는 라우트(summary·trends·report·guides)는 막지 않고 서비스가 민감정보 자리만 비웁니다(응답 형태 불변). 규약은 DATA_MODEL 7장 "읽기도 동의 상태를 따른다", 테스트는 `tests/test_sensitive_read_gating.py`.
 - **결제 원장(`payments`)을 탈퇴 시 삭제하지 않는다.** 개인정보는 파기하되(제21조) 대금결제 기록은 보존해야 해서(전자상거래법 제6조), `user_id`만 NULL로 끊어 **익명화**합니다 (18장). 반대로 **`billing_keys`는 반드시 파기**합니다 — 거래 기록이 아니라 카드 재청구 자격증명입니다.
-- **결제 검증 없이 유료 플랜을 부여하지 않는다.** 유료 부여 경로는 **`POST /api/billing/confirm`(실제 청구 성공) 하나뿐**입니다. `PUT /api/me/subscription`은 2026-07-16부터 **무료(lite)로만** 바꿀 수 있고(유료 전환은 400), 가입(`POST /api/auth/kakao/signup`)의 `plan_code`도 **유료를 고르면 무료로 시작**합니다(의사표시로만 받음 — 가입을 400으로 막으면 서비스 진입 자체가 실패하므로). 새 부여 경로를 만들 때도 이 원칙을 지키세요.
+- **결제 검증 없이 유료 플랜을 부여하지 않는다.** 유료 부여 경로는 **`POST /api/billing/confirm`(실제 청구 성공)과 Apple 이 확인해 준 App Store 구독(`subscription_service.verify_appstore_purchase`·`handle_appstore_notification` — 둘 다 우리 키로 Apple 에 다시 물은 결과만 쓴다)뿐**입니다. `PUT /api/me/subscription`은 2026-07-16부터 **무료(lite)로만** 바꿀 수 있고(유료 전환은 400), 가입(`POST /api/auth/kakao/signup`)의 `plan_code`도 **유료를 고르면 무료로 시작**합니다(의사표시로만 받음 — 가입을 400으로 막으면 서비스 진입 자체가 실패하므로). 새 부여 경로를 만들 때도 이 원칙을 지키세요.
 - **`TOSS_SECRET_KEY`·`billingKey`를 로그·응답·에러 메시지에 남기지 않는다.** 시크릿 키는 이 값만으로 임의 청구가 가능하고, 빌링키는 그 회원 카드의 재청구 자격증명입니다. 로그에는 결제사 **코드**만 남깁니다(`code=REJECT_CARD_COMPANY`). 앱에 내려가는 키는 `client_key`(공개값)뿐입니다.
 - **클라이언트가 보낸 결제 금액을 신뢰하지 않는다.** 금액은 언제나 서버가 `plans.price_krw`에서 정합니다 — 요청 스키마에 금액 필드 자체를 두지 않습니다 (`BillingConfirmRequest`). 받으면 100원짜리 Premium이 팔립니다.
 - **토스 API를 테스트에서 실제로 호출하지 않는다.** 테스트 키라도 결제사 트래픽입니다. `toss_client`를 monkeypatch로 대체합니다 (`tests/test_billing_service.py`).
@@ -244,6 +251,7 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 - **만료 강등에서 `plan_code`를 덮어쓰지 않는다.** 만료는 **읽을 때 해석**합니다 (`get_effective_plan`). 행을 lite로 쓰면 갱신 배치가 청구 대상을 잃고 이력이 사라집니다 (24장).
 - **`PlanLimitError`를 `ValueError`(`BadRequestError`)로 바꾸지 않는다.** 400 핸들러나 라우트의 `except ValueError`에 잡혀 업그레이드 유도가 일반 입력 오류로 뭉개집니다.
 - **서비스의 사용자 오류는 `services/errors.py`의 `BadRequestError`(400)·`ForbiddenError`(403)·`NotFoundError`(404)로 던진다.** `main.py`의 전역 핸들러가 `{"detail": str(error)}`로 바꾸므로 라우트에 `try/except → HTTPException`을 반복하지 않습니다. 메시지는 그대로 사용자에게 보이니 한국어 사용자 문구만 담습니다. **내장 `ValueError`·`LookupError`는 매핑되지 않아 500이 됩니다**(버그를 4xx로 덮지 않기 위해서). 라우터만 올린 테스트 앱은 `main.add_service_error_handlers(app)`를 불러야 같은 응답이 나옵니다.
+- **App Store 구독 상태를 앱이 보낸 값이나 알림 본문에서 읽지 않는다.** `transaction_id`·`signedPayload` 는 조회 키일 뿐이고, 상태·기간·환불은 `appstore_client` 가 **인앱 결제 키로 인증한 재조회** 결과만 씁니다(JWS 는 그 응답 안에서만 서명 검증 없이 읽는다 — 32-3). 원장에 없는 거래의 알림은 **Apple 을 부르지 않고** 버리고(증폭 차단), 다른 회원에게 붙은 `originalTransactionId`·다른 회원의 `appAccountToken` 은 409 입니다. 그리고 **갱신 배치(`charge_due_subscriptions`)에서 `provider='toss'` 조건을 빼지 않는다** — 빠지면 Apple 이 갱신하는 구독을 우리가 청구하려다 빌링키가 없어 past_due 로 떨어뜨립니다(회귀 `tests/test_appstore_purchase.py`). `AUTH_CODE_PEPPER` 를 바꾸면 `app_account_token` 이 전부 바뀌어 기존 구독자의 복원이 409 가 된다는 점도 함께 봅니다.
 - **비전 쿼터를 Gemini 호출 성공 후에 차감하지 않는다.** 동시 요청이 전부 한도를 통과합니다. 선차감 → 실패 시 환불이 규약입니다.
 - **`estimate` 조회 경로에 LLM을 넣지 않는다.** LLM은 **미등록 라벨을 1회 적재할 때만** 씁니다. 조회는 항상 DB를 읽습니다 — 같은 음식이 요청마다 다른 kcal을 내면 안 됩니다 (`docs/DATA_MODEL.md` 13·19장).
 - **`source='llm'` 행에 유사도(trgm) 매칭을 허용하지 않는다.** 추정값에 유사도를 얹으면 한 번의 오추정이 이름이 비슷한 다른 음식들로 번집니다. llm 행은 **정확·공백무시 일치만** 반환합니다.
@@ -264,7 +272,7 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 | 새 엔드포인트/스키마 추가 | `docs/DESIGN.md` → `docs/ARCHITECTURE.md` |
 | 코드 작성 직전 | `docs/CODE_STYLE.md` |
 | **출시 전 법적 요건 (연령·환불·프라이버시 매니페스트·스토어 심사·AI기본법)** | **`docs/LEGAL_COMPLIANCE.md`** (2026-07-25 조사, 07-26 §6 스토어 요건 추가, **09-13 §7 AI기본법** — 생성형 AI 사전고지는 과태료 조항이고, 무엇이 AI이고 무엇이 아닌지 표가 있다. LLM으로 조언·판정을 만들면 고영향 AI 판단이 뒤집힌다. ⚠️ 법률 자문이 아니며 출시 전 전문가 검토 필요. 만 14세 미만 차단은 **형사처벌이 걸린 항목**이라 근거를 읽고 손댈 것) |
-| **인앱결제(IAP) — 스토어 출시** | `docs/DATA_MODEL.md` **30장** (착수 전 설계). **2026-09-29: 첫 출시는 결제 없이 나간다** — 토스 웹 결제는 닫고(앱 `isBillingSupported()`=false, 운영 기동 가드에서 토스 제외), 약관·처리방침 1.2에서 유료 조항을 뺐다. 가입 화면의 요금제 선택과 402의 '업그레이드' 문구도 없앴다. 유료화할 때 IAP로 이 자리를 채운다 |
+| **인앱결제(IAP) — 스토어 출시** | **`docs/DATA_MODEL.md` 32장**(2026-10-06 확정·서버 구현 — 플러스 하나, App Store 구독, 리포트 기간, 진료 이력. 30장을 대체한다). 아래는 그 전의 경과: `docs/DATA_MODEL.md` **30장** (착수 전 설계). **2026-09-29: 첫 출시는 결제 없이 나간다** — 토스 웹 결제는 닫고(앱 `isBillingSupported()`=false, 운영 기동 가드에서 토스 제외), 약관·처리방침 1.2에서 유료 조항을 뺐다. 가입 화면의 요금제 선택과 402의 '업그레이드' 문구도 없앴다. 유료화할 때 IAP로 이 자리를 채운다 |
 | 리뷰·머지 전 | `docs/REVIEW.md` |
 | 서브에이전트 실행 | `docs/SUBAGENTS.md` |
 | **누구를 위한 앱인가 · 방향 결정** | **`docs/PRODUCT_STRATEGY.md`** (2026-07-22 결정: 식이요법이 필요한 만성질환군. 신규 질환·기능을 붙이기 전에 읽는다) |

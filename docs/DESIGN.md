@@ -27,6 +27,8 @@
 | 카카오 **네이티브 SDK 대신 REST(서버 주도)** | `api/auth_api.py` (2026-07-14) | 커스텀 스킴은 Redirect URI 등록 불가 + `client_secret` 필수 → 토큰 교환은 서버에서. 앱·웹 빌드가 같은 코드로 동작 |
 | 콜백이 **1회용 연동 코드**를 발급 | `models/auth_model.py:KakaoLinkCode` (2026-07-14) | 카카오 인가 코드는 1회용인데 신규 회원은 동의·요금제 선택을 거쳐야 한다 |
 | **Sign in with Apple** 추가 — 카카오와 별개 회원, 이메일 미수집 | `services/apple_client.py` (2026-10-05) | App Store 4.8: 소셜 로그인만 있으면 대안 로그인 필수. iOS 가 identity token 을 받아 오므로 서버는 서명만 검증한다(연동 코드 없음). 탈퇴 때 폐기하려고 가입 시 refresh token 을 받아 암호화 저장. 계정 병합은 하지 않는다 — 21장 |
+| 유료는 **App Store 인앱 구독(플러스) 하나**, 서버가 Apple 에 재조회해 확인 — JWS 서명은 검증하지 않는다 | `services/appstore_client.py`·`subscription_service.verify_appstore_purchase` (2026-10-06) | 앱이 준 transactionId·알림 본문은 조회 키일 뿐이고, 우리 키로 인증한 HTTPS 응답이라 출처가 이미 확인됐다 — x5c 검증 의존성을 들일 이유가 없다. 남의 구독은 `appAccountToken`·`originalTransactionId` UNIQUE 로 409 (DATA_MODEL 32-3) |
+| 리포트 기간 상한을 **서버가** 건다 (넘으면 400 이 아니라 잘라서) | `medical_report_service.resolve_report_range` (2026-10-06) | 앱만 막으면 웹 인쇄로 샌다. 무료 사용자는 오류가 아니라 2주 리포트를 받아야 한다 (32-5) |
 | 그룹 정원을 **소유자 요금제**로 판정 | `services/subscription_service.py` (2026-07-14) | 정원을 결제한 사람은 소유자다. 무료 회원도 Premium 그룹에는 들어올 수 있다 |
 
 ## 의도적으로 하지 않은 것

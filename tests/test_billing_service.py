@@ -68,6 +68,14 @@ class _TossStub:
         )
 
 
+@pytest.fixture(autouse=True)
+def _toss_plans_on_sale(db):
+    """토스 경로 회귀는 판매 중인 유료 플랜 **둘**(업그레이드 경로)이 필요하다. 0031 이 pro·premium 을
+    내렸으므로(유료는 App Store 플러스 하나) 이 파일 안에서만 다시 연다 — 테스트 트랜잭션과 함께 롤백된다.
+    """
+    db.execute(text("UPDATE plans SET is_active = true WHERE code IN ('pro', 'premium')"))
+
+
 @pytest.fixture
 def toss(monkeypatch) -> _TossStub:
     stub = _TossStub()

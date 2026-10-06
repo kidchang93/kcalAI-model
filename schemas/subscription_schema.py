@@ -45,6 +45,14 @@ class MySubscriptionResponse(BaseModel):
     current_period_end: datetime | None = None
     next_billing_at: datetime | None = None
     cancel_at_period_end: bool = False
+    # ---- App Store 구독 (32-3). 기존 필드는 그대로 두고 덧붙였다. ----
+    # toss | appstore | null(무료). 앱은 appstore 일 때 해지·변경을 App Store 구독 화면으로 보낸다.
+    provider: str | None = None
+    store_product_id: str | None = None
+    # 7일 무료 체험 중인가. 체험 종료일은 current_period_end 다.
+    is_trial: bool = False
+    # StoreKit 구매에 실어 보낼 회원별 고정 UUID. 다른 계정의 '구매 복원'을 막는다(409).
+    app_account_token: str
 
 
 class PlanLimitErrorResponse(BaseModel):

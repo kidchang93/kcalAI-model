@@ -73,7 +73,8 @@ curl -X POST http://127.0.0.1:8000/api/auth/signup/request-code \
 - [ ] 예외 메시지에 스택트레이스·라이브러리명·SQL이 포함되지 않는가.
 - [ ] `CORS_ALLOW_ORIGINS`가 운영 환경에서 와일드카드가 아닌가. `allow_origin_regex`가 localhost를 허용하고 `allow_credentials=True`입니다.
 - [ ] 새 비밀값이 `.env.example`에 **빈 값**으로만 들어갔는가.
-- [ ] 새 엔드포인트가 인증 없이 공개되어도 되는가. (무인증 공개는 Auth 카카오 4종·Apple 2종(`/auth/apple/login`·`signup`)·이메일 7종(`/auth/email/**` — 코드 요청은 재요청 제한·계정 하루 한도로, 닉네임 중복확인은 확인된 코드로 남용을 막는다), `GET /api/plans`, `POST /api/billing/webhook`뿐입니다. 2026-07-12부터 `/api/predict`·`/api/gpt-predict`도 Bearer 필수, `/api/s3/*`는 제거됨.)
+- [ ] 결제·구독 상태를 바꾸는 코드가 **클라이언트·알림 본문의 상태값이 아니라 우리 키로 다시 조회한 결과**만 쓰는가 (토스 29장, App Store 32-3·32-4). 갱신 배치에 `provider='toss'` 조건이 살아 있는가.
+- [ ] 새 엔드포인트가 인증 없이 공개되어도 되는가. (무인증 공개는 Auth 카카오 4종·Apple 2종(`/auth/apple/login`·`signup`)·이메일 7종(`/auth/email/**` — 코드 요청은 재요청 제한·계정 하루 한도로, 닉네임 중복확인은 확인된 코드로 남용을 막는다), `GET /api/plans`, `POST /api/billing/webhook`, `POST /api/billing/appstore/notifications`(Apple 이 부른다 — 본문은 거래 번호만 쓰고 원장에 있을 때만 재조회한다, DATA_MODEL 32-4)뿐입니다. 2026-07-12부터 `/api/predict`·`/api/gpt-predict`도 Bearer 필수, `/api/s3/*`는 제거됨.)
 
 ### 추론·모델
 

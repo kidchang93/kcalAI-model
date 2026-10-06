@@ -50,6 +50,18 @@ class UserSubscription(Base):
     cancel_at_period_end: Mapped[bool] = mapped_column(
         Boolean, server_default="false", nullable=False
     )
+    # ---- 결제 경로 (리비전 0031, DATA_MODEL 32-2) ----
+    # toss | appstore | NULL(무료). **갱신 배치는 toss 만 청구한다** — IAP 는 Apple 이 갱신하므로
+    # 우리가 청구하려 들면 빌링키가 없어 멀쩡한 구독을 past_due 로 떨어뜨린다.
+    provider: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # 한 Apple 구독은 한 회원에게만 붙는다(UNIQUE). 알림이 오면 이 값으로 회원을 찾는다.
+    store_original_transaction_id: Mapped[str | None] = mapped_column(
+        String(64), unique=True, nullable=True
+    )
+    store_product_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Production | Sandbox — 알림이 오면 이 환경으로 다시 조회한다(본문의 환경을 믿지 않는다).
+    store_environment: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    is_trial: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
     started_at: Mapped[CreatedAt]
     updated_at: Mapped[UpdatedAt]
 

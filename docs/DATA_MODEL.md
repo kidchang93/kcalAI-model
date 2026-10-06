@@ -2367,3 +2367,126 @@ PUT /api/me/next-visit  {"questions": ""}                    → questions null 
 
 ⚠️ `account_service.delete_account`에 추가했고 `tests/test_account_service.py`의 handled
 집합에도 넣었다. 빠뜨리면 그 사용자는 영구히 탈퇴할 수 없다.
+
+---
+
+## 32. 플러스 — App Store 인앱 구독과 진료 리포트 기간 (2026-10-06 확정 — 리비전 0031)
+
+> 30장(착수 전 조사)을 이 장이 대체한다. 화면은 화면 기획서 캔버스 P-01~P-04·Paywall·MyPlan·ReportFree·ReportPlus.
+> 사용자 결정(2026-10-06): 유료는 **플러스 하나** · 월 4,900원/연 39,000원 · **7일 무료 체험** · **iOS 만**(Android 결제는 나중)
+> · 무료 리포트는 **모두 2주**(출시 전이라 기존 회원은 운영자·관계자뿐 — 30일을 남기는 예외를 두지 않는다, 사용자 결정) · 웹에서는 팔지 않는다(앱에서 산 이용권이 웹에서도 열림, 3.1.3(b)).
+
+### 32-1. 무엇이 갈리나 — 리포트 기간과 사진 횟수뿐이다
+
+| | 무료 | 플러스 |
+|---|---|---|
+| 기록·경고·오늘 영양·진료 준비·인쇄 | 그대로 | 그대로 |
+| 진료 리포트 기간 | **최근 14일** | **최대 365일**, 기본은 **지난 진료일부터 오늘** |
+| 지난 진료 구간과 나란히 (`/api/me/report/compare`) | 402 | 열림 |
+| 검사 수치와 식단 겹쳐 보기 | 화면이 막는다(데이터는 리포트에 이미 있다 — 보안 문제가 아니다) | 열림 |
+| 사진 인식 | 하루 5회 | 하루 30회 |
+
+**기간 제한은 서버가 건다** — 앱만 막으면 웹 인쇄로 샌다. 기록 자체는 무료든 아니든 지워지지 않는다(기록은 볼모가 아니다).
+
+### 32-2. 요금제·구독 테이블 (리비전 0031)
+
+- `plans` 에 `plus` 행: 라벨 '플러스', `price_krw` 4900(월 기준 표시값 — 실제 청구는 Apple), `daily_vision_quota` 30, 그룹 한도는 pro 와 같게. `pro`·`premium` 은 `is_active=false`(숨김 — 지우지 않는다, 유료 구독자 0명).
+- `user_subscriptions` 에 컬럼 추가:
+  - `provider` (`toss`|`appstore`|NULL=무료) — **갱신 배치 `charge_due_subscriptions` 는 `provider='toss'` 만 청구한다.** 이게 없으면 IAP 구독을 우리가 청구하려다 빌링키가 없어 `past_due` 로 떨어뜨린다(30장의 '가장 위험한 지점'). 기존 행은 유료 요금제(pro·premium)이면서 청구 예정·기간 종료가 있으면 `toss` 로 채운다(32-9).
+  - `store_original_transaction_id` (UNIQUE, NULL 허용) — 한 Apple 구독은 한 회원에게만 붙는다.
+  - `store_product_id`, `store_environment`(`Production`|`Sandbox`), `is_trial`(bool, 기본 false).
+- IAP 구독의 `current_period_end` = Apple `expiresDate`(유예 기간이면 `gracePeriodExpiresDate` 중 늦은 쪽), 환불·취소(`revocationDate`)면 그 시각. `next_billing_at` 은 **NULL**(우리가 청구하지 않는다). `cancel_at_period_end` = 자동 갱신 꺼짐(`autoRenewStatus=0`). 만료는 지금처럼 **읽을 때 해석**한다(`get_effective_plan`) — 행을 lite 로 덮지 않는다.
+
+### 32-3. 구매 확인 — 앱이 준 것은 조회 키일 뿐이다
+
+```
+앱  GET /api/me/subscription → app_account_token (회원마다 고정 UUID)
+앱  StoreKit 구매(sku, appAccountToken=위 값) → transactionId
+앱  POST /api/billing/appstore/verify {transaction_id}
+서버  App Store Server API GET /inApps/v1/transactions/{id}   (운영 → 4040010 이면 샌드박스로 다시)
+     → bundleId·productId(플러스 상품 2개)·appAccountToken==이 회원 토큰·만료 확인
+     → GET /inApps/v1/subscriptions/{originalTransactionId} 로 갱신 상태(autoRenewStatus·유예)
+     → user_subscriptions upsert (plan=plus, provider=appstore)
+앱  서버 200 을 받은 뒤에만 finishTransaction
+```
+
+- **서버 인증**: 인앱 결제 키(ES256, `APPLE_IAP_KEY_ID`·`APPLE_IAP_ISSUER_ID`·`APPLE_IAP_PRIVATE_KEY_B64`) JWT(`aud=appstoreconnect-v1`, `bid`=번들 ID). Apple 응답은 우리 키로 인증한 HTTPS 조회 결과라 그 안의 JWS 페이로드를 그대로 읽는다 — **서명 검증 라이브러리를 들이지 않는다**(본문을 믿는 경로가 없으므로).
+- **`app_account_token`** = HMAC(`AUTH_CODE_PEPPER`, `appstore:{user_id}`) 앞 16바이트로 만든 UUID. 같은 Apple ID 로 다른 회원 계정에서 '구매 복원'을 눌러 남의 구독을 가져가는 것을 막는다 → **409** "다른 계정에서 구독한 이용권이에요. 처음 구독한 계정으로 로그인해주세요." 같은 `originalTransactionId` 가 이미 다른 회원에게 붙어 있어도 409.
+- **샌드박스**: App Review 는 운영 서버에 샌드박스 구매로 들어온다. 운영→샌드박스 순서로 조회하지 않으면 '구매가 안 된다'로 반려된다(가장 흔한 IAP 반려 사유).
+- 실패: 400(플러스 상품이 아님·번들 불일치·거래 없음) · 409(위) · 503(Apple 조회 실패·키 미설정). **결제 원장(`payments`)에 행을 쓰지 않는다** — 대금 수령·영수증·환불은 Apple 이 하고 기록도 Apple 이 갖는다(토스 원장은 토스 전용으로 남긴다).
+
+### 32-4. 갱신·해지·환불 알림 — 본문을 믿지 않는다 (29장 규약 그대로)
+
+`POST /api/billing/appstore/notifications` (**무인증** — Apple 이 부른다, App Store Server Notifications V2). 본문 `signedPayload` 를 **검증 없이 디코드**해 `originalTransactionId` 만 꺼내고, **우리 원장(user_subscriptions)에 없는 거래면 조회 없이 버린다**(증폭 통로 차단, 29장). 있으면 `GET /inApps/v1/subscriptions/{originalTransactionId}` 를 다시 불러 그 결과로만 갱신한다. 200 = 처리·무시 / 503 = Apple 조회 실패(Apple 이 재전송). ASC 앱 정보의 서버 알림 URL(운영·샌드박스 둘 다)에 `https://api.kcalai.link/api/billing/appstore/notifications` 를 넣는다.
+
+### 32-5. 진료 리포트 — 기간을 서버가 정한다
+
+`GET /api/me/report` 의 `start_date`·`end_date` 를 **생략 가능**으로 바꾼다(앱은 보통 생략하고 서버 기본을 쓴다).
+
+- 상한: 무료 14일 · 플러스 365일. 요청 기간이 상한보다 길면 **`start_date` 를 당겨 자른다**(400 이 아니다 — 무료 사용자가 오류가 아니라 2주 리포트를 받아야 한다).
+- 기본 기간: 플러스 = **지난 진료일부터 오늘**(지난 진료가 없거나 365일보다 오래면 최근 90일), 무료 = 상한만큼 최근.
+- 응답에 `range` 추가: `{plan: 'free'|'plus', max_days, last_visit_on: date|null, clamped: bool, default_start_date}`. 기존 필드 불변.
+- 추이 계산(`get_trends`)의 92일 상한은 리포트 경로에서만 365일까지 연다.
+
+`GET /api/me/report/compare` (플러스 전용, 무료면 402 `PlanLimitError(resource='report_compare')`): 지난 진료 구간(직전 진료일 → 지난 진료일 전날)과 이번 구간(지난 진료일 → 오늘)을 같은 모양으로 준다.
+```
+{ current: Interval, previous: Interval | null }
+Interval = { start_date, end_date, total_days, recorded_days, kcal_daily_avg: number|null,
+             nutrients: [{ nutrient, label, unit, daily_avg: number|null, measured_days }] }
+```
+**판정하지 않는다** — '좋아졌다·나빠졌다'를 서버도 앱도 말하지 않는다(색·화살표 금지). 지난 진료가 하나뿐이면 `previous=null`(앱이 비교 표를 숨긴다).
+
+### 32-6. 지난 진료 이력 — 덮어쓰지 않고 남긴다
+
+`care_visits` 는 지금까지 '다음 진료' 한 행을 덮어썼다. 앞으로 **열린 예정 행의 날짜가 오늘 이전이고, 새 날짜가 들어오면** 그 행을 `visited_on = scheduled_on` 으로 닫고 **새 행**을 만든다(메모·질문은 닫힌 행에 남는다 — 그날 물어본 것·들은 것이 그 진료의 기록이다). 날짜 없이 메모만 오면 지금처럼 열린 행에 쓴다.
+- 지난 진료일 = `visited_on` 최댓값과, 열린 행의 `scheduled_on` 이 오늘 이전이면 그 날 중 늦은 쪽. 직전 진료일 = 그 이전 것.
+- `GET /api/me/visits` — 지난 진료 목록(최신순, `visited_on`·`questions`·`outcome`). 메모는 `sensitive_health` 동의가 없으면 null(next-visit 과 같은 규칙).
+- 동의 철회 파기(`_destroy_sensitive_data`)는 이미 user_id 전체 행의 메모를 지운다 — 행이 여럿이어도 된다.
+
+### 32-7. 앱 (`k-calAI-RN`)
+
+- `expo-iap`(네이티브 — 새 빌드 필요). 상품 ID `com.kcalai.kcalairn.plus.monthly`·`com.kcalai.kcalairn.plus.yearly`. **iOS 에서만 판다** — 웹·Android 는 구매 버튼 없이 상태만 보인다(Android 는 Play 결제 정책상 다른 결제 안내 금지 → '준비 중').
+- `/plus`(Paywall): 혜택 4가지·무료로 계속 쓰는 것·연간 기본 선택·7일 무료로 시작·**3.1.2 고지**(가격·갱신 주기·해지 방법·약관·처리방침·구매 복원). 가격은 **스토어가 준 현지화 가격 문자열**을 쓴다(하드코딩 금지 — 심사관 스토어프런트가 다를 수 있다).
+- `/plan`(이용권): 지금 이용권·체험 종료일·다음 결제일·구독 해지·변경(App Store 구독 화면 열기 — 앱 안에서 해지하지 않는다)·구매 복원·'끝나면' 안내.
+- 리포트: 무료(P-01 — 고정 기간, 지난 진료부터 남긴 날 수, 범위 그림, 기록 안심, 플러스로) / 플러스(P-03 — 기간 바꾸기, 지난 구간과 나란히, 검사 수치와 식단 겹쳐 보기). 칼륨·인은 상한선 없이 막대만, 나트륨만 상한 점선.
+
+### 32-8. 운영 전 체크
+
+인앱 결제 키 발급·운영 `.env` · ASC 구독 그룹/상품/가격/체험/심사 스크린샷 · 서버 알림 URL · 개인정보 라벨 '구매 내역'·매니페스트 `PurchaseHistory` · 약관·처리방침 **1.4**(유료 조항 + 판매자 교체, 출시 전이라 공지 기간 없이 시행 — 사용자 결정)
+
+### 32-9. 구현하며 정한 세부 (2026-10-06 — 서버 구현 완료, 리비전 0031)
+
+위 사양을 바꾸지 않고 **비어 있던 자리**를 채운 것들이다. 계약(경로·필드)은 위 그대로다.
+
+**API 최종 모양**
+
+| 메서드 | 경로 | 요청 | 응답 / 실패 |
+|---|---|---|---|
+| `POST` | `/api/billing/appstore/verify` | Bearer · `{transaction_id}` (숫자 1~40자 — Apple URL 경로에 실리므로 그 밖은 422) | `MySubscriptionResponse` / 400 · 401 · **409** · 503 |
+| `POST` | `/api/billing/appstore/notifications` | 무인증 · `{signedPayload}` (전부 선택값 — 모르는 모양도 422 가 아니다) | 200 `{}` (처리·무시 구분 없이 같은 본문) / 503 |
+| `GET` | `/api/me/subscription` | — | 기존 필드 + `provider`(toss\|appstore\|null) · `store_product_id` · `is_trial` · `app_account_token` |
+| `GET` | `/api/me/report` | `start_date?`·`end_date?` | 기존 필드 + `range{plan, max_days, last_visit_on, clamped, default_start_date}` / 400(역순만) |
+| `GET` | `/api/me/report/compare` | — | `{current, previous}` (32-5 모양) / 402 `resource=report_compare`, `limit=0` |
+| `GET` | `/api/me/visits` | — | `{visits: [{visited_on, questions, outcome}]}` 최신순 (메모는 동의 없으면 null) |
+
+**구독 (32-2·32-3)**
+
+- **백필**: `plan_code IN ('pro','premium')` 이면서 `next_billing_at IS NOT NULL` **또는 `current_period_end IS NOT NULL`** 이면 `toss`. 해지(canceled)·재시도 포기(past_due) 토스 구독은 next_billing_at 이 이미 NULL 이라 기간 종료도 본다. **lite 행은 청구 흔적이 남아 있어도 NULL** — 토스 테스트 결제를 해 봤다가 무료로 돌아간 계정이 '토스 구독자'로 잡혀 이용권 화면에 옛 토스 화면이 뜨는 것을 막는다(그 행의 낡은 next_billing_at 은 배치가 provider 로 거르므로 청구되지 않는다).
+- 토스 `confirm`·웹훅 `DONE` 복구(`_activate_subscription`)가 이제 `provider='toss'` 를 쓴다 — 안 쓰면 배치 필터 때문에 새 토스 구독이 갱신되지 않는다. `PUT /me/subscription` lite 는 `provider` 를 NULL 로 되돌리되 App Store 거래 식별자는 남긴다(Apple 쪽 구독은 App Store 에서 해지해야 끝나고, 알림이 오면 그 거래로 회원을 다시 찾는다).
+- **`appAccountToken` 이 비어 있는 거래는 통과**시킨다 — App Store 프로모션·오퍼 코드처럼 앱 밖에서 시작한 구매에는 토큰이 없다. 그때 소유권은 `originalTransactionId` UNIQUE(먼저 확인한 회원)가 지킨다. 토큰이 **있고 다르면** 409.
+- 동시에 두 회원이 같은 구독을 확인하면 UNIQUE 위반 → 롤백 → 409.
+- Apple `status` → 우리 `status`: 1 → active(단 `autoRenewStatus=0` 이면 **canceled** — 토스 해지와 같은 모양, 기간까지는 플러스) · 2 만료 → canceled · 3 재시도·4 유예 → past_due · 5 환불 → canceled. 만료는 여전히 기간으로 읽을 때 해석한다.
+- **만료 시각을 모르는 응답은 지금 끝난 것으로 둔다** — `current_period_end` 가 NULL 인 유료 구독은 만료되지 않는 것으로 해석되므로(24장), 모른다고 무기한 플러스를 줄 수 없다.
+- `is_trial` = `offerType == 1` 이고 `offerDiscountType` 이 `FREE_TRIAL`(필드가 없던 옛 페이로드도 체험 — 우리 도입 오퍼는 7일 무료 하나다).
+- 거래는 있는데 구독 상태 조회가 비면 확인한 거래만으로 기간을 정한다(자동갱신 여부는 모름 → `cancel_at_period_end=false`).
+- 가입 요청의 `plan_code` 가 **판매 중단된 유료 코드**(pro·premium)여도 400 이 아니라 lite 로 시작한다 — 옛 앱의 가입을 막지 않는다. 없는 코드만 400.
+- ⚠️ `app_account_token` 은 `AUTH_CODE_PEPPER` 에서 나온다. **pepper 를 바꾸면 기존 구독자의 '구매 복원'이 409** 가 된다.
+- 어댑터는 Apple 의 200·400·404 만 "답이 정해진 응답"으로 보고(400·404 → 거래 없음), 401(우리 키 오류)·429·5xx·네트워크 실패는 503 이다. 로그에는 Apple `errorCode` 와 예외 타입명만 남고 JWT·키는 남지 않는다(체인도 끊는다).
+
+**알림 (32-4)**: 본문에서 꺼내는 것은 `data.signedTransactionInfo` 안의 `originalTransactionId` 하나다. 재조회 환경은 본문의 `environment` 가 아니라 **원장의 `store_environment`**(verify 때 Apple 이 답한 환경)다. 원장에 있는데 Apple 이 모르는 거래는 200 으로 닫고 원장을 건드리지 않는다(토스 404 와 같은 판단).
+
+**리포트 (32-5)**: "오늘"은 앱과 같은 **KST 날짜**다. 무료 회원에게도 `last_visit_on` 을 준다(무료 화면이 '지난 진료부터 남긴 날 수'를 그린다) — 기본 기간은 상한만큼 최근 그대로다. 플러스 기본은 지난 진료일부터, 지난 진료가 없거나 `(오늘 - 지난 진료) + 1 > 365` 면 최근 90일. 무료는 가입일과 상관없이 14일이다(기존 회원 예외 없음 — 출시 전). 실효 요금제가 유료면 `plus`(만료된 플러스는 free). compare 는 지난 진료가 하나도 없으면 `current` = 최근 90일·`previous` = null, 한 구간이 365일을 넘으면 그 구간의 시작을 당긴다. `nutrients` 는 질환 축이 없거나 동의가 없으면 **빈 목록**, `daily_avg` 는 리포트의 `average_mg`(기록한 날만 나눈 평균), `measured_days` 는 그 축의 실측을 하나라도 찾은 날 수, `unit` 은 `mg`.
+
+**진료 이력 (32-6)**: 닫는 조건은 "열린 행의 날짜가 오늘 이전" **이고 새 날짜가 그보다 늦을 때**다 — 같거나 이른 날짜는 지난 날짜를 고치는 것이라 덮어쓴다(닫으면 오타 하나가 없던 진료를 기록에 남긴다). 닫는 요청에 같이 온 `outcome`(들은 것)은 **닫힌 행**에, `questions`(물어볼 것)는 새 행에 간다 — 앱 편집기가 날짜와 들은 것을 함께 보내기 때문이다. 오늘 잡힌 진료는 아직 '지난' 진료가 아니다. `/me/visits` 와 '지난 진료일'은 같은 함수(`visit_service.list_past_visits`)를 쓰고, **닫히지 않은 채 날짜가 지난 예정 행도 포함**한다(`visited_on` 자리에 그 예정일) — 빼면 다음 날짜를 아직 안 넣은 사람의 지난 진료일이 한 바퀴 밀린다. `DELETE /me/next-visit` 은 지금처럼 열린 행만 지운다.
+
+**테스트**: `tests/test_appstore_purchase.py` 35건(Apple 미호출 — 서비스는 조회 함수, 어댑터는 `requests.get` 을 대체) · `tests/test_report_range.py` 19건 · `tests/test_visit_service.py` +8건. 기존 `test_billing_service.py` 는 토스 경로 회귀에 판매 중인 유료 플랜 둘이 필요해 파일 안에서만 pro·premium 을 다시 연다(트랜잭션 롤백). 전체 532건 — 로컬 3.13·운영 3.10 둘 다 통과.

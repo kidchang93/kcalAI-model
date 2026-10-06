@@ -3,6 +3,9 @@ from fastapi import APIRouter, HTTPException, status
 from api.dependencies import DB, CurrentUser
 from log_utils import get_logger
 from schemas.billing_schema import (
+    AppStoreNotification,
+    AppStoreNotificationAck,
+    AppStoreVerifyRequest,
     BillingCheckoutRequest,
     BillingCheckoutResponse,
     BillingConfirmRequest,
@@ -11,8 +14,9 @@ from schemas.billing_schema import (
 )
 from schemas.common_schema import ErrorResponse
 from schemas.subscription_schema import MySubscriptionResponse
-from services import billing_service
-from services.subscription_service import my_subscription_view
+from services import billing_service, subscription_service
+from services.appstore_client import AppStoreUnavailableError
+from services.subscription_service import AppStoreConflictError, my_subscription_view
 from services.toss_client import TossError, TossNotConfiguredError
 
 router = APIRouter()
@@ -23,6 +27,8 @@ logger = get_logger(__name__)
 #   BadRequestError         → 400  서비스가 만든 한국어 사용자 메시지 (main.py 전역 핸들러)
 #   TossNotConfiguredError  → 503  결제 키 미설정 (장애가 아니라 미구성)
 #   TossError               → 502  결제사 오류. TossError.message 는 우리가 통제하는 한국어 문구다
+#   AppStoreConflictError   → 409  다른 회원의 App Store 구독 (32-3)
+#   AppStoreUnavailableError → 503 인앱 결제 키 미설정·Apple 조회 실패 — 메시지는 우리 문구다
 _NOT_CONFIGURED_DETAIL = "결제 서비스를 준비 중입니다. 잠시 후 다시 시도해주세요."
 
 
@@ -129,3 +135,51 @@ def cancel_billing(current_user: CurrentUser, db: DB):
     # 해지는 우리 DB 상태 변경뿐이라 토스를 부르지 않는다 — 다음 청구를 하지 않는 것이 곧 해지다.
     billing_service.cancel_billing(db, current_user.id)
     return my_subscription_view(db, current_user.id)
+
+
+@router.post(
+    "/billing/appstore/verify",
+    response_model=MySubscriptionResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+def verify_appstore_purchase(request: AppStoreVerifyRequest, current_user: CurrentUser, db: DB):
+    """StoreKit 구매 확인 (DATA_MODEL.md 32-3). 앱은 **200 을 받은 뒤에만** finishTransaction 한다."""
+    try:
+        subscription_service.verify_appstore_purchase(db, current_user.id, request.transaction_id)
+    except AppStoreConflictError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except AppStoreUnavailableError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
+        ) from error
+
+    return my_subscription_view(db, current_user.id)
+
+
+@router.post(
+    "/billing/appstore/notifications",
+    response_model=AppStoreNotificationAck,
+    responses={503: {"model": ErrorResponse}},
+)
+def receive_appstore_notification(request: AppStoreNotification, db: DB):
+    """App Store Server Notifications V2 (DATA_MODEL.md 32-4).
+
+    **무인증이다** — Apple 이 부른다. 토스 웹훅(29장)과 같은 규약으로 막는다: 본문에서는 거래 번호만 꺼내고,
+    우리 원장에 있는 거래일 때만 Apple 에 다시 물어 그 답으로 갱신한다.
+      200 — 처리했거나 처리할 것이 없다(모르는 거래·깨진 본문). 재전송 불필요.
+      503 — Apple 조회에 실패해 아직 판단하지 못했다. Apple 이 재전송한다.
+    """
+    try:
+        result = subscription_service.handle_appstore_notification(db, request.signed_payload)
+    except AppStoreUnavailableError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
+        ) from error
+
+    logger.info(f"appstore notification result={result}")
+    return AppStoreNotificationAck()

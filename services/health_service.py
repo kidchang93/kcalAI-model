@@ -218,13 +218,16 @@ def get_summary(db: Session, user_id: int, target_date: date) -> dict:
 
 # ---- 주/월 추이 ----
 
-def get_trends(db: Session, user_id: int, start_date: date, end_date: date) -> dict:
+def get_trends(
+    db: Session, user_id: int, start_date: date, end_date: date, max_days: int = TRENDS_MAX_DAYS
+) -> dict:
+    """`max_days` 는 진료 리포트만 넓힌다(플러스 365일, DATA_MODEL 32-5) — `/me/trends` 는 92일 그대로다."""
     if end_date < start_date:
         raise BadRequestError("종료일이 시작일보다 빠릅니다. 날짜 범위를 확인해주세요.")
 
     total_days = (end_date - start_date).days + 1
-    if total_days > TRENDS_MAX_DAYS:
-        raise BadRequestError(f"조회 범위는 최대 {TRENDS_MAX_DAYS}일입니다. 범위를 줄여 다시 시도해주세요.")
+    if total_days > max_days:
+        raise BadRequestError(f"조회 범위는 최대 {max_days}일입니다. 범위를 줄여 다시 시도해주세요.")
 
     # 세션 타임존과 무관하게 summary 와 같은 UTC 날짜 경계로 절단해 GROUP BY 한다.
     # 날짜 수만큼 쿼리를 반복하지 않는다 — 단일 쿼리 집계.

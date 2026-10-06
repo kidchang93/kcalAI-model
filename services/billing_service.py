@@ -28,6 +28,7 @@ from models.subscription_model import BillingKey, Payment, Plan, UserSubscriptio
 from services import toss_client
 from services.errors import BadRequestError
 from services.subscription_service import (
+    PROVIDER_TOSS,
     STATUS_ACTIVE,
     STATUS_CANCELED,
     STATUS_PAST_DUE,
@@ -317,6 +318,8 @@ def _activate_subscription(
     subscription = get_subscription(db, user_id)
     period_end = add_one_month(base)
     subscription.plan_code = plan_code
+    # 갱신 배치는 provider='toss' 만 청구한다 — 여기서 빠뜨리면 토스로 산 구독이 갱신되지 않는다.
+    subscription.provider = PROVIDER_TOSS
     subscription.status = STATUS_ACTIVE
     subscription.current_period_end = period_end
     # 자동갱신이므로 다음 청구는 기간 종료 시각과 같다.
@@ -563,11 +566,15 @@ def charge_due_subscriptions(db: Session, now: datetime | None = None) -> dict:
 
     **한 건의 실패가 배치를 죽이면 안 된다** — 회원 A 의 카드가 만료됐다고 B~Z 가 갱신되지 않으면
     그쪽이 더 큰 사고다. 그래서 건마다 예외를 잡고 다음 건으로 넘어간다.
+
+    **토스 구독만 청구한다** (`provider='toss'`, 32-2). App Store 구독은 Apple 이 갱신한다 — 우리가 청구하려
+    들면 빌링키가 없어 멀쩡한 구독을 past_due 로 떨어뜨린다(30장의 '가장 위험한 지점').
     """
     now = now or datetime.now(UTC)
     due = list(
         db.scalars(
             select(UserSubscription).where(
+                UserSubscription.provider == PROVIDER_TOSS,
                 UserSubscription.next_billing_at.is_not(None),
                 UserSubscription.next_billing_at <= now,
                 UserSubscription.cancel_at_period_end.is_(False),

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Query, status
 
 from api.dependencies import DB, CurrentUser
 from schemas.common_schema import ErrorResponse, MessageResponse
+from schemas.subscription_schema import PlanLimitErrorResponse
 from schemas.health_schema import (
     GoalResponse,
     GoalUpsertRequest,
@@ -13,6 +14,7 @@ from schemas.health_schema import (
     MealResponse,
     MedicalReportResponse,
     ProfileResponse,
+    ReportCompareResponse,
     ProfileUpsertRequest,
     SummaryResponse,
     TrendsResponse,
@@ -112,15 +114,28 @@ def read_trends(
 def read_medical_report(
     current_user: CurrentUser,
     db: DB,
-    start_date: date = Query(...),
-    end_date: date = Query(...),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
 ):
     """진료·영양상담에 가져갈 기간 기록.
 
     질환·병기 → 축별 추이 → 끼니 상세 순서다. 수치보다 기준이 먼저 와야 읽는 사람이
     맥락을 안다 (`services/medical_report_service.py`).
+
+    기간은 생략할 수 있고, 요금제 상한(무료 14·30 / 플러스 365일)보다 길면 서버가 시작일을 당겨 자른다 —
+    `range` 가 그 근거를 싣는다 (DATA_MODEL 32-5).
     """
     return medical_report_service.build_report(db, current_user.id, start_date, end_date)
+
+
+@router.get(
+    "/me/report/compare",
+    response_model=ReportCompareResponse,
+    responses={401: {"model": ErrorResponse}, 402: {"model": PlanLimitErrorResponse}},
+)
+def read_report_compare(current_user: CurrentUser, db: DB):
+    """지난 진료 구간과 이번 구간 (플러스 전용 — 무료면 402 `resource=report_compare`, main.py 전역 핸들러)."""
+    return medical_report_service.build_compare(db, current_user.id)
 
 
 # ---- 끼니 ----

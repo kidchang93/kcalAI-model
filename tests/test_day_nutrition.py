@@ -506,10 +506,16 @@ class TestMedicalReport:
         assert report["kcal"]["total_days"] == 7
         assert report["kcal"]["average"] == 300
 
-    def test_range_limit_is_enforced(self, db, user):
+    def test_long_range_is_clamped_not_rejected(self, db, user):
+        """요금제 상한보다 긴 기간은 400 이 아니라 시작일을 당겨 자른다 (32-5). 역순만 400 이다."""
         from services import medical_report_service
 
+        report = medical_report_service.build_report(
+            db, user.id, TODAY - timedelta(days=200), TODAY, today=TODAY
+        )
+
+        assert report["range"]["clamped"] is True
+        assert report["kcal"]["total_days"] == report["range"]["max_days"]
+
         with pytest.raises(ValueError):
-            medical_report_service.build_report(
-                db, user.id, TODAY - timedelta(days=200), TODAY
-            )
+            medical_report_service.build_report(db, user.id, TODAY, TODAY - timedelta(days=1))

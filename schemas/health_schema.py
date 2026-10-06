@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -285,6 +285,21 @@ class ReportKcalSummary(BaseModel):
     total_days: int
 
 
+class ReportRange(BaseModel):
+    """서버가 정한 리포트 기간의 근거 (DATA_MODEL 32-5). 앱은 이걸로 "최근 14일"·"지난 진료부터"를 그린다."""
+
+    # free | plus
+    plan: str
+    # 이 회원이 볼 수 있는 최대 일수 — 무료 14(가입이 약관 1.4 시행 전이면 30) · 플러스 365.
+    max_days: int
+    # 지난 진료일. 없으면 null (32-6 — 닫힌 진료 또는 날짜가 지난 예정).
+    last_visit_on: date | None
+    # 요청 기간이 상한보다 길어 시작일을 당겼는가. 400 이 아니라 잘라서 준다.
+    clamped: bool
+    # 기간을 생략했을 때 서버가 고르는 시작일 — '기간 바꾸기'를 되돌릴 기준.
+    default_start_date: date
+
+
 class MedicalReportResponse(BaseModel):
     """진료·영양상담 지참용 기간 리포트 (`services/medical_report_service.py`).
 
@@ -306,3 +321,33 @@ class MedicalReportResponse(BaseModel):
     labs: list[ReportLabResult]
     meals: list[ReportMeal]
     notice: str
+    # 2026-10-06 추가 — 기존 필드는 그대로다.
+    range: ReportRange
+
+
+class ReportIntervalNutrient(BaseModel):
+    nutrient: str
+    label: str
+    unit: str
+    # 기록한 날만 나눈 하루 평균. 기록이 없으면 null.
+    daily_avg: float | None
+    # 이 축의 실측을 하나라도 찾은 날 수. 작으면 평균이 과소평가다.
+    measured_days: int
+
+
+class ReportInterval(BaseModel):
+    start_date: date
+    end_date: date
+    total_days: int
+    recorded_days: int
+    kcal_daily_avg: int | None
+    # 질환 축이 없거나 민감정보 동의가 없으면 빈 목록이다.
+    nutrients: list[ReportIntervalNutrient]
+
+
+class ReportCompareResponse(BaseModel):
+    """지난 진료 구간과 이번 구간을 **나란히 놓을 뿐 판정하지 않는다** (32-5 — 색·화살표 금지)."""
+
+    current: ReportInterval
+    # 지난 진료가 하나뿐이면 null — 앱이 비교 표를 숨긴다.
+    previous: ReportInterval | None
