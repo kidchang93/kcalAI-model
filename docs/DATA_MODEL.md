@@ -1635,6 +1635,63 @@ Apple 로그인을 제공하는 앱은 계정 삭제 시 토큰을 폐기해야 
 - Apple 의 계정 상태 알림(server-to-server notification — 사용자가 Apple 쪽에서 연결 해제·계정 삭제)은
   받지 않는다. 카카오 연결 해제 웹훅과 같은 후속 과제다.
 
+### 이메일 가입 (2026-10-06 확정 — 리비전 0030)
+
+카카오·Apple 계정이 없는 사람도 가입할 수 있게 **이메일 + 비밀번호**를 붙였다. App Store 심사관에게
+아이디·비밀번호 데모 계정을 줄 수 있게 된 것도 이유다(2026-10-06 베타 심사 2.1(a) — 카카오·Apple 만으로는
+'내용이 든 계정'을 넘길 방법이 없었다). 이메일은 **6자리 코드 메일**로 확인한다 — SMS 는 건당 비용이 들어
+2026-07-14 에 걷어냈고, SMTP 는 무료다(운영은 고객문의 메일과 같은 네이버 메일 SMTP, `services/mail_client.py`).
+
+#### 흐름
+
+```
+POST /api/auth/email/signup/code   {email}                      → 200 (가입 여부와 무관하게 같은 응답)
+POST /api/auth/email/signup/verify {email, code}                → 200 (맞는지만 — 소비하지 않는다)
+POST /api/auth/email/signup/nickname {email, code, nickname}    → 200 (닉네임 중복확인 — 코드가 있어야 한다)
+POST /api/auth/email/signup        {email, code, password, nickname, agreed_*, *_version} → 200 토큰
+POST /api/auth/email/login         {email, password}            → 200 토큰
+POST /api/auth/email/password-reset/code {email}                → 200 (같은 응답)
+POST /api/auth/email/password-reset      {email, code, new_password} → 200 (모든 세션 폐기)
+```
+
+실패: 400(형식·코드·비밀번호 규칙·닉네임·동의·로그인 실패) · **429**(코드 재요청 1분 간격·주소당 하루 10통)
+· **503**(SMTP 설정 없음·발송 실패·계정 전체 하루 한도 `MAIL_DAILY_LIMIT`). 400 문구는 서비스가 정한다.
+
+#### 테이블
+
+- `users.email`(UNIQUE, 소문자 정규화) · `password_hash`(scrypt `scrypt$n$r$p$salt$hash`, deferred) ·
+  `failed_login_count` · `login_locked_until`. 카카오·Apple 회원은 email·password_hash 가 NULL.
+- `email_verification_codes(email, purpose[signup|reset], code_hash, attempt_count, expires_at, consumed_at,
+  created_at)` — 회원이 없을 수 있어 **FK 없이 이메일로 귀속**. `created_at` 은 서비스가 앱 시계로 채운다
+  (DB `now()` 는 트랜잭션 시작 시각이라 만료와 기준이 갈린다). 정리 배치가 발급 1일 뒤 지운다.
+
+#### 규칙 — 무엇을 지키나
+
+| 규칙 | 왜 |
+|---|---|
+| 코드 6자리 · 10분 · **5회 틀리면 그 코드는 죽는다** · 가장 최근 코드만 유효 | 100만 가지라 횟수 제한 없이는 대입된다 |
+| 코드는 pepper HMAC(`purpose:email:code`)으로만 저장 | 6자리는 해시만으로는 대입이 쉽다. 용도·주소를 묶어 다른 행의 코드로 못 쓴다 |
+| **코드 요청 응답은 가입 여부와 무관하게 같다** — 이미 회원이면 코드 대신 '이미 가입됨' 안내 메일, 미가입 재설정이면 메일 없음. **코드 행은 어느 쪽이든 쌓인다** | 만성질환 앱에 가입했다는 사실 자체가 건강 정보다. 응답·429 가 갈리면 주소만으로 가입 여부를 알아낸다 |
+| 로그인 실패는 **하나의 문구**(없는 이메일·틀린 비밀번호·잠김) · 없는 이메일도 해시를 한 번 계산 | 문구나 응답 시간으로 가입 여부가 새지 않게 |
+| 연속 10회 실패 → 15분 잠금, 성공·재설정 때 해제 | 비밀번호 대입. 잠금으로 남의 로그인을 15분 막을 수는 있다 — 감수한 트레이드오프 |
+| 비밀번호 영문+숫자 8~64자, scrypt(N=2^14, r=8, p=5 — OWASP 최소 권장, 1건 약 0.1초) | 느린 해시라 DB 가 털려도 대입이 느리다. bcrypt 가 아니라 scrypt 인 이유: 메모리를 써서 GPU 대입이 어렵고, 72바이트에서 잘리지 않고, stdlib 다(OWASP 순위 Argon2id → scrypt → bcrypt). 비용은 해시 문자열에 담겨 나중에 올려도 옛 해시가 검증된다. ⚠️ AES(혈액형·Apple 토큰)는 되돌려 읽어야 하는 값이라 해시로 바꿀 수 없다 — 그쪽 위험은 대입이 아니라 키가 DB 와 함께 새는 것이다 |
+| 재설정하면 **그 계정의 모든 세션 폐기** | 잃어버린 기기·탈취된 세션이 남지 않게 |
+| SMTP 는 465(TLS) 또는 STARTTLS **필수**, 평문은 localhost 만 | 평문으로 떨어지면 코드와 SMTP 비밀번호가 그대로 흐른다 |
+| **닉네임 중복확인은 확인된 가입 코드가 있어야 묻는다** · '이미 있음'은 코드 시도 횟수를 하나 쓴다 · 가입 때 다시 본다 · 대소문자·앞뒤 공백 무시, 카카오·Apple 회원 닉네임까지 비교 | 아무나 부르는 '닉네임 있나요?'는 그 닉네임(카카오 닉네임·Apple 실명인 경우가 많다)의 주인이 만성질환 앱 회원인지 알려 준다. 카카오·Apple 가입은 닉네임이 그쪽에서 와서 막을 수 없으므로 이메일 가입에만 건다. DB UNIQUE 는 기존 카카오 닉네임끼리 겹쳐 걸 수 없다(앱 레벨 검사 — 동시 가입은 겹칠 수 있다) |
+| 다른 수단의 회원과 병합하지 않는다 | Apple 과 같은 판단 — 연결 흐름은 요구가 생기면 |
+
+#### 회원 탈퇴
+
+`users` 행과 함께 email·password_hash 가 파기되고, `email_verification_codes` 는 FK 가 없어 **이메일 기준으로
+따로 지운다**(`account_service.delete_account` — kakao_link_codes 와 같은 규칙). 외부에 알릴 곳은 없다.
+
+#### 한계
+
+- 계정 전체 하루 한도는 남이 아무 주소로나 요청해 소진하면 그날 이메일 가입이 막힌다(`ponytail:` 주석).
+  실제로 일어나면 IP 단위 제한을 둔다 — 지금은 IP 를 수집하지 않는다(처리방침 2장).
+- 로그인 중 비밀번호 변경·이메일 변경은 없다. 재설정(코드 메일)으로 대신한다.
+- 메일이 스팸함에 들어갈 수 있다(개인 메일 계정 발송). 도메인 메일(SPF·DKIM)로 옮길 때 `SMTP_*` 만 바꾼다.
+
 ---
 
 ## 22. `/api/predict` 다중 음식 인식 · Lite 쿼터 5 (2026-07-16 확정 — 리비전 0016)

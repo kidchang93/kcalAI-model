@@ -29,6 +29,7 @@ kcalAI-model/
 │   ├── auth_service.py         # 카카오 연동코드·OAuth state 서명, 카카오·Apple 가입·로그인, 세션 생성·검증·폐기 (21장)
 │   ├── kakao_client.py         # 카카오 OAuth — 인가 URL·토큰 교환(client_secret)·프로필·연결끊기(unlink)
 │   ├── apple_client.py         # Sign in with Apple — identity token 검증(JWKS)·code 교환·토큰 폐기(revoke)
+│   ├── mail_client.py          # 메일 발송(SMTP, stdlib) — 이메일 가입·비밀번호 재설정 인증 코드
 │   ├── subscription_service.py # 요금제 한도 판정·비전 일일 쿼터(원자적 UPSERT), PlanLimitError (20장), 만료 강등 해석 get_effective_plan (24장)
 │   ├── payment_service.py      # 결제 내역 조회·응답 조립 (23장)
 │   ├── billing_service.py      # 자동결제 흐름 — checkout·confirm(빌링키 발급·저장·최초 청구)·cancel·갱신 배치, 달력 1개월 (24장)
@@ -186,6 +187,20 @@ App Store 4.8(소셜 로그인만 있으면 대안 필수) 때문에 iOS 에 붙
 ```
 
 탈퇴 시 `apple_client.revoke_token()`도 카카오 unlink 와 같은 자리·같은 규칙이다(파기 커밋 후, 실패해도 예외 없음).
+
+### 인증 — 이메일 가입 (2026-10-06, 리비전 0030)
+
+```
+앱 ── POST /api/auth/email/signup/code {email}
+       └─ auth_service.request_email_code()   재요청 제한(429) → 코드 행 → mail_client.send_mail()
+          (이미 회원이면 코드 대신 안내 메일 — 응답은 같다. 발송 실패면 행을 되돌리고 503)
+앱 ── POST /api/auth/email/signup {email, code, password, nickname, agreed_*, ...}
+       ├─ 동의·버전 → 비밀번호 규칙 → 코드 대조(틀리면 횟수 커밋 후 400)
+       └─ User(email, password_hash=scrypt, nickname) + 동의 + 구독   ← _create_member, 한 트랜잭션
+앱 ── POST /api/auth/email/login {email, password}   실패는 한 문구 · 10회 실패 15분 잠금
+```
+
+규칙 전체는 DATA_MODEL 21장 '이메일 가입'.
 
 ### 자동결제 (`POST /api/billing/confirm`) — 2026-07-16, DATA_MODEL 24장
 

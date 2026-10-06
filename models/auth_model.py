@@ -25,8 +25,17 @@ class User(Base):
     apple_refresh_token: Mapped[str | None] = mapped_column(
         EncryptedString(1024), nullable=True, deferred=True
     )
-    # 카카오 닉네임. 그룹에서 다른 멤버에게 보이는 이름이다 (예전엔 마스킹한 휴대폰 번호였다).
-    # 사용자가 프로필 동의를 거부하면 빈 값일 수 있어 nullable.
+    # 이메일 회원의 로그인 식별자 (리비전 0030). 소문자로 정규화해 저장한다. 카카오·Apple 회원은
+    # NULL 이다 — 그쪽은 이메일을 요청하지도 받지도 않는다. 다른 수단의 회원과 병합하지 않는다.
+    email: Mapped[str | None] = mapped_column(String(254), unique=True, index=True, nullable=True)
+    # scrypt 해시(`scrypt$n$r$p$salt$hash`). 원문은 어디에도 남기지 않는다. deferred 인 이유는
+    # apple_refresh_token 과 같다 — 매 요청 인증마다 자격증명을 읽을 이유가 없다.
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True, deferred=True)
+    # 비밀번호 대입 방어. 연속 실패가 한도에 닿으면 잠그고, 성공·재설정 때 0 으로 되돌린다.
+    failed_login_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    login_locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 카카오 닉네임·Apple 이름·이메일 가입 때 정한 닉네임. 그룹에서 다른 멤버에게 보이는 이름이다
+    # (예전엔 마스킹한 휴대폰 번호였다). 카카오 프로필 동의를 거부하면 빈 값일 수 있어 nullable.
     nickname: Mapped[str | None] = mapped_column(String(50), nullable=True)
     # 휴대폰 인증(SMS)을 걷어내면서 식별자 자리를 잃었다. 컬럼은 남긴다 — 비즈 앱 전환 후
     # 전화번호 동의항목을 받게 되면 다시 채울 자리이고, 기존 행의 값을 지우지 않기 위해서다.
@@ -58,6 +67,32 @@ class KakaoLinkCode(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[CreatedAt]
+
+
+class EmailVerificationCode(Base):
+    """이메일로 보낸 6자리 인증 코드 — 가입(`signup`)과 비밀번호 재설정(`reset`).
+
+    회원이 아직 없을 수 있어(가입) FK 없이 **이메일로 귀속**한다 — 탈퇴 연쇄는 이메일 기준으로
+    지운다(kakao_link_codes 와 같은 규칙). 6자리는 대입 가능한 크기라 pepper 를 넣은 HMAC 으로만
+    저장하고, 틀린 횟수를 세어 한도를 넘으면 그 코드를 버린다.
+
+    이미 가입된 이메일로 가입 코드를 요청해도, 가입되지 않은 이메일로 재설정 코드를 요청해도
+    **행은 똑같이 쌓인다**(보내는 메일만 다르다). 응답·재요청 제한이 같아야 이메일의 가입 여부가
+    새지 않는다 — 만성질환 앱에 가입했다는 사실 자체가 건강 정보다.
+    """
+
+    __tablename__ = "email_verification_codes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    email: Mapped[str] = mapped_column(String(254), index=True, nullable=False)
+    purpose: Mapped[str] = mapped_column(String(16), nullable=False)
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 재요청 간격·하루 한도를 이 값으로 센다. 서비스가 앱 시계로 직접 채운다 — DB now() 는
+    # 트랜잭션 시작 시각이라 만료(앱 시계)와 기준이 갈린다.
+    created_at: Mapped[CreatedAt] = mapped_column(index=True)
 
 
 class AuthSession(Base):

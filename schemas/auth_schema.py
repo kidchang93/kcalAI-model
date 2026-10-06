@@ -44,9 +44,38 @@ class AppleSignupRequest(AppleLoginRequest, SignupAgreementFields):
     nickname: str | None = Field(default=None, max_length=50)
 
 
+class EmailRequest(BaseModel):
+    # 형식 검증은 서비스가 한다(normalize_email) — 422 영문 메시지 대신 한국어 400 을 주려고.
+    email: str = Field(..., min_length=1, max_length=254)
+
+
+class EmailCodeRequest(EmailRequest):
+    # 메일로 받은 6자리. 앞뒤 공백은 서비스가 걷어낸다.
+    code: str = Field(..., min_length=1, max_length=12)
+
+
+class EmailNicknameRequest(EmailCodeRequest):
+    nickname: str = Field(..., min_length=1, max_length=20)
+
+
+class EmailSignupRequest(EmailCodeRequest, SignupAgreementFields):
+    # 규칙(영문+숫자 8~64자)은 서비스가 본다. 상한은 해시 비용 폭탄을 막는 입력 크기 제한이다.
+    password: str = Field(..., min_length=1, max_length=128)
+    # 그룹에서 다른 멤버에게 보이는 이름. 카카오·Apple 과 달리 받아 올 곳이 없어 직접 받는다.
+    nickname: str = Field(..., min_length=1, max_length=20)
+
+
+class EmailLoginRequest(EmailRequest):
+    password: str = Field(..., min_length=1, max_length=128)
+
+
+class PasswordResetRequest(EmailCodeRequest):
+    new_password: str = Field(..., min_length=1, max_length=128)
+
+
 class AuthUser(BaseModel):
     id: int
-    # 카카오 닉네임 또는 Apple 이름. 카카오 프로필 동의 거부·Apple 이름 미제공이면 없다.
+    # 카카오 닉네임·Apple 이름·이메일 가입 닉네임. 카카오 프로필 동의 거부·Apple 이름 미제공이면 없다.
     nickname: str | None = None
     created_at: datetime
 

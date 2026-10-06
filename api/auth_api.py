@@ -11,23 +11,39 @@ from schemas.auth_schema import (
     AppleLoginRequest,
     AppleSignupRequest,
     AuthTokenResponse,
+    EmailCodeRequest,
+    EmailLoginRequest,
+    EmailNicknameRequest,
+    EmailRequest,
+    EmailSignupRequest,
     KakaoLoginRequest,
     KakaoSignupRequest,
+    PasswordResetRequest,
 )
 from schemas.common_schema import ErrorResponse, MessageResponse
 from services.apple_client import AppleUnavailableError
 from services.auth_service import (
+    EMAIL_RESET,
+    EMAIL_SIGNUP,
+    RateLimitError,
     StateError,
     apple_login,
     apple_signup,
+    check_signup_nickname,
     create_link_code,
     create_state,
+    email_login,
+    email_signup,
     kakao_login,
     kakao_signup,
     platform_hint,
+    request_email_code,
+    reset_password,
     revoke_session_token,
+    verify_signup_code,
     verify_state,
 )
+from services.mail_client import MailUnavailableError
 from services.kakao_client import (
     KakaoAuthCodeError,
     KakaoError,
@@ -176,6 +192,92 @@ def signup_with_apple(request: AppleSignupRequest, db: DB):
     try:
         return _token_response(*apple_signup(db, **request.model_dump()))
     except AppleUnavailableError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
+        ) from error
+
+
+# 이메일: 400(형식·코드·비밀번호 규칙·로그인 실패)은 서비스 예외를 전역 핸들러가 바꾼다.
+# 코드 요청만 429(재요청이 잦다)·503(메일을 못 보낸다)을 여기서 바꾼다.
+_EMAIL_CODE_RESPONSES = {
+    400: {"model": ErrorResponse},
+    429: {"model": ErrorResponse},
+    503: {"model": ErrorResponse},
+}
+# 가입 여부와 무관하게 같은 문구다(서비스 request_email_code 주석).
+_EMAIL_CODE_SENT = "인증 메일을 보냈어요. 메일함을 확인해주세요."
+
+
+@router.post("/auth/email/signup/code", response_model=MessageResponse, responses=_EMAIL_CODE_RESPONSES)
+def send_signup_code(request: EmailRequest, db: DB):
+    _send_email_code(db, request.email, EMAIL_SIGNUP)
+    return {"message": _EMAIL_CODE_SENT}
+
+
+@router.post(
+    "/auth/email/signup/verify",
+    response_model=MessageResponse,
+    responses={400: {"model": ErrorResponse}},
+)
+def verify_email_signup_code(request: EmailCodeRequest, db: DB):
+    verify_signup_code(db, request.email, request.code)
+    return {"message": "이메일이 확인됐어요."}
+
+
+@router.post(
+    "/auth/email/signup/nickname",
+    response_model=MessageResponse,
+    responses={400: {"model": ErrorResponse}},
+)
+def check_email_signup_nickname(request: EmailNicknameRequest, db: DB):
+    check_signup_nickname(db, request.email, request.code, request.nickname)
+    return {"message": "쓸 수 있는 닉네임이에요."}
+
+
+@router.post(
+    "/auth/email/signup",
+    response_model=AuthTokenResponse,
+    responses={400: {"model": ErrorResponse}},
+)
+def signup_with_email(request: EmailSignupRequest, db: DB):
+    return _token_response(*email_signup(db, **request.model_dump()))
+
+
+@router.post(
+    "/auth/email/login",
+    response_model=AuthTokenResponse,
+    responses={400: {"model": ErrorResponse}},
+)
+def login_with_email(request: EmailLoginRequest, db: DB):
+    return _token_response(*email_login(db, request.email, request.password))
+
+
+@router.post(
+    "/auth/email/password-reset/code",
+    response_model=MessageResponse,
+    responses=_EMAIL_CODE_RESPONSES,
+)
+def send_password_reset_code(request: EmailRequest, db: DB):
+    _send_email_code(db, request.email, EMAIL_RESET)
+    return {"message": _EMAIL_CODE_SENT}
+
+
+@router.post(
+    "/auth/email/password-reset",
+    response_model=MessageResponse,
+    responses={400: {"model": ErrorResponse}},
+)
+def reset_email_password(request: PasswordResetRequest, db: DB):
+    reset_password(db, request.email, request.code, request.new_password)
+    return {"message": "비밀번호를 바꿨어요. 새 비밀번호로 로그인해주세요."}
+
+
+def _send_email_code(db: DB, email: str, purpose: str) -> None:
+    try:
+        request_email_code(db, email, purpose)
+    except RateLimitError as error:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(error)) from error
+    except MailUnavailableError as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
         ) from error

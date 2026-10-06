@@ -38,8 +38,11 @@ GROUP_ACTIVITY_SHARE = "group_activity_share"
 # 수집 항목이 넓어진 개정이라 v1.1 을 SENSITIVE_HEALTH_REVALIDATE_VERSIONS 에 넣었다(재동의 전까지 403).
 # ⚠️ sensitive_health 를 올릴 때 **범위가 넓어졌다면** 옛 버전을 SENSITIVE_HEALTH_REVALIDATE_VERSIONS
 # 에 넣어야 한다 — 그래야 재동의 전까지 무효가 된다. 넓어지지 않았다면 넣지 않는다.
-TERMS_VERSION = "1.2"
-PRIVACY_VERSION = "1.2"
+# 2026-10-06: terms·privacy 1.2 → 1.3(이메일 가입 — 이메일 주소·비밀번호 해시 수집, 메일 발송 위탁. 같은 날
+# 시행. 플러스 인앱 구독 조항은 1.4 로 따로 올린다). 이메일 항목은 이메일로 가입한 사람에게만 해당해
+# 기존 회원의 수집 범위는 그대로다 — 약관 버전은 가입 시에만 검증하므로 재동의를 요구하지 않는다.
+TERMS_VERSION = "1.3"
+PRIVACY_VERSION = "1.3"
 SENSITIVE_HEALTH_VERSION = "v1.2"
 GROUP_ACTIVITY_SHARE_VERSION = "v1.0"
 

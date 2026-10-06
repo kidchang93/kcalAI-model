@@ -1,7 +1,7 @@
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
-from models.auth_model import AuthSession, KakaoLinkCode, User
+from models.auth_model import AuthSession, EmailVerificationCode, KakaoLinkCode, User
 from models.consent_model import UserAllergy, UserCondition, UserConsent, UserHealthProfile
 from models.group_model import Group, GroupChallenge, GroupMember, GroupPet
 from models.health_model import (
@@ -33,6 +33,7 @@ def delete_account(db: Session, user: User) -> None:
     #    `tests/test_account_service.py` 가 FK 전수와 이 목록을 대조해 회귀를 막는다.
     user_id = user.id
     kakao_id = user.kakao_id
+    email = user.email
     # 행을 지우기 전에 꺼내 둔다(deferred 컬럼이라 여기서 읽힌다). 토큰은 users 행과 함께 파기된다.
     apple_refresh_token = user.apple_refresh_token
     owned_group_ids = select(Group.id).where(Group.owner_id == user_id)
@@ -41,9 +42,12 @@ def delete_account(db: Session, user: User) -> None:
 
     # 1) 세션·연동코드 — 세션 행 파기로 해당 유저의 모든 토큰이 즉시 무효(401)가 된다.
     #    kakao_link_codes 는 FK 없이 kakao_id 로 귀속되므로 회원번호 기준으로 파기한다.
+    #    email_verification_codes 도 FK 가 없다(가입 전 코드라 회원이 없을 수 있다) — 이메일 기준.
     db.execute(delete(AuthSession).where(AuthSession.user_id == user_id))
     if kakao_id:
         db.execute(delete(KakaoLinkCode).where(KakaoLinkCode.kakao_id == kakao_id))
+    if email:
+        db.execute(delete(EmailVerificationCode).where(EmailVerificationCode.email == email))
 
     # 1-2) 구독·사용량 — plans 참조 테이블은 건드리지 않고 회원 귀속 행만 파기한다.
     db.execute(delete(UserSubscription).where(UserSubscription.user_id == user_id))

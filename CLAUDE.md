@@ -4,7 +4,7 @@
 
 ## 프로젝트 개요
 
-**kcalAI-model**은 헬스케어 앱의 식단 분석 기능을 지원하는 **FastAPI 기반 AI 추론 서버**입니다. 음식 이미지 인식(Gemini 비전), 칼로리·영양 추정(식약처 DB 조회), 카카오·Apple 로그인 인증, 요금제·쿼터를 담당하며 `k-calAI-RN` 앱이 주 소비자입니다. (2026-07-12에 `/api/s3/*`(NCP Object Storage 중단)와 레거시 `/api/gpt-predict`(HF LLM 서술 생성 — 앱 미사용)를 제거했습니다. `meals.photo_s3_key` 컬럼만 선반영 상태로 남아 있습니다.)
+**kcalAI-model**은 헬스케어 앱의 식단 분석 기능을 지원하는 **FastAPI 기반 AI 추론 서버**입니다. 음식 이미지 인식(Gemini 비전), 칼로리·영양 추정(식약처 DB 조회), 카카오·Apple·이메일 로그인 인증, 요금제·쿼터를 담당하며 `k-calAI-RN` 앱이 주 소비자입니다. (2026-07-12에 `/api/s3/*`(NCP Object Storage 중단)와 레거시 `/api/gpt-predict`(HF LLM 서술 생성 — 앱 미사용)를 제거했습니다. `meals.photo_s3_key` 컬럼만 선반영 상태로 남아 있습니다.)
 
 메인 제품이 아니라 상위 앱의 기능 서버라는 위치를 유지합니다. 제품 맥락은 `docs/SERVICE_POSITIONING.md`를 참조하세요.
 
@@ -17,7 +17,7 @@
 | ASGI 서버 | uvicorn 0.37.0 |
 | ORM | SQLAlchemy 2.0.36 (`DeclarativeBase`, `Mapped`) |
 | 데이터베이스 | PostgreSQL 16 (docker-compose) |
-| 인증 | 카카오 로그인 (REST, 서버 주도 OAuth) — `services/kakao_client.py` · **Sign in with Apple** (iOS, identity token 검증 — PyJWT) — `services/apple_client.py` |
+| 인증 | 카카오 로그인 (REST, 서버 주도 OAuth) — `services/kakao_client.py` · **Sign in with Apple** (iOS, identity token 검증 — PyJWT) — `services/apple_client.py` · **이메일+비밀번호** (6자리 코드 메일 확인, scrypt — stdlib) — `services/mail_client.py`(SMTP) |
 | 이미지 인식 | Google Gemini 비전 (`google-genai`, 단일 백엔드) — `services/gemini_vision_service.py` |
 | 영양 추정 | 식약처 DB 조회가 원칙. **미등록 라벨만** Gemini로 1회 추정 후 DB 동결 — `services/gemini_nutrition_service.py` (19장) |
 | Gemini 공용 어댑터 | 클라이언트·재시도·structured JSON 파싱 — `services/gemini_client.py` (비전·영양 추정이 공유) |
@@ -79,7 +79,7 @@ open http://127.0.0.1:8000/docs
 
 **자동결제 갱신 배치** (청구 예정일이 지난 구독을 청구 — `docs/DATA_MODEL.md` 24장): `venv/bin/python scripts/charge_due_subscriptions.py` — 저장소 루트에서 실행, **멱등**(성공 건은 `next_billing_at`이 한 달 뒤로 밀려 재실행 시 대상에서 빠짐). 한 건의 실패가 배치를 멈추지 않으며 실패 건은 `past_due`로 다음날 재시도합니다. `TOSS_SECRET_KEY` 미설정 시 실행을 거부합니다(exit 1). **실행하면 실제 결제가 일어납니다.** 운영에는 **cron으로 등록되어 있습니다**(매일 UTC 19:00 = KST 04:00) — 정의는 `deploy/kcalai.cron`이고 `provision.sh`가 `/etc/cron.d/kcalai`로 설치합니다. ⚠️ **`crontab -e`로 손으로 넣지 마세요** — 재구축과 함께 사라집니다(2026-07-26 이전이 그 상태였고, 등록 0건인 채 유료 구독이 청구 예정을 달고 있었습니다).
 
-**만료 인증 데이터 정리 배치** (`kakao_link_codes`·`auth_sessions` 무한 누적 방지): `venv/bin/python scripts/purge_expired_auth.py` — 만료 코드(발급 1일 뒤)·만료·폐기 세션(7일 뒤)을 물리 삭제, 멱등. 정기 실행(cron/systemd)을 권장. 보존창은 `services/auth_service.py`의 `CODE_RETENTION_DAYS`·`SESSION_RETENTION_DAYS`.
+**만료 인증 데이터 정리 배치** (`kakao_link_codes`·`email_verification_codes`·`auth_sessions` 무한 누적 방지, cron 등록됨 — `deploy/kcalai.cron`): `venv/bin/python scripts/purge_expired_auth.py` — 만료 코드(연동·이메일 코드 모두 발급 1일 뒤)·만료·폐기 세션(7일 뒤)을 물리 삭제, 멱등. 정기 실행(cron/systemd)을 권장. 보존창은 `services/auth_service.py`의 `CODE_RETENTION_DAYS`·`SESSION_RETENTION_DAYS`.
 
 ### 반드시 저장소 루트에서 실행할 것
 
@@ -96,7 +96,7 @@ open http://127.0.0.1:8000/docs
 | 린트 | 없음 |
 | 포맷 | 없음 |
 
-테스트는 Postgres에 붙습니다 (인증 로직의 tz-aware datetime 충실도). 각 테스트는 외부 트랜잭션 + SAVEPOINT 롤백으로 격리되어 대상 DB를 오염시키지 않습니다. 공유 DB의 기존 데이터와 번호가 겹칠 수 있으니, 깔끔한 격리가 필요하면 `TEST_DATABASE_URL`로 전용 DB를 지정하세요. 현재 **443건**(2026-10-05)이며 커버리지는 `test_diabetes_food_rules.py`(당뇨 — 첨가당 이름 축·등급 부재·단위, 16장), `test_meal_ordering.py`(하루 끼니 목록 순서 — 같은 시각이면 만든 순, 4장), `test_auth_service.py`·`test_auth_api.py`(카카오 로그인, 21장), `test_apple_auth.py`(**Apple 로그인 — 만료·aud·iss·서명 위조·alg none 이 전부 400**, 탈퇴 시 토큰 폐기, 21장), `test_subscription_service.py`(요금제·쿼터, 20장), `test_billing_service.py`(자동결제, 24장), `test_billing_webhook.py`(**웹훅 본문으로는 원장을 바꿀 수 없다**, 29장), `test_toss_client.py`(**토스 어댑터의 비밀값 미유출**, 2026-07-16), `test_payment_service.py`(결제 내역, 23장), `test_crypto.py`, `test_upload_validation.py`, `test_strip_metadata.py`(**Gemini 로 보내는 사진에서 EXIF·GPS 가 빠진다** — App Store 5.1.2(i)), `test_web_spa.py`, `test_day_nutrition.py`(하루 질환 축 — 병기별 기준선, 28장)입니다.
+테스트는 Postgres에 붙습니다 (인증 로직의 tz-aware datetime 충실도). 각 테스트는 외부 트랜잭션 + SAVEPOINT 롤백으로 격리되어 대상 DB를 오염시키지 않습니다. 공유 DB의 기존 데이터와 번호가 겹칠 수 있으니, 깔끔한 격리가 필요하면 `TEST_DATABASE_URL`로 전용 DB를 지정하세요. 현재 **471건**(2026-10-06)이며 커버리지는 `test_email_auth.py`(**이메일 가입 — 코드 5회 대입 차단·닉네임 중복확인은 코드가 있어야 하고 시도 횟수를 쓴다·가입 여부가 응답으로 새지 않는다·로그인 잠금·재설정 시 세션 폐기·평문 SMTP 거부**, 21장), `test_diabetes_food_rules.py`(당뇨 — 첨가당 이름 축·등급 부재·단위, 16장), `test_meal_ordering.py`(하루 끼니 목록 순서 — 같은 시각이면 만든 순, 4장), `test_auth_service.py`·`test_auth_api.py`(카카오 로그인, 21장), `test_apple_auth.py`(**Apple 로그인 — 만료·aud·iss·서명 위조·alg none 이 전부 400**, 탈퇴 시 토큰 폐기, 21장), `test_subscription_service.py`(요금제·쿼터, 20장), `test_billing_service.py`(자동결제, 24장), `test_billing_webhook.py`(**웹훅 본문으로는 원장을 바꿀 수 없다**, 29장), `test_toss_client.py`(**토스 어댑터의 비밀값 미유출**, 2026-07-16), `test_payment_service.py`(결제 내역, 23장), `test_crypto.py`, `test_upload_validation.py`, `test_strip_metadata.py`(**Gemini 로 보내는 사진에서 EXIF·GPS 가 빠진다** — App Store 5.1.2(i)), `test_web_spa.py`, `test_day_nutrition.py`(하루 질환 축 — 병기별 기준선, 28장)입니다.
 | 카카오 설정 진단 | `venv/bin/python scripts/check_kakao_config.py` (읽기 전용. 로그인 실패 시 **원인 판정** — 허용 IP 미등록/키 종류 혼동) |
 | 수동 검증 | `uvicorn main:app` 기동 + `/docs` 200 + `curl` 요청 |
 
@@ -130,19 +130,21 @@ open http://127.0.0.1:8000/docs
 | `APPLE_TEAM_ID` | 아니오 | 없음 | 〃 — client secret(ES256 JWT)의 `iss` |
 | `APPLE_SIWA_KEY_ID` | 아니오 | 없음 | 〃 — Sign in with Apple 키 ID (client secret 헤더 `kid`) |
 | `APPLE_SIWA_PRIVATE_KEY_B64` | 아니오 | 없음 | 〃 — **비밀값.** `.p8` 내용을 base64 한 줄로(`base64 -i AuthKey_XXXX.p8 \| tr -d '\n'`). 키 **파일**로 두지 않는다 — 배포가 작업 트리를 `rsync --delete` 해서 지워진다(`.env`는 보존). **위 셋이 비면 Apple 로그인(토큰 검증)은 되지만 Apple 가입은 503** — 가입 때 받아 둔 refresh token 이 있어야 탈퇴 때 폐기할 수 있다. 운영 기동 검사에는 넣지 않았다. **운영 `.env`에 2026-10-05 넣음** |
+| `SMTP_HOST`·`SMTP_PORT`(465)·`SMTP_USERNAME`·`SMTP_PASSWORD`·`MAIL_FROM` | 아니오 | 없음 | `services/mail_client.py` — 이메일 가입·재설정 인증 메일. **`SMTP_PASSWORD`는 비밀값.** 운영은 네이버 메일 SMTP(`smtp.naver.com:465`, 네이버 메일 설정에서 POP3/SMTP 사용 켜기, 2단계 인증 계정은 애플리케이션 비밀번호). 465 외 포트는 **STARTTLS 필수**(평문은 localhost 만). 비면 이메일 가입·재설정만 **503** — 카카오·Apple 은 그대로라 운영 기동 검사에는 넣지 않았다. ⚠️ SMTP 제공자를 바꾸면 처리방침 5장(위탁)·6장(국외 이전)을 함께 고친다 |
+| `MAIL_DAILY_LIMIT` | 아니오 | `300` | `services/auth_service.py` — 발송 계정 전체의 지난 24시간 인증 메일 한도(넘으면 503). 제공자의 하루 발송 한도보다 낮게 |
 | `AIHUB_API_KEY` | — | — | `.env`에만 있고 **코드에서 미사용** |
 
 (`ACCESS_KEY` 등 S3 자격증명 5종은 S3 제거로 더 이상 읽지 않습니다 — `.env`에 남아 있어도 무해합니다.)
 
 ---
 
-## API 목록 (openapi.json 실측, 2026-10-05 기준 경로 **58개** · 오퍼레이션 81개)
+## API 목록 (openapi.json 실측, 2026-10-06 기준 경로 **65개** · 오퍼레이션 88개)
 
 계약 상세는 `docs/DATA_MODEL.md`가 정본입니다 (4장 CRUD, 7장 사용자 층, 9장 그룹·반려동물, 10장 메타, 11장 식단 추천, 15장 추이 집계, 16장 기록 경고 판정, 17장 그룹 라이프사이클, 18장 회원 탈퇴·펫 권장 칼로리, 23장 결제 내역, **24장 자동결제**, **29장 결제 웹훅**).
 
 | 도메인 | 라우트 | 정의 파일 |
 |--------|--------|-----------|
-| Auth | `GET /api/auth/kakao/start` · `GET /api/auth/kakao/callback` · `POST /api/auth/kakao/login` · `POST /api/auth/kakao/signup` · `POST /api/auth/apple/login` (미가입 **404** · 토큰 무효 400 · Apple 공개키 조회 실패 503) · `POST /api/auth/apple/signup` (SIWA 설정 없으면 503) · `POST /api/auth/logout` | `api/auth_api.py` |
+| Auth | `GET /api/auth/kakao/start` · `GET /api/auth/kakao/callback` · `POST /api/auth/kakao/login` · `POST /api/auth/kakao/signup` · `POST /api/auth/apple/login` (미가입 **404** · 토큰 무효 400 · Apple 공개키 조회 실패 503) · `POST /api/auth/apple/signup` (SIWA 설정 없으면 503) · `POST /api/auth/email/signup/code`·`signup/verify`·`signup/nickname`(닉네임 중복확인 — 확인된 가입 코드 필요)·`signup`·`login`·`password-reset/code`·`password-reset` (이메일 — 코드 요청 **429**·발송 불가 **503**, 나머지 실패 400. 21장 '이메일 가입') · `POST /api/auth/logout` | `api/auth_api.py` |
 | Subscription | `GET /api/plans` (**무인증** — 가입 화면이 로그인 전에 그린다) · `GET·PUT /api/me/subscription` (**PUT은 무료(lite) 다운그레이드만** — 유료 전환은 400, 결제를 거쳐야 한다. 24장) | `api/subscription_api.py` |
 | Payments | `GET /api/payments` (내 결제 내역, 최신순) · `GET /api/payments/{id}` (본인 것만, 없거나 남의 것이면 **404** 존재 은닉) — **읽기 전용 조회**. 원장은 빌링 흐름(24장)이 쓴다 (DATA_MODEL 23장) | `api/payment_api.py` |
 | Billing | `POST /api/billing/checkout` (결제창 값 발급) · `POST /api/billing/confirm` (카드 등록 + 최초 청구 → 구독 활성화) · `POST /api/billing/cancel` (자동갱신 해지, 기간까지는 유료) — 셋 다 Bearer. **금액은 서버가 `plans.price_krw`에서 정한다**(요청에 금액 필드 없음). 실패: 400 · **502**(결제사 오류) · 503(키 미설정) (DATA_MODEL 24장) · `POST /api/billing/webhook` (**무인증** — 토스가 부른다. 본문에서 `orderId`만 읽고 상태는 서버가 토스에 다시 조회해 확인한다. 200=처리·재전송 불필요 / 502·503=판단 못 함·재전송 유도. DATA_MODEL **29장**) | `api/billing_api.py` |
@@ -160,9 +162,9 @@ open http://127.0.0.1:8000/docs
 | Coaching | `GET /api/me/coaching` (주간 조언 — **규칙 기반, LLM 없음**. Bearer + `sensitive_health` 동의 필수. DATA_MODEL 27장) | `api/coaching_api.py` |
 | Recommendations | `GET /api/recommendations` (Bearer + `sensitive_health` 동의 필수, 캐시 우선) | `api/recommendation_api.py` |
 
-Auth의 카카오 4종(`kakao/start`, `kakao/callback`, `kakao/login`, `kakao/signup`)·Apple 2종(`apple/login`, `apple/signup`)과 `GET /api/plans`·`POST /api/billing/webhook`을 제외한 **전 라우트**가 Bearer 인증(`api/dependencies.py`의 `get_current_user`)을 요구합니다 (`/api/auth/logout`도 Bearer 필요). `/api/predict`는 2026-07-12에 Bearer 필수로 전환했습니다. 같은 날 `/api/s3/*` 8개 라우트(NCP Object Storage 중단)와 레거시 `/api/gpt-predict`(HF LLM 서술 생성 — 앱 미사용, HF_TOKEN 하드의존)를 제거했습니다.
+Auth의 카카오 4종(`kakao/start`, `kakao/callback`, `kakao/login`, `kakao/signup`)·Apple 2종(`apple/login`, `apple/signup`)·이메일 7종(`email/**`)과 `GET /api/plans`·`POST /api/billing/webhook`을 제외한 **전 라우트**가 Bearer 인증(`api/dependencies.py`의 `get_current_user`)을 요구합니다 (`/api/auth/logout`도 Bearer 필요). `/api/predict`는 2026-07-12에 Bearer 필수로 전환했습니다. 같은 날 `/api/s3/*` 8개 라우트(NCP Object Storage 중단)와 레거시 `/api/gpt-predict`(HF LLM 서술 생성 — 앱 미사용, HF_TOKEN 하드의존)를 제거했습니다.
 
-### 인증 = 카카오 로그인 + Apple 로그인(iOS) (2026-07-14 카카오, 2026-10-05 Apple — 21장)
+### 인증 = 카카오 로그인 + Apple 로그인(iOS) + 이메일 (2026-07-14 카카오, 2026-10-05 Apple, 2026-10-06 이메일 — 21장)
 
 휴대폰 OTP(SMS)를 **제거**했습니다 — `phone_verification_codes` 테이블, `services/sms_service.py`(Solapi), 가입·로그인 4라우트가 전부 사라졌습니다. 로그인 식별자는 **카카오 회원번호**(`users.kakao_id`)입니다.
 
@@ -172,6 +174,7 @@ Auth의 카카오 4종(`kakao/start`, `kakao/callback`, `kakao/login`, `kakao/si
 - **회원 탈퇴 시 카카오 연결 끊기(unlink) 호출은 의무**입니다 (어드민 키 방식, `services/kakao_client.py`).
 - ⚠️ **무료 티어 어뷰징 방어가 없습니다.** 카카오계정은 이메일만으로 만들 수 있어 Lite 3건/일은 계정 갈아타기로 우회됩니다. 감수한 트레이드오프이며, 방어가 필요해지면 서버 측 레이트리밋으로 해결합니다 (21장).
 - **Sign in with Apple** (2026-10-05) — App Store 심사 4.8(소셜 로그인만 있으면 대안 로그인 필수, `docs/LEGAL_COMPLIANCE.md` §6-6) 때문에 붙였다. 카카오와 달리 **iOS 가 기기에서 identity token(JWT)을 받아 앱이 보낸다** — 서버는 Apple 공개키(JWKS)로 서명·`aud`(번들 ID)·`iss`·`exp`를 검증하고(`alg`는 RS256만), `sub`가 식별자(`users.apple_sub`)다. 그래서 연동 코드 테이블이 없다. 가입 때 `authorization_code`를 **refresh token 으로 교환해 암호화 저장**하고(`users.apple_refresh_token`, 리비전 0029), **탈퇴 시 Apple 에 폐기(revoke)한다 — 의무**. 이메일은 요청·저장하지 않는다. **카카오 회원과 병합하지 않는다**(같은 사람이라도 별개 회원).
+- **이메일 가입** (2026-10-06, 리비전 0030) — 카카오·Apple 계정이 없는 사람과 **심사용 데모 계정**(아이디·비밀번호, 심사 2.1(a)) 때문에 붙였다. 이메일은 6자리 코드 메일로 확인하고(SMTP — 무료, SMS 는 건당 비용이라 걷어냈다), 비밀번호는 scrypt 해시만 저장한다(`users.email`·`password_hash`). ⚠️ **코드 요청·로그인 실패 응답이 이메일의 가입 여부를 드러내면 안 된다** — 만성질환 앱 가입 사실이 건강 정보다. 이미 회원이면 코드 대신 안내 메일을 보내고 응답은 같다. 코드 5회·로그인 10회 실패 제한, 재설정은 모든 세션 폐기. 규칙 표는 DATA_MODEL 21장 '이메일 가입'.
 
 ### 요금제 한도 — 402 Payment Required (2026-07-14, 20장)
 
@@ -221,6 +224,8 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 - **무거운 ML 의존성(torch·ultralytics·transformers)을 다시 들이지 않는다.** 이미지 인식은 Gemini API로 처리합니다(Lightsail 경량 배포).
 - **네이티브 카카오 SDK를 도입하지 않는다.** 얻는 건 카톡 앱-투-앱 UX뿐인데 iOS/Android 네이티브 설정·키해시가 붙고 **웹 빌드가 깨집니다**(웹은 FastAPI가 서빙합니다). REST 방식으로 앱·웹을 통일합니다 (21장).
 - **카카오 `client_secret`·어드민 키, Apple `.p8` 키를 앱에 넣지 않는다.** `EXPO_PUBLIC_*`는 번들에 평문 노출됩니다. 토큰 교환은 **서버에서만** 합니다.
+- **이메일 인증 코드·비밀번호를 로그·응답에 남기지 않는다.** `mail_client`는 실패해도 받는 주소·본문 없이 예외 타입과 SMTP 코드만 남긴다. 테스트는 `mail_client.send_mail`을 대체한다 — 실제 메일을 보내지 않는다.
+- **이메일 가입 경로에서 가입 여부를 갈라 답하지 않는다.** 코드 요청은 회원·비회원 모두 같은 200·같은 재요청 제한(행은 어느 쪽이든 쌓인다), 로그인 실패는 하나의 문구다(`LOGIN_FAILED_MESSAGE`). 친절하려고 "가입되지 않은 이메일이에요"를 넣는 순간 주소만으로 누가 만성질환 앱을 쓰는지 알아낼 수 있다 — 회귀는 `tests/test_email_auth.py`.
 - **회원 탈퇴에서 카카오 unlink·Apple 토큰 폐기(`apple_client.revoke_token`)를 빼먹지 않는다.** 각 로그인 서비스의 의무입니다. 단 **파기를 커밋한 뒤** 호출하고, 실패가 개인정보 파기를 막지 않게 합니다.
 - **Apple identity token 을 손으로 디코드하지 않는다.** 서명·`aud`·`iss`·`exp`·`alg` 검증은 `apple_client.verify_identity_token`(PyJWT + JWKS) 한 곳뿐입니다. 토큰 헤더의 `alg`를 믿는 순간 `alg: none` 위조로 남의 계정에 들어갑니다 — 회귀는 `tests/test_apple_auth.py`.
 - **동의 문서를 개정하면 서버 상수(`consent_service`의 `TERMS_VERSION`·`PRIVACY_VERSION`·`SENSITIVE_HEALTH_VERSION`·`GROUP_ACTIVITY_SHARE_VERSION`)와 앱 문서(`k-calAI-RN`의 `constants/legal.ts`·`constants/consent.ts`)를 같은 작업 단위에서 올린다.** 서버만 올리면 기존 앱 사용자의 가입·동의가 전부 400이 됩니다(`ensure_current_version`). 앱이 보낸 버전을 대조해 기록하는 이유는 증빙 때문입니다 — 앱이 v1.0을 띄워 놓고 서버가 "2.0에 동의함"으로 기록하면 그 이력은 거짓입니다 (18장 아래 절). **`SENSITIVE_HEALTH_VERSION` 인상 = 기존 동의자 전원 재동의 필요** — 최신 동의 행의 버전이 현재 버전이 아니면 재동의 전까지 무효(403)이므로(2026-09-13, `has_active_consent`, DATA_MODEL 7장), 서버·앱을 **동시에 배포**합니다.
