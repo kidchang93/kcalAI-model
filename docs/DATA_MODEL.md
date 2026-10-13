@@ -2458,9 +2458,11 @@ Interval = { start_date, end_date, total_days, recorded_days, kcal_daily_avg: nu
 2026-10-13 상태:
 - ✅ 인앱 결제 키 `J8RS65U28T` 발급 → 운영 `.env` `APPLE_IAP_*` 반영(백업 `.env.bak-20261013-iap`). 같은 키로 샌드박스 조회는 정상이고 **운영은 401**(출시 전) — 위 32-3 폴백.
 - ✅ ASC 구독 그룹 `Plus`(ko '케어테이블 플러스') · `plus.yearly`(레벨 1, ₩39,000) · `plus.monthly`(레벨 2, ₩4,900) · ko 현지화 · 175개 지역 환산가 — ASC API. 7일 무료 체험도 넣었다가 같은 날 **삭제**(체험 없음 결정).
-- ✅ 서버 알림 URL(운영·샌드박스 V2) ASC API 로 저장. ⏳ 저장 직후 샌드박스 테스트 알림은 아직 'URL 없음'(4040007) — 반영 대기, 다시 `POST /inApps/v1/notifications/test` 로 확인.
-- ⏳ 상품 상태 `MISSING_METADATA` — **심사용 스크린샷**(구매 화면) 미등록. 첫 구독은 앱 버전과 **함께** 제출한다.
-- ⏳ 개인정보 라벨 '구매 내역'(ASC, 사용자) · 매니페스트 `PurchaseHistory`(빌드 8에 없음 — 다음 빌드) · 약관 1.4(새 사업자 대기).
+- ✅ 서버 알림 URL(운영·샌드박스 V2) ASC API 로 저장. 저장 직후 테스트 알림 API 는 'URL 없음'(4040007)이었지만, 빌드 9 TestFlight 실구매(회원 7, 월간) 때 **Apple 알림이 실제로 도착했다**(200). 첫 알림은 앱의 verify 보다 4초 먼저 와서 원장에 없는 거래라 `result=unknown` 으로 버려진다 — 설계대로이고(모르는 거래는 Apple 미호출) 구독은 verify 가 붙인다.
+- ✅ 샌드박스 구매 → `POST /appstore/verify` 200(운영 401 → 샌드박스 폴백) → `plus`·`appstore`·`Sandbox`·`active`. **TestFlight 의 월간 구독은 하루 단위로 갱신된다**(`current_period_end` = 구매 + 1일) — 다음 갱신 알림은 원장에 있는 거래라 재조회로 반영돼야 한다.
+- ✅ 심사용 스크린샷(빌드 9 TestFlight `/plus` — 샌드박스 가격·구독 버튼) 두 상품에 등록 → 상태 `READY_TO_SUBMIT`. ⚠️ 6.3"(1206×2622)·6.9"(1290×2796) 원본은 `IMAGE_INCORRECT_DIMENSIONS` 로 거절됐고 **6.5" 1242×2688 JPEG(알파 없음)** 가 통과했다. 첫 구독은 앱 버전과 **함께** 제출한다.
+- ✅ 운영의 마지막 토스 구독(회원 7 — 7월 테스트 키 Premium, 해지 예약)을 무료로 내렸다(`change_plan` lite). 이제 `provider='toss'` 행이 없어 옛 토스 요금제 화면(`LegacyTossPlan`)을 보는 회원이 없다.
+- ✅ 매니페스트 `PurchaseHistory`(빌드 9) · ASC 개인정보 라벨 게시(구매 내역 포함 9개 — 앱 `docs/APP_STORE_SUBMISSION.md` §3). ✅ 약관·처리방침 **1.4**(플러스 결제·자동 갱신·해지·환불 + 구독 정보·Apple 국외 이전, 사업자 → 미드나잇모찌 880-54-00995, 2026-10-13 시행) — 서버 `consent_service` 1.4 와 앱 빌드 10 이 함께 나간다(빌드 9 이하는 가입 때 1.3 을 보내 400).
 
 ### 32-9. 구현하며 정한 세부 (2026-10-06 — 서버 구현 완료, 리비전 0031)
 
