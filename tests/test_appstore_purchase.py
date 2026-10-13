@@ -474,6 +474,31 @@ def test_get_transaction_falls_back_to_sandbox(monkeypatch, iap_keys):
     assert len(calls) == 2
 
 
+def test_get_transaction_falls_back_to_sandbox_when_production_401(monkeypatch, iap_keys):
+    """출시 전 앱은 운영이 401 을 준다(2026-10-13 실측) — 심사·TestFlight 의 샌드박스 구매를 막으면 안 된다."""
+    def fake_get(url, headers, timeout):
+        if url.startswith(appstore_client.BASE_URLS["Production"]):
+            return _Response(401, {})
+        return _Response(200, {"signedTransactionInfo": _jws({"originalTransactionId": "76"})})
+
+    monkeypatch.setattr(appstore_client.requests, "get", fake_get)
+
+    transaction, environment = appstore_client.get_transaction("76")
+
+    assert environment == "Sandbox"
+    assert transaction["originalTransactionId"] == "76"
+
+
+def test_get_transaction_401_everywhere_is_503(monkeypatch, iap_keys):
+    """키가 정말 틀렸으면 샌드박스도 401 — 거래가 없다(400)가 아니라 판단 못 함(503)이다."""
+    monkeypatch.setattr(
+        appstore_client.requests, "get", lambda url, headers, timeout: _Response(401, {})
+    )
+
+    with pytest.raises(appstore_client.AppStoreUnavailableError):
+        appstore_client.get_transaction("75")
+
+
 def test_get_transaction_not_found_anywhere_is_none(monkeypatch, iap_keys):
     monkeypatch.setattr(
         appstore_client.requests, "get",

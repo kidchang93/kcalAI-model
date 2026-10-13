@@ -86,12 +86,18 @@ def get_transaction(transaction_id: str) -> tuple[dict, str] | None:
     path = f"/inApps/v1/transactions/{quote(transaction_id, safe='')}"
 
     for environment in (PRODUCTION, SANDBOX):
-        status_code, body = _get(environment, path)
+        # 출시 전 앱에는 운영이 401 을 준다(2026-10-13 실측 — 같은 키로 샌드박스는 정상). 심사·TestFlight 는
+        # 샌드박스 구매라 그때도 샌드박스를 본다. 키가 정말 틀렸으면 샌드박스도 401 이라 503 이 된다.
+        status_code, body = _get(environment, path, allow_unauthorized=environment == PRODUCTION)
 
         if status_code == 200:
             return _decode_response(body.get("signedTransactionInfo"), environment), environment
 
-        if environment == PRODUCTION and body.get("errorCode") == ERROR_TRANSACTION_ID_NOT_FOUND:
+        if environment == PRODUCTION and (
+            status_code == 401 or body.get("errorCode") == ERROR_TRANSACTION_ID_NOT_FOUND
+        ):
+            if status_code == 401:
+                logger.info("appstore production 401 — sandbox fallback")
             continue
 
         logger.info(f"appstore transaction not found env={environment} errorCode={body.get('errorCode')}")
@@ -136,9 +142,9 @@ def _decode_response(token: object, environment: str) -> dict:
         raise AppStoreUnavailableError(UNAVAILABLE_MESSAGE) from None
 
 
-def _get(environment: str, path: str) -> tuple[int, dict]:
+def _get(environment: str, path: str, allow_unauthorized: bool = False) -> tuple[int, dict]:
     """200·400·404 는 (상태, 본문)으로 돌려준다 — 답이 정해진 응답이다. 그 밖(401 키 오류·429·5xx)과
-    네트워크 실패는 AppStoreUnavailableError.
+    네트워크 실패는 AppStoreUnavailableError. `allow_unauthorized` 면 401 도 돌려준다(get_transaction 의 운영 조회).
     """
     token = _token()
 
@@ -155,7 +161,7 @@ def _get(environment: str, path: str) -> tuple[int, dict]:
 
     body = _json(response)
 
-    if response.status_code in (200, 400, 404):
+    if response.status_code in (200, 400, 404) or (allow_unauthorized and response.status_code == 401):
         return response.status_code, body
 
     logger.error(

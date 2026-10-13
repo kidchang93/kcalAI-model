@@ -2403,7 +2403,7 @@ PUT /api/me/next-visit  {"questions": ""}                    → questions null 
 앱  GET /api/me/subscription → app_account_token (회원마다 고정 UUID)
 앱  StoreKit 구매(sku, appAccountToken=위 값) → transactionId
 앱  POST /api/billing/appstore/verify {transaction_id}
-서버  App Store Server API GET /inApps/v1/transactions/{id}   (운영 → 4040010 이면 샌드박스로 다시)
+서버  App Store Server API GET /inApps/v1/transactions/{id}   (운영 → 4040010·401 이면 샌드박스로 다시)
      → bundleId·productId(플러스 상품 2개)·appAccountToken==이 회원 토큰·만료 확인
      → GET /inApps/v1/subscriptions/{originalTransactionId} 로 갱신 상태(autoRenewStatus·유예)
      → user_subscriptions upsert (plan=plus, provider=appstore)
@@ -2412,7 +2412,7 @@ PUT /api/me/next-visit  {"questions": ""}                    → questions null 
 
 - **서버 인증**: 인앱 결제 키(ES256, `APPLE_IAP_KEY_ID`·`APPLE_IAP_ISSUER_ID`·`APPLE_IAP_PRIVATE_KEY_B64`) JWT(`aud=appstoreconnect-v1`, `bid`=번들 ID). Apple 응답은 우리 키로 인증한 HTTPS 조회 결과라 그 안의 JWS 페이로드를 그대로 읽는다 — **서명 검증 라이브러리를 들이지 않는다**(본문을 믿는 경로가 없으므로).
 - **`app_account_token`** = HMAC(`AUTH_CODE_PEPPER`, `appstore:{user_id}`) 앞 16바이트로 만든 UUID. 같은 Apple ID 로 다른 회원 계정에서 '구매 복원'을 눌러 남의 구독을 가져가는 것을 막는다 → **409** "다른 계정에서 구독한 이용권이에요. 처음 구독한 계정으로 로그인해주세요." 같은 `originalTransactionId` 가 이미 다른 회원에게 붙어 있어도 409.
-- **샌드박스**: App Review 는 운영 서버에 샌드박스 구매로 들어온다. 운영→샌드박스 순서로 조회하지 않으면 '구매가 안 된다'로 반려된다(가장 흔한 IAP 반려 사유).
+- **샌드박스**: App Review 는 운영 서버에 샌드박스 구매로 들어온다. 운영→샌드박스 순서로 조회하지 않으면 '구매가 안 된다'로 반려된다(가장 흔한 IAP 반려 사유). **출시 전 앱에는 운영이 401 을 준다**(2026-10-13 실측 — 같은 키로 샌드박스는 정상) — 그래서 운영 401 도 샌드박스로 넘어간다. 키가 틀렸으면 샌드박스도 401 이라 503 이다.
 - 실패: 400(플러스 상품이 아님·번들 불일치·거래 없음) · 409(위) · 503(Apple 조회 실패·키 미설정). **결제 원장(`payments`)에 행을 쓰지 않는다** — 대금 수령·영수증·환불은 Apple 이 하고 기록도 Apple 이 갖는다(토스 원장은 토스 전용으로 남긴다).
 
 ### 32-4. 갱신·해지·환불 알림 — 본문을 믿지 않는다 (29장 규약 그대로)
@@ -2453,6 +2453,13 @@ Interval = { start_date, end_date, total_days, recorded_days, kcal_daily_avg: nu
 ### 32-8. 운영 전 체크
 
 인앱 결제 키 발급·운영 `.env` · ASC 구독 그룹/상품/가격/체험/심사 스크린샷 · 서버 알림 URL · 개인정보 라벨 '구매 내역'·매니페스트 `PurchaseHistory` · 약관·처리방침 **1.4**(유료 조항 + 판매자 교체, 출시 전이라 공지 기간 없이 시행 — 사용자 결정)
+
+2026-10-13 상태:
+- ✅ 인앱 결제 키 `J8RS65U28T` 발급 → 운영 `.env` `APPLE_IAP_*` 반영(백업 `.env.bak-20261013-iap`). 같은 키로 샌드박스 조회는 정상이고 **운영은 401**(출시 전) — 위 32-3 폴백.
+- ✅ ASC 구독 그룹 `Plus`(ko '케어테이블 플러스') · `plus.yearly`(레벨 1, ₩39,000) · `plus.monthly`(레벨 2, ₩4,900) · ko 현지화 · 175개 지역 환산가 · 7일 무료 체험(175개 지역) — ASC API.
+- ✅ 서버 알림 URL(운영·샌드박스 V2) ASC API 로 저장. ⏳ 저장 직후 샌드박스 테스트 알림은 아직 'URL 없음'(4040007) — 반영 대기, 다시 `POST /inApps/v1/notifications/test` 로 확인.
+- ⏳ 상품 상태 `MISSING_METADATA` — **심사용 스크린샷**(구매 화면) 미등록. 첫 구독은 앱 버전과 **함께** 제출한다.
+- ⏳ 개인정보 라벨 '구매 내역'(ASC, 사용자) · 매니페스트 `PurchaseHistory`(빌드 8에 없음 — 다음 빌드) · 약관 1.4(새 사업자 대기).
 
 ### 32-9. 구현하며 정한 세부 (2026-10-06 — 서버 구현 완료, 리비전 0031)
 
