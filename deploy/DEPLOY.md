@@ -69,6 +69,16 @@ App Store 4.8 때문에 붙였다(`docs/LEGAL_COMPLIANCE.md` §6-6). 운영 기�
 3. ⚠️ **`.p8` 파일을 서버 디렉토리에 두지 않는다** — 배포가 작업 트리를 `rsync --delete` 해서 지워진다.
    `.env` 만 보존된다.
 
+### 0-1-3. 플러스 구독 확인 키 — 없으면 **구매 확인이 503** 이다 (2026-10-14)
+
+운영 기동은 요구하지 않는다. 비어 있으면 그 스토어의 verify·알림 재조회만 503 이다. 둘 다 키 **파일**이 아니라
+base64 한 줄로 `.env` 에 넣는다(위와 같은 이유).
+
+- **App Store** (`docs/DATA_MODEL.md` 32-3) — `APPLE_IAP_KEY_ID`·`APPLE_IAP_ISSUER_ID`·`APPLE_IAP_PRIVATE_KEY_B64`
+- **Google Play** (33-5) — `GOOGLE_PLAY_SERVICE_ACCOUNT_B64`(`base64 -i play-service-account.json | tr -d '\n'`).
+  서비스 계정에 Play Console '재무 데이터 보기'·'주문 및 구독 관리' 권한이 없으면 Google 이 403 → 503 이다.
+  리비전 **0032** 가 함께 나가므로 배포는 `--migrate`. RTDN push 구독의 확인 기한은 30초 이상으로 둔다.
+
 ### 0-2. 요금제 결제 — **연동됨** (2026-07-16)
 
 ~~미연동이라 누구나 API 한 번으로 Premium이 된다~~ → **해소**. 토스페이먼츠 자동결제가 붙었고

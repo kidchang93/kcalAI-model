@@ -22,7 +22,7 @@ kcalAI-model/
 │   ├── account_api.py          # DELETE /me (회원 탈퇴 — 계정 파기, DATA_MODEL 18장)
 │   ├── subscription_api.py     # /plans (무인증), /me/subscription (조회·변경 — PUT은 무료 다운그레이드만, 20·24장)
 │   ├── payment_api.py          # /payments, /payments/{id} (결제 내역 읽기 전용, DATA_MODEL 23장)
-│   ├── billing_api.py          # /billing/{checkout,confirm,cancel,webhook} (토스, 24·29장) + /billing/appstore/{verify,notifications} (App Store 구독, 32장. AppStoreConflictError→409·AppStoreUnavailableError→503)
+│   ├── billing_api.py          # /billing/{checkout,confirm,cancel,webhook} (토스, 24·29장) + /billing/appstore/{verify,notifications} (App Store 구독, 32장. AppStoreConflictError→409·AppStoreUnavailableError→503) + /billing/play/{verify,notifications} (Google Play 구독, 33장. PlayConflictError→409·PlayUnavailableError→503)
 │   ├── visit_api.py            # /me/next-visit (31장), /me/visits (지난 진료, 32-6)
 │   └── recommendation_api.py   # /recommendations (식단 추천, sensitive_health 동의 필수)
 ├── services/
@@ -31,8 +31,9 @@ kcalAI-model/
 │   ├── kakao_client.py         # 카카오 OAuth — 인가 URL·토큰 교환(client_secret)·프로필·연결끊기(unlink)
 │   ├── apple_client.py         # Sign in with Apple — identity token 검증(JWKS)·code 교환·토큰 폐기(revoke)
 │   ├── appstore_client.py      # App Store Server API — 거래·구독 상태 조회(ES256 JWT, 운영→샌드박스 폴백), JWS 페이로드 무검증 읽기. **키·토큰 미로깅**
+│   ├── play_client.py          # Google Play Developer API — subscriptionsv2.get·subscriptions.acknowledge(서비스 계정 OAuth, google-auth). **키·OAuth 토큰 미로깅, 구매 토큰은 앞 8자만**
 │   ├── mail_client.py          # 메일 발송(SMTP, stdlib) — 이메일 가입·비밀번호 재설정 인증 코드
-│   ├── subscription_service.py # 요금제 한도 판정·비전 일일 쿼터(원자적 UPSERT), PlanLimitError (20장), 만료 강등 해석 get_effective_plan (24장), App Store 구독 확인·알림·app_account_token (32장)
+│   ├── subscription_service.py # 요금제 한도 판정·비전 일일 쿼터(원자적 UPSERT), PlanLimitError (20장), 만료 강등 해석 get_effective_plan (24장), App Store 구독 확인·알림·app_account_token (32장), Google Play 구독 확인·RTDN (33장)
 │   ├── medical_report_service.py # 진료 리포트 — 요금제별 기간 자르기(resolve_report_range)·구간 비교(build_compare) (32-5)
 │   ├── visit_service.py        # 진료 일정 — 예정 1건 + 지난 진료 닫기·이력 (31장·32-6)
 │   ├── payment_service.py      # 결제 내역 조회·응답 조립 (23장)
@@ -248,6 +249,27 @@ Apple ── POST /api/billing/appstore/notifications {signedPayload}  무인증
 
 **결제 원장(`payments`)에 쓰지 않는다** — 대금·영수증·환불은 Apple 이 한다. 갱신 배치(`charge_due_subscriptions`)는 `provider='toss'` 만 청구하므로 IAP 구독은 대상이 아니다. 만료는 토스와 같이 `get_effective_plan` 이 **읽을 때 해석**한다.
 
+### Google Play 구독 (`POST /api/billing/play/*`) — 2026-10-14, DATA_MODEL 33장
+
+```
+앱  GET /api/me/subscription → app_account_token (iOS 와 같은 값)
+앱  Play 결제(obfuscatedAccountId=위 값) → purchaseToken
+앱 ── POST /api/billing/play/verify {product_id, purchase_token}    Bearer, 토큰은 [A-Za-z0-9._:-] (URL 경로에 실린다)
+  └─ subscription_service.verify_play_purchase()
+       ├─ product_id 가 플러스가 아님 → 400 (Google 미호출)
+       ├─ play_client.get_subscription()        subscriptionsv2.get. 404·410 → 400
+       ├─ 플러스 line item 없음 → 400 · PENDING → 400
+       ├─ obfuscatedExternalAccountId ≠ 이 회원 · 토큰/linkedPurchaseToken 이 남의 것 → PlayConflictError → 409
+       ├─ acknowledgementState=PENDING(만료 아님) → play_client.acknowledge()
+       └─ user_subscriptions: plan=plus, provider=play, store_purchase_token=새 토큰, period_end=expiryTime, next_billing_at=NULL
+  ← 200 MySubscriptionResponse (앱은 이때만 finishTransaction) / 503 PlayUnavailableError(키 미설정·권한·Google 장애)
+
+Pub/Sub ── POST /api/billing/play/notifications {message:{data}}   무인증
+  └─ handle_play_notification()   data(base64 JSON)에서 우리 packageName 의 subscriptionNotification.purchaseToken 만
+       ├─ 원장에 없음 → Google 미호출, 200 {}
+       └─ 있음 → get_subscription() 재조회 → 갱신 → 200 {} / 실패 503(Pub/Sub 재전송). notificationType 은 보지 않는다
+```
+
 ### 진료 리포트 기간 (`GET /api/me/report`) — 2026-10-06, DATA_MODEL 32-5
 
 `medical_report_service.resolve_report_range()` 가 실효 요금제(`get_user_plan`)·지난 진료일(`visit_service.recent_visit_dates`)로 기간을 정하고, 상한을 넘으면 시작일을 당긴다(400 이 아니다). 추이는 `health_service.get_trends(..., max_days=365)` — `/me/trends` 는 92일 그대로다. "오늘"은 앱과 같은 KST 날짜(`today_kst`)다.
@@ -355,6 +377,7 @@ kcal.api.predict_api · kcal.services.toss_client · …  (get_logger 가 kcal. 
 |--------|------|------|
 | PostgreSQL 16 | 사용자·인증코드·세션 | `database.py`, `docker-compose.yml` |
 | App Store Server API | 인앱 구독 거래·상태 조회 (운영 `api.storekit.itunes.apple.com` · 샌드박스 `api.storekit-sandbox.itunes.apple.com`) | `services/appstore_client.py` |
+| Google Play Developer API | 구독 구매 조회·확인 (`androidpublisher.googleapis.com` — 토큰 교환 `oauth2.googleapis.com`) | `services/play_client.py` |
 | NCP 서버 | 운영 배포 대상 | `.github/workflows/deploy.yml` |
 
 > NCP Object Storage 연동은 2026-07-12에 제거됐습니다 (자원 중단 확정).

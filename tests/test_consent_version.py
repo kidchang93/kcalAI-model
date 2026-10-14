@@ -69,6 +69,26 @@ def test_signup_with_stale_privacy_version_is_rejected(db):
         auth_service.kakao_signup(db, code, True, True, None, consent_service.TERMS_VERSION, "0.9")
 
 
+@pytest.mark.parametrize("version", ["1.4", "1.5"])
+def test_signup_accepts_previous_terms_version_and_records_it(db, version):
+    """1.5 를 올려도 1.4 가입은 받는다 — App Store 심사 중인 iOS 빌드 10 이 1.4 를 보낸다(33-6).
+
+    받은 버전 **그대로** 기록해야 증빙이 산다. 1.4 화면을 보고 가입한 사람을 1.5 동의로 적으면 거짓이다.
+    """
+    code = _issue_link_code(db, f"85000000{version.replace('.', '')}")
+
+    user, _, _ = auth_service.kakao_signup(db, code, True, True, None, version, version)
+
+    assert _consents_of(db, user.id) == {"terms": version, "privacy": version}
+
+
+def test_signup_still_rejects_versions_older_than_the_accepted_previous(db):
+    code = _issue_link_code(db, "8500000013")
+
+    with pytest.raises(ValueError):
+        auth_service.kakao_signup(db, code, True, True, None, "1.3", "1.3")
+
+
 def test_stale_version_does_not_consume_the_link_code(db):
     """버전 대조는 코드 소비 **전**이다.
 
@@ -133,7 +153,7 @@ def test_unknown_kind_passes_through(db):
 
 
 def test_version_formats_differ_by_kind_and_that_is_intentional(db):
-    """terms·privacy 는 '1.4'(2026-10-13 플러스·사업자 변경), sensitive_health 는 'v1.2' 이다.
+    """terms·privacy 는 '1.5'(2026-10-14 Google Play 결제), sensitive_health 는 'v1.2' 이다.
 
     기존 데이터가 그렇게 쌓여 있어 통일하려면 마이그레이션이 필요하다. 검증은 kind 별 비교라
     지장이 없다 — 이 테스트는 그 사실을 문서화하고, 무심코 한쪽만 바꾸면 실패한다.
@@ -141,6 +161,6 @@ def test_version_formats_differ_by_kind_and_that_is_intentional(db):
     ⚠️ 이 값을 고친다면 앱의 `constants/legal.ts`·`constants/consent.ts` 도 같은 작업 단위에서
     올렸는지 확인한다. sensitive_health 를 올리면 기존 동의자는 재동의 전까지 403 이다.
     """
-    assert consent_service.TERMS_VERSION == "1.4"
-    assert consent_service.PRIVACY_VERSION == "1.4"
+    assert consent_service.TERMS_VERSION == "1.5"
+    assert consent_service.PRIVACY_VERSION == "1.5"
     assert consent_service.SENSITIVE_HEALTH_VERSION == "v1.2"

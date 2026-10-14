@@ -2393,7 +2393,7 @@ PUT /api/me/next-visit  {"questions": ""}                    → questions null 
 
 - `plans` 에 `plus` 행: 라벨 '플러스', `price_krw` 4900(월 기준 표시값 — 실제 청구는 Apple), `daily_vision_quota` 30, 그룹 한도는 pro 와 같게. `pro`·`premium` 은 `is_active=false`(숨김 — 지우지 않는다, 유료 구독자 0명).
 - `user_subscriptions` 에 컬럼 추가:
-  - `provider` (`toss`|`appstore`|NULL=무료) — **갱신 배치 `charge_due_subscriptions` 는 `provider='toss'` 만 청구한다.** 이게 없으면 IAP 구독을 우리가 청구하려다 빌링키가 없어 `past_due` 로 떨어뜨린다(30장의 '가장 위험한 지점'). 기존 행은 유료 요금제(pro·premium)이면서 청구 예정·기간 종료가 있으면 `toss` 로 채운다(32-9).
+  - `provider` (`toss`|`appstore`|`review`|NULL=무료 — `review` 는 2026-10-14 스토어 심사용 계정에 운영자 스크립트로만 붙인 플러스, 만료일 필수·청구·알림 없음. CLAUDE.md '결제 검증 없이 유료 플랜을 부여하지 않는다'의 유일한 예외) — **갱신 배치 `charge_due_subscriptions` 는 `provider='toss'` 만 청구한다.** 이게 없으면 IAP 구독을 우리가 청구하려다 빌링키가 없어 `past_due` 로 떨어뜨린다(30장의 '가장 위험한 지점'). 기존 행은 유료 요금제(pro·premium)이면서 청구 예정·기간 종료가 있으면 `toss` 로 채운다(32-9).
   - `store_original_transaction_id` (UNIQUE, NULL 허용) — 한 Apple 구독은 한 회원에게만 붙는다.
   - `store_product_id`, `store_environment`(`Production`|`Sandbox`), `is_trial`(bool, 기본 false).
 - IAP 구독의 `current_period_end` = Apple `expiresDate`(유예 기간이면 `gracePeriodExpiresDate` 중 늦은 쪽), 환불·취소(`revocationDate`)면 그 시각. `next_billing_at` 은 **NULL**(우리가 청구하지 않는다). `cancel_at_period_end` = 자동 갱신 꺼짐(`autoRenewStatus=0`). 만료는 지금처럼 **읽을 때 해석**한다(`get_effective_plan`) — 행을 lite 로 덮지 않는다.
@@ -2500,3 +2500,92 @@ Interval = { start_date, end_date, total_days, recorded_days, kcal_daily_avg: nu
 **진료 이력 (32-6)**: 닫는 조건은 "열린 행의 날짜가 오늘 이전" **이고 새 날짜가 그보다 늦을 때**다 — 같거나 이른 날짜는 지난 날짜를 고치는 것이라 덮어쓴다(닫으면 오타 하나가 없던 진료를 기록에 남긴다). 닫는 요청에 같이 온 `outcome`(들은 것)은 **닫힌 행**에, `questions`(물어볼 것)는 새 행에 간다 — 앱 편집기가 날짜와 들은 것을 함께 보내기 때문이다. 오늘 잡힌 진료는 아직 '지난' 진료가 아니다. `/me/visits` 와 '지난 진료일'은 같은 함수(`visit_service.list_past_visits`)를 쓰고, **닫히지 않은 채 날짜가 지난 예정 행도 포함**한다(`visited_on` 자리에 그 예정일) — 빼면 다음 날짜를 아직 안 넣은 사람의 지난 진료일이 한 바퀴 밀린다. `DELETE /me/next-visit` 은 지금처럼 열린 행만 지운다.
 
 **테스트**: `tests/test_appstore_purchase.py` 35건(Apple 미호출 — 서비스는 조회 함수, 어댑터는 `requests.get` 을 대체) · `tests/test_report_range.py` 19건 · `tests/test_visit_service.py` +8건. 기존 `test_billing_service.py` 는 토스 경로 회귀에 판매 중인 유료 플랜 둘이 필요해 파일 안에서만 pro·premium 을 다시 연다(트랜잭션 롤백). 전체 532건 — 로컬 3.13·운영 3.10 둘 다 통과.
+
+## 33. 플러스 — Google Play 구독 (2026-10-14 계약 — 리비전 0032)
+
+> 사용자 결정(2026-10-14): **Android 에서도 플러스를 판다**(10-06 '나중' 번복) — 비공개 테스트 전에 넣는다. 결제는 **Google Play 결제 하나만**(한국 '개발자 제공 결제 시스템'은 쓰지 않는다 — 수수료 4%p 인하보다 PG 수수료·24시간 거래 보고·환불 직접 처리 부담이 크다). 상품·가격·체험 없음은 32장 그대로. 원칙은 32장과 같다 — **앱이 준 것은 조회 키일 뿐**이고, 상태·기간은 우리 키로 Google 에 다시 물은 결과만 쓴다.
+
+### 33-1. 상품 (Play Console — API 로 만든다)
+
+구독 **두 개**를 만들고 각자 기본 요금제 하나: `com.kcalai.kcalairn.plus.monthly`(기본 요금제 `monthly`, P1M, ₩4,900) · `com.kcalai.kcalairn.plus.yearly`(`yearly`, P1Y, ₩39,000). 상품 ID 를 iOS 와 같게 둬서 서버 `PLUS_PRODUCT_IDS`·앱 `plusPeriodOf` 를 그대로 쓴다. 판매 지역 대한민국. 무료 체험·할인 오퍼 없음.
+
+### 33-2. 테이블 (리비전 0032)
+
+- `user_subscriptions.store_purchase_token` (TEXT, **UNIQUE**, NULL 허용) — Google 구매 토큰. 한 토큰은 한 회원에게만 붙는다. Apple 거래 ID(`store_original_transaction_id`, 64자)와 길이·모양이 달라 컬럼을 나눈다.
+- `provider` 에 **`play`** 추가. 갱신 배치(`provider='toss'` 만)는 그대로라 Google 구독을 청구하지 않는다.
+- `store_product_id` 는 그대로 쓰고, `store_environment` 는 `Production` | `Test`(구독 응답에 `testPurchase` 가 있으면 — 라이선스 테스터의 테스트 카드).
+
+### 33-3. 구매 확인
+
+```
+앱  GET /api/me/subscription → app_account_token (iOS 와 같은 값 — 회원마다 고정 UUID)
+앱  Play 결제(sku, offerToken, obfuscatedAccountId = 위 값) → purchaseToken
+앱  POST /api/billing/play/verify {product_id, purchase_token}
+서버  purchases.subscriptionsv2.get(packageName, token)  (서비스 계정)
+     → lineItems[].productId 가 플러스 상품 · externalAccountIdentifiers.obfuscatedExternalAccountId == 이 회원 토큰
+       (비어 있으면 통과 — 프로모션 코드처럼 앱 밖 구매. 그때 소유권은 토큰 UNIQUE 가 지킨다)
+     → acknowledgementState 가 PENDING 이면 **서버가 acknowledge** (3일 안에 안 하면 Google 이 자동 환불한다)
+     → user_subscriptions upsert (plan=plus, provider=play)
+앱  서버 200 을 받은 뒤에만 finishTransaction (서버가 이미 acknowledge 했으므로 실패는 삼킨다)
+```
+
+| 메서드 | 경로 | 요청 | 응답 / 실패 |
+|---|---|---|---|
+| `POST` | `/api/billing/play/verify` | Bearer · `{product_id, purchase_token}` (토큰 1~512자, URL 경로에 실리므로 `[A-Za-z0-9._:-]` 밖은 422) | `MySubscriptionResponse` / 400 플러스 상품 아님·구매 없음·**결제 대기(PENDING)** / **409** 다른 회원 / 503 Google 조회 실패·키 미설정 |
+| `POST` | `/api/billing/play/notifications` | 무인증 — Pub/Sub push `{message:{data, messageId}, subscription}` | 200 `{}`(처리·무시 같은 본문) / 503(Pub/Sub 이 재전송) |
+| `GET` | `/api/me/subscription` | — | `provider` 에 `play` 가 올 수 있다(필드 추가 없음) |
+
+- **상태 매핑**(`subscriptionState`): `ACTIVE` → active(단 `autoRenewingPlan.autoRenewEnabled=false` 면 canceled — 기간까지는 플러스) · `IN_GRACE_PERIOD` → past_due(이용권 유지) · `ON_HOLD`·`PAUSED` → past_due · `CANCELED`·`EXPIRED` → canceled · `PENDING`·`PENDING_PURCHASE_CANCELED` → 부여하지 않음(400). `current_period_end` = lineItems 의 가장 늦은 `expiryTime`(만료·환불이면 지난 시각 → 읽을 때 무료). **만료 시각을 모르면 지금 끝난 것으로 둔다**(32-9 와 같다).
+- 같은 회원이 월간↔연간을 바꾸거나 다시 구독하면 Google 은 **새 토큰**(`linkedPurchaseToken` = 옛 토큰)을 준다. 새 토큰의 verify 가 오면 옛 토큰 행을 같은 회원으로 보고 새 토큰으로 갈아 끼운다. 옛 토큰이 다른 회원 것이면 409.
+- 어댑터는 Google 의 200·404·410(토큰 없음·만료) 만 답이 정해진 응답으로 본다. 401·403(서비스 계정 권한 — Play Console 에 '재무 데이터 보기'·'주문 및 구독 관리'가 없을 때)·429·5xx·네트워크 실패는 503. 로그에 토큰·키를 남기지 않는다(토큰은 앞 8자만).
+- **결제 원장(`payments`)에 쓰지 않는다** — 32-3 과 같다.
+
+### 33-4. 실시간 개발자 알림 (RTDN)
+
+Play Console › 수익 창출 설정 › 실시간 개발자 알림의 Pub/Sub 주제(Cloud 프로젝트 `caretable-play`) → push 구독 → `POST /api/billing/play/notifications`. `message.data`(base64 JSON)에서 **`subscriptionNotification.purchaseToken` 하나만** 꺼내고, `packageName` 이 우리 것이 아니면 버린다. **원장에 없는 토큰이면 Google 을 부르지 않고 200**(증폭 차단 — 29장·32-4). 있으면 `subscriptionsv2.get` 재조회 결과로만 갱신한다. `testNotification`·`oneTimeProductNotification` 은 200 으로 버린다. 알림 본문의 `notificationType` 으로 상태를 정하지 않는다.
+
+### 33-5. 설정
+
+| 변수 | 내용 |
+|---|---|
+| `GOOGLE_PLAY_SERVICE_ACCOUNT_B64` | **비밀값.** 서비스 계정 JSON 을 base64 한 줄로(`base64 -i play-service-account.json \| tr -d '\n'`). 파일로 두지 않는 이유는 Apple 키와 같다(배포가 rsync --delete). 비면 verify·알림 재조회가 503 |
+| `GOOGLE_PLAY_PACKAGE_NAME` | 기본 `com.kcalai.kcalairn` |
+
+서비스 계정 `play-publisher@caretable-play.iam.gserviceaccount.com` 은 Play Console 에서 **재무 데이터 보기·주문 및 구독 관리** 권한이 있어야 구매를 조회할 수 있다.
+
+### 33-6. 약관·처리방침 1.5
+
+결제 조항에 Google Play 결제(구글 계정 결제·Play 스토어에서 해지·환불은 Google 정책)를, 처리방침에 Google(구독 정보·구매 확인, 국외 이전)을 더한다. 서버 `TERMS_VERSION`·`PRIVACY_VERSION` 을 1.5 로 올리되 **가입은 1.4 와 1.5 를 모두 받는다** — 지금 App Store 심사 중인 iOS 빌드 10 이 1.4 를 보내기 때문이다(받지 않으면 심사관 가입이 400). 받은 버전 그대로 기록한다. 약관 버전은 가입 때만 검증하므로 기존 회원 재동의는 없다.
+
+### 33-7. 앱
+
+- `services/iap.ts` 가 Android 도 지원한다(네이티브 모듈이 있을 때) — `obfuscatedAccountIdAndroid` = `app_account_token`, 구독 상품의 `offerToken` 으로 구매, verify 는 `/api/billing/play/verify`.
+- 가격은 스토어가 준 현지화 문자열. 고지 문구는 플랫폼별: Android 는 "Google Play로 결제 · Play 스토어 › 결제 및 정기 결제에서 해지". 구독 관리 링크 `https://play.google.com/store/account/subscriptions?sku=<상품>&package=com.kcalai.kcalairn`.
+- '플러스 알아보기' 진입점(리포트·402 배너)은 iOS 만 → **결제가 되는 플랫폼(iOS·Android)**. 웹은 "휴대폰 앱에서 구독할 수 있어요".
+
+### 33-8. 구현하며 정한 세부 (2026-10-14 — 서버 구현 완료, 리비전 0032)
+
+위 계약(경로·필드·상태 매핑)은 바꾸지 않고 **비어 있던 자리**만 채운 것들이다.
+
+**구매 확인 (33-3)**
+
+- 요청의 `product_id` 는 1~100자이고 **1차 거르기**일 뿐이다 — 플러스 상품이 아니면 Google 을 부르지 않고 400. 붙이는 상품·기간은 Google 응답의 플러스 line item 중 **만료가 가장 늦은 것**으로 정한다(`store_product_id`·acknowledge 의 `subscriptionId` 도 그 값). 앱은 월간이라고 했는데 Google 이 연간이라고 하면 연간이다.
+- 순서: Google 조회 → 플러스 상품 → PENDING 거절 → `obfuscatedExternalAccountId`(소문자 비교) → 토큰·`linkedPurchaseToken` 소유 → **acknowledge** → 원장 쓰기·커밋. 소유 확인을 통과하지 못한 구매는 확인하지 않는다(남의 구매를 우리가 확정하지 않는다 — 진짜 주인이 확인한다).
+- acknowledge 는 `acknowledgementState` 가 `ACKNOWLEDGEMENT_STATE_PENDING` 이고 상태가 **`EXPIRED` 가 아닐 때만** 한다 — 끝난 구매는 대개 확인하지 않아 자동 환불된 것이라 확인할 것이 없다. acknowledge 가 404·410 이면 400(구매 없음), 실패(503)면 원장에 쓰지 않는다 → 앱이 finishTransaction 하지 않고 다시 확인한다. 두 회원이 같은 토큰을 동시에 확인해 UNIQUE 로 409 가 나도 acknowledge 는 이미 나갔을 수 있다 — 먼저 커밋한 회원의 구매라 환불되지 않는 편이 맞다.
+- `linkedPurchaseToken` 의 '갈아 끼우기'는 구독 행이 회원당 하나(1:1)라 **이 회원 행의 `store_purchase_token` 을 새 토큰으로 덮는 것**이다. 그 뒤 옛 토큰의 알림은 원장에 없는 토큰 → Google 미호출로 버려진다.
+- `subscriptionState` 는 `SUBSCRIPTION_STATE_` 접두를 떼고 비교한다. 모르는 상태는 active 로 두고 기간(`expiryTime`)으로 판단한다(32-9 Apple 과 같은 기본값).
+- **자동 갱신 꺼짐**: proto3 JSON 은 `false` 를 싣지 않아 꺼지면 `autoRenewEnabled` 가 아예 빠진다 — `true` 일 때만 켜진 것으로 보고, `cancel_at_period_end = 켜짐이 아님`.
+- `expiryTime` 은 RFC 3339 를 직접 읽는다 — 운영 3.10 의 `fromisoformat` 은 `Z`·9자리 소수 초를 못 읽는다. 못 읽으면 '만료 모름' → 지금 끝남.
+- `store_environment` = 응답에 `testPurchase` 키가 있으면 `Test`, 아니면 `Production`. `is_trial` 은 항상 false(체험 오퍼 없음).
+- 심사용 플러스(`grant_review_plus`)는 Play 토큰이 있는 회원에게도 붙지 않는다(Apple 거래가 있을 때와 같은 이유).
+- ⚠️ **한 회원이 두 스토어 구독을 동시에 가지면** 행이 하나라 마지막에 확인·알림을 받은 쪽이 상태를 쓴다(다른 스토어의 식별자는 지우지 않는다). 드문 경우라 그대로 두었다 — 생기면 '플러스 회원에게 다른 플랫폼 구매 버튼을 숨기는 것'이 먼저다.
+
+**알림 (33-4)**: `packageName` 확인을 원장 조회보다 먼저 한다. 원장에 있는데 Google 이 모르는 토큰(404·410)은 200 으로 닫고 원장을 건드리지 않는다(32-9 와 같은 판단). 재조회 결과가 플러스 상품이 아니거나 PENDING 이면 원장을 건드리지 않고 200. 요청 스키마는 `message` 의 모양도 강제하지 않는다(`{"message": 42}` 도 200). 결과 라벨(ignored·unknown·not-found·updated)은 로그에만 남긴다.
+
+**어댑터 (`services/play_client.py`)**: 서비스 계정 자격 증명은 프로세스에 하나 두고 액세스 토큰(1시간)을 만료 전까지 재사용한다. 토큰 교환 타임아웃은 10초로 줄였다(google-auth 기본 120초 — Pub/Sub push 응답 기한을 넘긴다). acknowledge 는 본문이 비어도 200 이면 성공이다. ⚠️ Google 은 형식이 틀린 토큰에 **400('Invalid Value')** 을 주는 것으로 알려져 있는데, 계약(200·404·410 만 답이 정해진 응답)대로 **503** 으로 둔다 — 실기기 구매로 실측한 뒤 400 을 '구매 없음'으로 옮길지 정한다. 앱이 보내는 토큰은 실제 구매에서 온 것이라 정상 경로에는 영향이 없다.
+
+**약관 1.5 (33-6)**: 직전 버전은 `consent_service._ACCEPTED_PREVIOUS_VERSIONS`(terms·privacy 에 `1.4`)로 받는다. `ensure_current_version` 공용이라 가입 외의 `POST /me/consents` 도 1.4 를 받지만, 받은 버전 그대로 기록하므로 증빙은 거짓이 되지 않는다. `is_current` 는 1.4 에 false 그대로다. 1.5 를 보내는 iOS·Android 빌드가 깔리면 이 집합에서 1.4 를 뺀다.
+
+**운영 반영 전**: 운영 `.env` 에 `GOOGLE_PLAY_SERVICE_ACCOUNT_B64`(없으면 verify·알림 재조회 503 — 기동은 된다) · 배포는 `--migrate`(0032) · Pub/Sub push 구독의 엔드포인트 `https://api.kcalai.link/api/billing/play/notifications`, **확인 기한(ackDeadline) 30초 이상**(토큰 교환 + 조회가 최악 20초) · 서비스 계정에 Play Console 권한 · 라이선스 테스터 구매로 verify 200(`store_environment=Test`) 실측.
+
+**테스트**: `tests/test_play_purchase.py` 68건(Google 미호출 — 서비스는 `play_client.get_subscription`·`acknowledge` 를, 어댑터는 `requests.request`·`requests.Session.request` 를 대체) · `tests/test_consent_version.py` +3건(1.4·1.5 가입 통과와 받은 버전 그대로 기록, 1.3 거절). 방어 유효성은 되돌려 확인했다 — 원장 확인보다 Google 조회를 먼저 하거나, obfuscated 대조·linked 소유 확인·PENDING 거절·'만료 모름 = 지금 끝남'을 빼면 각각 1~3건이 실패한다. 전체 605건 — 로컬 3.13·운영 3.10 둘 다 통과.

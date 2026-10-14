@@ -10,13 +10,17 @@ from schemas.billing_schema import (
     BillingCheckoutResponse,
     BillingConfirmRequest,
     BillingWebhookAck,
+    PlayNotification,
+    PlayNotificationAck,
+    PlayVerifyRequest,
     TossWebhookEvent,
 )
 from schemas.common_schema import ErrorResponse
 from schemas.subscription_schema import MySubscriptionResponse
 from services import billing_service, subscription_service
 from services.appstore_client import AppStoreUnavailableError
-from services.subscription_service import AppStoreConflictError, my_subscription_view
+from services.play_client import PlayUnavailableError
+from services.subscription_service import AppStoreConflictError, PlayConflictError, my_subscription_view
 from services.toss_client import TossError, TossNotConfiguredError
 
 router = APIRouter()
@@ -29,6 +33,8 @@ logger = get_logger(__name__)
 #   TossError               → 502  결제사 오류. TossError.message 는 우리가 통제하는 한국어 문구다
 #   AppStoreConflictError   → 409  다른 회원의 App Store 구독 (32-3)
 #   AppStoreUnavailableError → 503 인앱 결제 키 미설정·Apple 조회 실패 — 메시지는 우리 문구다
+#   PlayConflictError       → 409  다른 회원의 Google Play 구독 (33-3)
+#   PlayUnavailableError    → 503  서비스 계정 미설정·Google 조회 실패 — 메시지는 우리 문구다
 _NOT_CONFIGURED_DETAIL = "결제 서비스를 준비 중입니다. 잠시 후 다시 시도해주세요."
 
 
@@ -183,3 +189,53 @@ def receive_appstore_notification(request: AppStoreNotification, db: DB):
 
     logger.info(f"appstore notification result={result}")
     return AppStoreNotificationAck()
+
+
+@router.post(
+    "/billing/play/verify",
+    response_model=MySubscriptionResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+def verify_play_purchase(request: PlayVerifyRequest, current_user: CurrentUser, db: DB):
+    """Google Play 구매 확인 (DATA_MODEL.md 33-3). acknowledge 는 서버가 한다 — 앱은 200 을 받은 뒤에만 finishTransaction."""
+    try:
+        subscription_service.verify_play_purchase(
+            db, current_user.id, request.product_id, request.purchase_token
+        )
+    except PlayConflictError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except PlayUnavailableError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
+        ) from error
+
+    return my_subscription_view(db, current_user.id)
+
+
+@router.post(
+    "/billing/play/notifications",
+    response_model=PlayNotificationAck,
+    responses={503: {"model": ErrorResponse}},
+)
+def receive_play_notification(request: PlayNotification, db: DB):
+    """Google Play 실시간 개발자 알림 — Pub/Sub push (DATA_MODEL.md 33-4).
+
+    **무인증이다** — Pub/Sub 이 부른다. App Store 알림(32-4)과 같은 규약으로 막는다: 본문에서는 구매 토큰만 꺼내고,
+    우리 원장에 있는 토큰일 때만 Google 에 다시 물어 그 답으로 갱신한다.
+      200 — 처리했거나 처리할 것이 없다(모르는 토큰·다른 패키지·테스트 알림·깨진 본문). Pub/Sub 이 메시지를 지운다.
+      503 — Google 조회에 실패해 아직 판단하지 못했다. Pub/Sub 이 재전송한다.
+    """
+    try:
+        result = subscription_service.handle_play_notification(db, request.model_dump())
+    except PlayUnavailableError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
+        ) from error
+
+    logger.info(f"play notification result={result}")
+    return PlayNotificationAck()

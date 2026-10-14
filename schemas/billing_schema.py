@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 # 요청에 **금액이 없다**는 점이 이 계약의 핵심이다 (24장). 금액은 언제나 서버가 plans.price_krw
@@ -90,3 +92,30 @@ class AppStoreNotification(BaseModel):
 
 class AppStoreNotificationAck(BaseModel):
     """`{}` — 처리 결과를 싣지 않는다 (무인증 호출자에게 거래의 존재 여부를 알려 주지 않는다)."""
+
+
+class PlayVerifyRequest(BaseModel):
+    """Play 결제가 준 상품 ID 와 purchaseToken. **조회 키일 뿐이다** — 상태·기간은 서버가 Google 에 다시 물어본다 (33-3).
+
+    토큰은 Google 조회 URL 경로에 실리므로 토큰에 쓰이는 문자만 받는다(경로 조작 차단).
+    """
+
+    product_id: str = Field(..., min_length=1, max_length=100)
+    purchase_token: str = Field(..., pattern=r"^[A-Za-z0-9._:-]{1,512}$")
+
+
+class PlayNotification(BaseModel):
+    """Pub/Sub push 본문 `{message: {data, messageId}, subscription}` (33-4). **믿지 않는다** — `message.data` 에서
+    구매 토큰을 꺼낼 뿐이다.
+
+    `message` 의 모양을 강제하지 않는 이유는 토스 웹훅과 같다 — 모르는 모양이 와도 422 로 거절하면 Pub/Sub 이
+    재전송만 한다. 꺼내는 일은 서비스가 하고, 못 꺼내면 200 으로 버린다.
+    """
+
+    message: Any = None
+
+    model_config = {"extra": "ignore"}
+
+
+class PlayNotificationAck(BaseModel):
+    """`{}` — 처리 결과를 싣지 않는다 (무인증 호출자에게 토큰의 존재 여부를 알려 주지 않는다)."""

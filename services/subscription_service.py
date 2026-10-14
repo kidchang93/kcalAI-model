@@ -1,5 +1,8 @@
+import base64
 import hashlib
 import hmac
+import json
+import re
 import uuid
 from datetime import date, datetime, time, timedelta
 
@@ -12,7 +15,7 @@ from log_utils import get_logger
 from models.group_model import Group, GroupMember, GroupPet
 from models.pet_model import Pet
 from models.subscription_model import Plan, UserSubscription, VisionUsageDaily
-from services import appstore_client
+from services import appstore_client, play_client
 from services.errors import BadRequestError
 from timeutil import KST, UTC, today_kst
 
@@ -27,13 +30,16 @@ STATUS_ACTIVE = "active"
 STATUS_CANCELED = "canceled"  # 자동갱신 해지 — 기간 만료까지는 유료 유지
 STATUS_PAST_DUE = "past_due"  # 갱신 실패 — 유예 중
 
-# user_subscriptions.provider (32-2). NULL = 무료. 갱신 배치는 toss 만 청구한다.
+# user_subscriptions.provider (32-2·33-2). NULL = 무료. 갱신 배치는 toss 만 청구한다.
 PROVIDER_TOSS = "toss"
 PROVIDER_APPSTORE = "appstore"
+PROVIDER_PLAY = "play"
+# 스토어 심사용 계정에 운영자가 붙인 플러스(결제 없음 — grant_review_plus). 갱신·알림 어느 경로도 건드리지 않는다.
+PROVIDER_REVIEW = "review"
 
 # 지금 파는 유료는 플러스 하나다 (32장). pro·premium 은 숨겼다(is_active=false) — 지우지 않았다.
 PLUS_PLAN_CODE = "plus"
-# App Store Connect 의 구독 상품 ID. 이 둘이 아니면 플러스를 주지 않는다.
+# App Store Connect·Play Console 의 구독 상품 ID(두 스토어가 같다 — 33-1). 이 둘이 아니면 플러스를 주지 않는다.
 PLUS_PRODUCT_IDS = frozenset(
     {"com.kcalai.kcalairn.plus.monthly", "com.kcalai.kcalairn.plus.yearly"}
 )
@@ -207,13 +213,42 @@ def change_plan(db: Session, user_id: int, plan_code: str) -> UserSubscription:
     subscription = get_subscription(db, user_id)
     subscription.plan_code = plan.code
     # 무료로 내려가면 청구 상태를 비운다 — 남겨 두면 갱신 배치가 이미 무료인 회원을 청구 대상으로
-    # 집어 든다(next_billing_at 이 살아 있으므로). App Store 거래 식별자는 남긴다 — Apple 쪽 구독은 여기서
-    # 끝나지 않으므로, 알림이 오면 그 거래로 다시 회원을 찾아야 한다(해지는 App Store 에서 한다).
+    # 집어 든다(next_billing_at 이 살아 있으므로). 스토어 거래 식별자(Apple 거래·Play 토큰)는 남긴다 — 스토어 쪽 구독은
+    # 여기서 끝나지 않으므로, 알림이 오면 그 식별자로 다시 회원을 찾아야 한다(해지는 스토어에서 한다).
     subscription.provider = None
     subscription.status = STATUS_ACTIVE
     subscription.current_period_end = None
     subscription.next_billing_at = None
     subscription.cancel_at_period_end = False
+    db.commit()
+    db.refresh(subscription)
+    return subscription
+
+
+def grant_review_plus(db: Session, user_id: int, until: datetime) -> UserSubscription:
+    """스토어 **심사용 계정**에만 플러스를 붙인다 — 결제 없는 유일한 유료 부여 경로(2026-10-14).
+
+    Google Play 로그인 세부정보는 '유료 콘텐츠까지 볼 수 있는 계정'을 요구하는데 검토자는 구매하지 못한다.
+    그래서 API 로는 열지 않고 운영자 스크립트(`scripts/grant_review_plus.py`)만 부른다. 만료일이 필수인 이유는
+    잊혀도 영구 무료 플러스가 남지 않게 하려는 것이다 — 만료는 다른 구독처럼 `get_effective_plan` 이 읽을 때 해석한다.
+    결제·스토어 구독이 붙은 회원은 거절한다(덮어쓰면 Apple 알림이 갈 곳을 잃고, 토스 배치가 청구 대상을 잃는다).
+    """
+    subscription = get_subscription(db, user_id)
+
+    if (
+        subscription.provider == PROVIDER_TOSS
+        or subscription.store_original_transaction_id is not None
+        or subscription.store_purchase_token is not None
+    ):
+        raise BadRequestError("결제·스토어 구독이 있는 회원에게는 심사용 플러스를 붙이지 않습니다.")
+
+    subscription.plan_code = PLUS_PLAN_CODE
+    subscription.provider = PROVIDER_REVIEW
+    subscription.status = STATUS_ACTIVE
+    subscription.current_period_end = until
+    subscription.next_billing_at = None
+    subscription.cancel_at_period_end = False
+    subscription.is_trial = False
     db.commit()
     db.refresh(subscription)
     return subscription
@@ -559,6 +594,226 @@ def _from_apple_ms(value: object) -> datetime | None:
         return None
 
     return datetime.fromtimestamp(value / 1000, tz=UTC)
+
+
+# ---- Google Play 구독 (DATA_MODEL 33-3·33-4) ----
+# 32장과 같은 원칙이다 — 앱이 보낸 purchaseToken 과 RTDN 본문은 조회 키일 뿐이고, 상태·기간은 서비스 계정으로
+# Google 에 다시 물은 응답만 쓴다. 사용자 문구는 스토어 공통이라 App Store 의 것을 그대로 쓴다.
+
+PLAY_PENDING_MESSAGE = "결제가 아직 끝나지 않았어요. 결제가 완료되면 다시 확인해주세요."
+
+# subscriptionsv2 의 subscriptionState(접두 SUBSCRIPTION_STATE_ 를 뗀 값) → 우리 status. 만료 강등은 기간으로 읽을 때
+# 해석한다(get_effective_plan). PENDING·PENDING_PURCHASE_CANCELED 는 결제가 끝나지 않아 부여하지 않는다.
+_PLAY_STATUS = {
+    "ACTIVE": STATUS_ACTIVE,
+    "IN_GRACE_PERIOD": STATUS_PAST_DUE,  # 유예 — 이용권 유지(expiryTime 이 유예 끝)
+    "ON_HOLD": STATUS_PAST_DUE,
+    "PAUSED": STATUS_PAST_DUE,
+    "CANCELED": STATUS_CANCELED,  # 자동 갱신 해지 — expiryTime 까지는 플러스
+    "EXPIRED": STATUS_CANCELED,
+}
+_PLAY_PENDING_STATES = frozenset({"PENDING", "PENDING_PURCHASE_CANCELED"})
+_PLAY_ACK_PENDING = "ACKNOWLEDGEMENT_STATE_PENDING"
+# RFC 3339 (Google 은 소수 초를 0·3·6·9자리로 준다 — 3.10 의 fromisoformat 은 9자리·Z 를 못 읽는다).
+_RFC3339 = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})")
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+class PlayConflictError(Exception):
+    """이 Google Play 구독은 다른 회원 것이다. api 가 409 로 바꾼다 — AppStoreConflictError 와 같은 이유로 400 과 가른다."""
+
+
+def verify_play_purchase(
+    db: Session, user_id: int, product_id: str, purchase_token: str
+) -> UserSubscription:
+    """앱이 받은 purchaseToken 을 Google 에 다시 물어 플러스를 붙인다 (33-3).
+
+    실패: BadRequestError(플러스 상품 아님·구매 없음·결제 대기 → 400) · PlayConflictError(남의 구독 → 409) ·
+    PlayUnavailableError(키 미설정·Google 조회 실패 → 503). acknowledge 는 서버가 한다 — 3일 안에 안 하면 Google 이
+    자동 환불한다. **결제 원장(payments)에는 쓰지 않는다** (32-3 과 같다).
+    """
+    # 앱이 말한 상품부터 거른다 — 플러스가 아니면 Google 을 부를 이유가 없다. 실제 상품은 Google 응답으로 다시 본다.
+    if product_id not in PLUS_PRODUCT_IDS:
+        raise BadRequestError(APPSTORE_NOT_PLUS_MESSAGE)
+
+    purchase = play_client.get_subscription(purchase_token)
+
+    if purchase is None:
+        raise BadRequestError(APPSTORE_NOT_FOUND_MESSAGE)
+
+    item = _play_plus_item(purchase)
+
+    if item is None:
+        raise BadRequestError(APPSTORE_NOT_PLUS_MESSAGE)
+
+    state = _play_state(purchase)
+
+    if state in _PLAY_PENDING_STATES:
+        raise BadRequestError(PLAY_PENDING_MESSAGE)
+
+    masked = play_client.mask_token(purchase_token)
+    # 비어 있으면 통과시킨다 — 프로모션 코드처럼 앱 밖에서 시작한 구매에는 없다. 그때 소유권은 토큰 UNIQUE 가 지킨다.
+    account = (purchase.get("externalAccountIdentifiers") or {}).get("obfuscatedExternalAccountId")
+
+    if account and str(account).lower() != app_account_token(user_id):
+        logger.info(f"play verify account mismatch user_id={user_id} token={masked}")
+        raise PlayConflictError(APPSTORE_CONFLICT_MESSAGE)
+
+    # 월간↔연간 변경·재구독은 새 토큰을 주고 linkedPurchaseToken 이 옛 토큰이다. 옛 토큰이 이 회원 것이면 아래에서
+    # 같은 행의 토큰을 새것으로 갈아 끼우고, 다른 회원 것이면 409 다.
+    linked = purchase.get("linkedPurchaseToken")
+
+    for token in (purchase_token, linked if isinstance(linked, str) else None):
+        if token and _play_token_owner(db, token) not in (None, user_id):
+            logger.info(f"play verify owned by other user_id={user_id} token={masked}")
+            raise PlayConflictError(APPSTORE_CONFLICT_MESSAGE)
+
+    # 이미 끝난 구독은 확인할 것이 없다(대개 확인하지 않아 자동 환불된 구매다).
+    if purchase.get("acknowledgementState") == _PLAY_ACK_PENDING and state != "EXPIRED":
+        if not play_client.acknowledge(item["productId"], purchase_token):
+            raise BadRequestError(APPSTORE_NOT_FOUND_MESSAGE)
+
+    subscription = get_subscription(db, user_id)
+    _apply_play_state(subscription, purchase_token, purchase)
+
+    try:
+        db.commit()
+    except IntegrityError:
+        # 같은 토큰을 두 회원이 동시에 확인했다 — UNIQUE 가 늦게 온 쪽을 막았다.
+        db.rollback()
+        raise PlayConflictError(APPSTORE_CONFLICT_MESSAGE) from None
+
+    logger.info(
+        f"play verify ok user_id={user_id} token={masked} env={subscription.store_environment} "
+        f"status={subscription.status}"
+    )
+    return subscription
+
+
+def handle_play_notification(db: Session, body: object) -> str:
+    """실시간 개발자 알림(RTDN, Pub/Sub push) (33-4). **본문을 믿지 않는다** — 우리 패키지의 구독 알림 토큰 하나만
+    꺼내고, 원장에 없는 토큰이면 Google 을 부르지 않고 버린다(증폭 통로 차단, 29장). 있으면 다시 조회한 결과로만
+    갱신한다 — `notificationType` 으로 상태를 정하지 않는다. 반환값은 로그용 라벨이다(응답에 싣지 않는다).
+
+    PlayUnavailableError 는 올려 보낸다 → 503 → Pub/Sub 이 재전송한다.
+    """
+    purchase_token = _play_notification_token(body)
+
+    if purchase_token is None:
+        return "ignored"
+
+    subscription = db.scalar(
+        select(UserSubscription).where(UserSubscription.store_purchase_token == purchase_token)
+    )
+
+    if subscription is None:
+        return "unknown"
+
+    purchase = play_client.get_subscription(purchase_token)
+
+    if purchase is None:
+        # 우리 원장엔 있는데 Google 이 모른다 — 재전송해도 같은 답이라 닫는다. 원장은 건드리지 않는다.
+        logger.error(f"play notification token unknown to google token={play_client.mask_token(purchase_token)}")
+        return "not-found"
+
+    if _play_plus_item(purchase) is None or _play_state(purchase) in _PLAY_PENDING_STATES:
+        return "ignored"
+
+    _apply_play_state(subscription, purchase_token, purchase)
+    db.commit()
+    logger.info(
+        f"play notification applied user_id={subscription.user_id} "
+        f"token={play_client.mask_token(purchase_token)} status={subscription.status}"
+    )
+    return "updated"
+
+
+def _play_notification_token(body: object) -> str | None:
+    # Pub/Sub push 본문 {message: {data}} — data 는 base64 JSON(DeveloperNotification). 테스트·일회성 상품 알림과
+    # 다른 패키지의 알림은 여기서 버린다.
+    try:
+        notification = json.loads(base64.b64decode(body["message"]["data"]))
+        package = notification["packageName"]
+        purchase_token = notification["subscriptionNotification"]["purchaseToken"]
+    except (ValueError, TypeError, KeyError):
+        return None
+
+    if package != play_client.GOOGLE_PLAY_PACKAGE_NAME or not isinstance(purchase_token, str):
+        return None
+
+    return purchase_token or None
+
+
+def _play_token_owner(db: Session, purchase_token: str) -> int | None:
+    return db.scalar(
+        select(UserSubscription.user_id).where(UserSubscription.store_purchase_token == purchase_token)
+    )
+
+
+def _play_state(purchase: dict) -> str:
+    return str(purchase.get("subscriptionState") or "").removeprefix("SUBSCRIPTION_STATE_")
+
+
+def _play_plus_item(purchase: dict) -> dict | None:
+    """플러스 상품 line item 중 만료가 가장 늦은 것. 없으면 None."""
+    items = [
+        item
+        for item in purchase.get("lineItems") or []
+        if isinstance(item, dict) and item.get("productId") in PLUS_PRODUCT_IDS
+    ]
+
+    if not items:
+        return None
+
+    return max(items, key=lambda item: _from_google_time(item.get("expiryTime")) or _EPOCH)
+
+
+def _apply_play_state(subscription: UserSubscription, purchase_token: str, purchase: dict) -> None:
+    """Google 이 확인해 준 상태를 구독 행에 옮긴다. `next_billing_at` 은 비운다 — 우리가 청구하지 않는다."""
+    item = _play_plus_item(purchase)
+    # 만료 시각을 모르면 **지금 끝난 것**으로 둔다 — 기간이 NULL 인 유료 구독은 만료되지 않는 것으로 해석되므로
+    # (get_effective_plan) 모른다고 무기한을 줄 수는 없다 (32-9 와 같다).
+    period_end = _from_google_time(item.get("expiryTime")) or datetime.now(UTC)
+    # proto3 JSON 은 false 를 싣지 않는다 — 자동 갱신이 꺼지면 autoRenewEnabled 가 아예 빠진다. true 일 때만 켜짐이다.
+    auto_renew = (item.get("autoRenewingPlan") or {}).get("autoRenewEnabled") is True
+    status = _PLAY_STATUS.get(_play_state(purchase), STATUS_ACTIVE)
+
+    if status == STATUS_ACTIVE and not auto_renew:
+        # 토스 해지와 같은 모양 — 기간까지는 플러스, 그 뒤엔 읽을 때 무료로 해석된다.
+        status = STATUS_CANCELED
+
+    subscription.plan_code = PLUS_PLAN_CODE
+    subscription.provider = PROVIDER_PLAY
+    subscription.status = status
+    subscription.current_period_end = period_end
+    subscription.next_billing_at = None
+    subscription.cancel_at_period_end = not auto_renew
+    subscription.store_purchase_token = purchase_token
+    subscription.store_product_id = item.get("productId")
+    # 라이선스 테스터의 테스트 카드 구매면 testPurchase 가 (빈 객체로) 온다.
+    subscription.store_environment = "Test" if "testPurchase" in purchase else "Production"
+    # Play 플러스에는 체험 오퍼가 없다 (33-1).
+    subscription.is_trial = False
+
+
+def _from_google_time(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+
+    match = _RFC3339.fullmatch(value)
+
+    if match is None:
+        return None
+
+    seconds, fraction, zone = match.groups()
+    micro = (fraction or "").ljust(6, "0")[:6]
+
+    try:
+        parsed = datetime.fromisoformat(f"{seconds}.{micro}{'+00:00' if zone == 'Z' else zone}")
+    except ValueError:
+        return None
+
+    return parsed.astimezone(UTC)
 
 
 # 402 문구에 요금제·업그레이드를 쓰지 않는다(2026-09-29) — 출시는 무료이고 유료화는 인앱 결제로

@@ -230,3 +230,26 @@ def test_downgrade_keeps_existing_data_and_only_blocks_additions(db):
     with pytest.raises(PlanLimitError):
         pet_service.create_pet(db, owner.id, "초코", "dog", None, None, None, None)
 
+
+
+# ---- 심사용 플러스 (2026-10-14) — 결제 없는 유일한 부여 경로라 만료와 거절을 함께 건다 ----
+
+def test_review_plus_is_plus_until_it_expires(db):
+    user = make_user(db, kakao_id="8200000091", nickname="심사")
+    subscription_service.grant_review_plus(db, user.id, datetime.now(UTC) + timedelta(days=30))
+
+    assert subscription_service.get_user_plan(db, user.id).code == "plus"
+
+    # 만료일이 지나면 다른 구독처럼 읽을 때 무료로 해석된다 — 잊혀도 영구 플러스가 남지 않는다.
+    subscription_service.get_subscription(db, user.id).current_period_end = datetime.now(UTC) - timedelta(seconds=1)
+    assert subscription_service.get_user_plan(db, user.id).code == "lite"
+
+
+def test_review_plus_refuses_store_subscribers(db):
+    user = make_user(db, kakao_id="8200000092", nickname="구독자")
+    subscription = subscription_service.get_subscription(db, user.id)
+    subscription.store_original_transaction_id = "2000000000000092"
+    db.flush()
+
+    with pytest.raises(subscription_service.BadRequestError):
+        subscription_service.grant_review_plus(db, user.id, datetime.now(UTC) + timedelta(days=30))

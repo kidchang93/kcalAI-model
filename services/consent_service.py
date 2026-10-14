@@ -44,8 +44,11 @@ GROUP_ACTIVITY_SHARE = "group_activity_share"
 # 2026-10-13: terms·privacy 1.3 → 1.4(플러스 — App Store 인앱 구독의 결제·자동 갱신·해지·환불 조항, 구독 정보
 # 수집·Apple 국외 이전, 사업자 변경 → 미드나잇모찌). 구독 정보는 플러스를 산 사람에게만 해당하고 출시 전이라
 # 공지 기간 없이 즉시 시행(사용자 결정) — 재동의를 요구하지 않는다. ⚠️ 옛 앱(빌드 9 이하)은 가입 때 1.3 을 보내 400 이다.
-TERMS_VERSION = "1.4"
-PRIVACY_VERSION = "1.4"
+# 2026-10-14: terms·privacy 1.4 → 1.5(Google Play 결제 — 구글 계정 결제·Play 스토어 해지·Google 환불 정책, 구독 정보의
+# Google 처리·국외 이전, DATA_MODEL 33-6). 가입은 1.4 도 받는다(_ACCEPTED_PREVIOUS_VERSIONS) — 심사 중인 iOS 빌드 10 이
+# 1.4 를 보낸다. 재동의는 요구하지 않는다(약관 버전은 가입 때만 검증한다).
+TERMS_VERSION = "1.5"
+PRIVACY_VERSION = "1.5"
 SENSITIVE_HEALTH_VERSION = "v1.2"
 GROUP_ACTIVITY_SHARE_VERSION = "v1.0"
 
@@ -71,6 +74,14 @@ _CURRENT_VERSIONS = {
     PRIVACY: PRIVACY_VERSION,
     SENSITIVE_HEALTH: SENSITIVE_HEALTH_VERSION,
     GROUP_ACTIVITY_SHARE: GROUP_ACTIVITY_SHARE_VERSION,
+}
+
+# 현재 버전과 함께 **받아 주는** 직전 버전 — 받은 버전 그대로 기록하므로 증빙은 거짓이 되지 않는다. 앱 심사·배포가
+# 서버보다 늦는 동안만 둔다: 1.4 는 App Store 심사 중인 iOS 빌드 10 이 보낸다(33-6). 1.5 를 보내는 빌드가 깔리면 뺀다.
+# `is_current` 는 여전히 False 다(낡은 것은 낡은 것이다).
+_ACCEPTED_PREVIOUS_VERSIONS = {
+    TERMS: frozenset({"1.4"}),
+    PRIVACY: frozenset({"1.4"}),
 }
 
 # 앱이 옛 문서를 보여주고 있을 때의 사용자 메시지. 앱을 최신으로 올리면 해소된다.
@@ -117,8 +128,9 @@ def ensure_current_version(kind: str, version: str) -> None:
     **대조**하고, 다르면 기록하지 않고 막는다(400 → 앱 업데이트 유도).
 
     모르는 kind 는 통과시킨다 — 동의 종류가 늘 때 서버만 먼저 배포돼도 깨지지 않아야 한다.
+    `_ACCEPTED_PREVIOUS_VERSIONS` 의 직전 버전도 통과시킨다(그 버전 그대로 기록된다).
     """
-    if not is_current_version(kind, version):
+    if not is_current_version(kind, version) and version not in _ACCEPTED_PREVIOUS_VERSIONS.get(kind, ()):
         raise BadRequestError(_STALE_VERSION_MESSAGE)
 
 
