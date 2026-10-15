@@ -2505,7 +2505,7 @@ Interval = { start_date, end_date, total_days, recorded_days, kcal_daily_avg: nu
 
 > 사용자 결정(2026-10-14): **Android 에서도 플러스를 판다**(10-06 '나중' 번복) — 비공개 테스트 전에 넣는다. 결제는 **Google Play 결제 하나만**(한국 '개발자 제공 결제 시스템'은 쓰지 않는다 — 수수료 4%p 인하보다 PG 수수료·24시간 거래 보고·환불 직접 처리 부담이 크다). 상품·가격·체험 없음은 32장 그대로. 원칙은 32장과 같다 — **앱이 준 것은 조회 키일 뿐**이고, 상태·기간은 우리 키로 Google 에 다시 물은 결과만 쓴다.
 
-### 33-1. 상품 (Play Console — API 로 만든다)
+### 33-1. 상품 (Play Console — 2026-10-15 콘솔에서 만들고 활성화. API 쓰기는 403 이라 조회만 된다)
 
 구독 **두 개**를 만들고 각자 기본 요금제 하나: `com.kcalai.kcalairn.plus.monthly`(기본 요금제 `monthly`, P1M, ₩4,900) · `com.kcalai.kcalairn.plus.yearly`(`yearly`, P1Y, ₩39,000). 상품 ID 를 iOS 와 같게 둬서 서버 `PLUS_PRODUCT_IDS`·앱 `plusPeriodOf` 를 그대로 쓴다. 판매 지역 대한민국. 무료 체험·할인 오퍼 없음.
 
