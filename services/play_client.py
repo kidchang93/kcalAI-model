@@ -29,8 +29,10 @@ GOOGLE_PLAY_PACKAGE_NAME = os.getenv("GOOGLE_PLAY_PACKAGE_NAME", "com.kcalai.kca
 SCOPE = "https://www.googleapis.com/auth/androidpublisher"
 BASE_URL = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications"
 PLAY_TIMEOUT_SECONDS = 10
-# 몇 번을 물어도 같은 답이 나오는 응답 — 404·410 은 토큰 없음·만료가 오래됨이다. 그 밖은 판단하지 못한 것.
-DECIDED_STATUSES = (200, 404, 410)
+# 몇 번을 물어도 같은 답이 나오는 응답 — 204 는 acknowledge 성공(본문 없음), 404·410 은 토큰 없음·만료가 오래됨이다.
+# 그 밖은 판단하지 못한 것. (2026-10-15 실구매에서 acknowledge 가 204 를 줘 503 이 났다.)
+SUCCESS_STATUSES = (200, 204)
+DECIDED_STATUSES = (*SUCCESS_STATUSES, 404, 410)
 
 UNAVAILABLE_MESSAGE = "구독 정보를 지금 확인할 수 없어요. 잠시 후 다시 시도해주세요."
 
@@ -76,7 +78,7 @@ def acknowledge(product_id: str, purchase_token: str) -> bool:
         f"/tokens/{quote(purchase_token, safe='')}:acknowledge",
     )
 
-    if status_code != 200:
+    if status_code not in SUCCESS_STATUSES:
         logger.info(f"play acknowledge not found status={status_code} token={mask_token(purchase_token)}")
         return False
 
@@ -84,7 +86,7 @@ def acknowledge(product_id: str, purchase_token: str) -> bool:
 
 
 def _call(method: str, path: str) -> tuple[int, dict]:
-    """200·404·410 은 (상태, 본문)으로 돌려준다. 그 밖(401·403 권한·429·5xx)과 네트워크 실패는 PlayUnavailableError."""
+    """200·204·404·410 은 (상태, 본문)으로 돌려준다. 그 밖(401·403 권한·429·5xx)과 네트워크 실패는 PlayUnavailableError."""
     access_token = _access_token()
 
     try:

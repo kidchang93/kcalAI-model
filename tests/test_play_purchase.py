@@ -612,12 +612,14 @@ def test_other_statuses_are_unavailable(monkeypatch, oauth, status_code):
         play_client.get_subscription(PURCHASE_TOKEN)
 
 
-def test_acknowledge_posts_to_subscriptions_acknowledge(monkeypatch, oauth):
+@pytest.mark.parametrize("status_code", [200, 204])
+def test_acknowledge_posts_to_subscriptions_acknowledge(monkeypatch, oauth, status_code):
+    """실제 Google 은 204(본문 없음)를 준다 — 2026-10-15 실구매에서 503 이 났던 자리."""
     seen = {}
 
     def fake_request(method, url, headers, timeout):
         seen.update(method=method, url=url)
-        return _Response(200)  # 본문이 비어 있다
+        return _Response(status_code)  # 본문이 비어 있다
 
     monkeypatch.setattr(play_client.requests, "request", fake_request)
 

@@ -2537,7 +2537,7 @@ Interval = { start_date, end_date, total_days, recorded_days, kcal_daily_avg: nu
 
 - **상태 매핑**(`subscriptionState`): `ACTIVE` → active(단 `autoRenewingPlan.autoRenewEnabled=false` 면 canceled — 기간까지는 플러스) · `IN_GRACE_PERIOD` → past_due(이용권 유지) · `ON_HOLD`·`PAUSED` → past_due · `CANCELED`·`EXPIRED` → canceled · `PENDING`·`PENDING_PURCHASE_CANCELED` → 부여하지 않음(400). `current_period_end` = lineItems 의 가장 늦은 `expiryTime`(만료·환불이면 지난 시각 → 읽을 때 무료). **만료 시각을 모르면 지금 끝난 것으로 둔다**(32-9 와 같다).
 - 같은 회원이 월간↔연간을 바꾸거나 다시 구독하면 Google 은 **새 토큰**(`linkedPurchaseToken` = 옛 토큰)을 준다. 새 토큰의 verify 가 오면 옛 토큰 행을 같은 회원으로 보고 새 토큰으로 갈아 끼운다. 옛 토큰이 다른 회원 것이면 409.
-- 어댑터는 Google 의 200·404·410(토큰 없음·만료) 만 답이 정해진 응답으로 본다. 401·403(서비스 계정 권한 — Play Console 에 '재무 데이터 보기'·'주문 및 구독 관리'가 없을 때)·429·5xx·네트워크 실패는 503. 로그에 토큰·키를 남기지 않는다(토큰은 앞 8자만).
+- 어댑터는 Google 의 200·204(acknowledge 성공)·404·410(토큰 없음·만료) 만 답이 정해진 응답으로 본다. 401·403(서비스 계정 권한 — Play Console 에 '재무 데이터 보기'·'주문 및 구독 관리'가 없을 때)·429·5xx·네트워크 실패는 503. 로그에 토큰·키를 남기지 않는다(토큰은 앞 8자만).
 - **결제 원장(`payments`)에 쓰지 않는다** — 32-3 과 같다.
 
 ### 33-4. 실시간 개발자 알림 (RTDN)
@@ -2582,7 +2582,7 @@ Play Console › 수익 창출 설정 › 실시간 개발자 알림의 Pub/Sub 
 
 **알림 (33-4)**: `packageName` 확인을 원장 조회보다 먼저 한다. 원장에 있는데 Google 이 모르는 토큰(404·410)은 200 으로 닫고 원장을 건드리지 않는다(32-9 와 같은 판단). 재조회 결과가 플러스 상품이 아니거나 PENDING 이면 원장을 건드리지 않고 200. 요청 스키마는 `message` 의 모양도 강제하지 않는다(`{"message": 42}` 도 200). 결과 라벨(ignored·unknown·not-found·updated)은 로그에만 남긴다.
 
-**어댑터 (`services/play_client.py`)**: 서비스 계정 자격 증명은 프로세스에 하나 두고 액세스 토큰(1시간)을 만료 전까지 재사용한다. 토큰 교환 타임아웃은 10초로 줄였다(google-auth 기본 120초 — Pub/Sub push 응답 기한을 넘긴다). acknowledge 는 본문이 비어도 200 이면 성공이다. ⚠️ Google 은 형식이 틀린 토큰에 **400('Invalid Value')** 을 주는 것으로 알려져 있는데, 계약(200·404·410 만 답이 정해진 응답)대로 **503** 으로 둔다 — 실기기 구매로 실측한 뒤 400 을 '구매 없음'으로 옮길지 정한다. 앱이 보내는 토큰은 실제 구매에서 온 것이라 정상 경로에는 영향이 없다.
+**어댑터 (`services/play_client.py`)**: 서비스 계정 자격 증명은 프로세스에 하나 두고 액세스 토큰(1시간)을 만료 전까지 재사용한다. 토큰 교환 타임아웃은 10초로 줄였다(google-auth 기본 120초 — Pub/Sub push 응답 기한을 넘긴다). acknowledge 는 **204**(본문 없음)를 준다 — 200·204 둘 다 성공이다(2026-10-15 첫 실구매에서 204 를 503 으로 바꿔 앱이 "확인할 수 없어요"를 띄웠다. Google 쪽 확인은 이미 끝나 다시 확인하면 ACKNOWLEDGED 라 건너뛰고 붙는다). ⚠️ Google 은 형식이 틀린 토큰에 **400('Invalid Value')** 을 주는 것으로 알려져 있는데, 계약(200·204·404·410 만 답이 정해진 응답)대로 **503** 으로 둔다 — 실기기 구매로 실측한 뒤 400 을 '구매 없음'으로 옮길지 정한다. 앱이 보내는 토큰은 실제 구매에서 온 것이라 정상 경로에는 영향이 없다.
 
 **약관 1.5 (33-6)**: 직전 버전은 `consent_service._ACCEPTED_PREVIOUS_VERSIONS`(terms·privacy 에 `1.4`)로 받는다. `ensure_current_version` 공용이라 가입 외의 `POST /me/consents` 도 1.4 를 받지만, 받은 버전 그대로 기록하므로 증빙은 거짓이 되지 않는다. `is_current` 는 1.4 에 false 그대로다. 1.5 를 보내는 iOS·Android 빌드가 깔리면 이 집합에서 1.4 를 뺀다.
 
