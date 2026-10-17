@@ -149,9 +149,11 @@ def test_ckd_without_stage_still_gets_the_sodium_limit(db, user):
     sodium = _axis(result, "sodium")
 
     assert sodium["limit_mg"] == 2000
-    # 병기 이름을 모르므로 "신장 질환"으로만 적고, 출처는 병기 무관 근거를 쓴다.
+    # 병기 이름을 모르므로 "신장 질환"으로만 적고, 출처는 비투석·투석 근거를 함께 쓴다.
+    # KDOQI 2020 은 빼야 한다 — 그 값은 2.3 g 이라 "2,000 mg · KDOQI"는 틀린 인용이다(2026-10-17).
     assert "신장 질환 기준 하루 2,000 mg" in sodium["basis"]
-    assert "KDOQI 2020" in sodium["basis"]
+    assert "1권 p101·105" in sodium["basis"] and "2권 p114" in sodium["basis"]
+    assert "KDOQI" not in sodium["basis"]
 
 
 def test_ckd_nondialysis_uses_2000(db, user):
@@ -237,7 +239,8 @@ class TestBasisCitesWhoDrewTheLine:
         assert "대한신장학회" in basis and "1권 p101·105" in basis
 
     def test_hemodialysis_cites_the_sections_that_set_the_line(self, db, user):
-        """투석 나트륨의 근거는 KSN2 p114(염분 전용 섹션)와 KDOQI 2020 권고 6.5.1 이다.
+        """투석 나트륨 2,000 mg 의 출처는 KSN2 p114(염분 전용 섹션)다. KDOQI 2020 은 출처 줄에 없다 —
+        그 값은 2.3 g 이라 "2,000 mg · KDOQI 2020"으로 나란히 두면 틀린 인용이 된다(2026-10-17).
 
         2026-09-13~09-16 에는 값이 3,000(p96)이고 basis 가 p96·p114 의 충돌을 드러냈다. 그것은
         충돌 노출이 아니라 느슨한 쪽을 고른 것이었다 — 상위 근거(KDOQI 2020 이 CKD 5D 를 같은
@@ -250,7 +253,7 @@ class TestBasisCitesWhoDrewTheLine:
         sodium = _axis(day_nutrition.get_day_nutrient_axes(db, user.id, TODAY), "sodium")
 
         assert sodium["limit_mg"] == 2000
-        assert "2권 p114" in sodium["basis"] and "KDOQI 2020" in sodium["basis"]
+        assert "2권 p114" in sodium["basis"] and "KDOQI" not in sodium["basis"]
         assert "p96" not in sodium["basis"]
 
     def test_hypertension_cites_ksh_recommendation(self, db, user):

@@ -53,7 +53,7 @@ STAGE_TARGETS: dict[str, dict] = {
     },
     CKD_STAGE_PERITONEAL: {
         "protein_g_per_kg": (1.2, 1.3),  # 증량 (복막으로 단백 손실) — 국가건강정보포털/KDIGO
-        "sodium_mg_max": 2000,  # KDOQI 2020 6.5.1 은 CKD 5D(복막투석 포함)를 한 값으로 묶는다
+        "sodium_mg_max": 2000,  # KDIGO 2024·국가건강정보포털. KDOQI 2020 6.5.1 도 CKD 5D(복막 포함)에 완화를 주지 않는다(값은 2.3 g)
         "phosphorus_mg_max": 1000,
         "potassium_restricted": True,
         "energy_kcal_per_kg": (30, 35),  # 투석액 포도당 흡수분 감안
@@ -66,7 +66,7 @@ STAGE_TARGETS: dict[str, dict] = {
 # **나트륨만 '상한'이고 칼륨·인은 '참고치'다.** 이 구분이 이 절의 전부다.
 #
 # - 나트륨: KDIGO 2024 가 CKD 전반에 1일 2 g 미만(소금 5 g)을 권고하고(2C), KDOQI 2020 권고
-#   6.5.1 은 투석(CKD 5D)까지 같은 값으로 묶는다(1C). 병기와 무관한 단일 값이라
+#   6.5.1 은 투석(CKD 5D)에도 완화를 주지 않는다(1C — 단 KDOQI 의 값은 2.3 g). 병기와 무관한 단일 값이라
 #   **상한 대비 게이지를 그린다.**
 # - 칼륨·인: KDOQI 2020 은 둘 다 **혈청 수치를 정상 범위로 유지하도록 개인화**하라고 할 뿐
 #   하루 mg 상한을 권고하지 않는다. KDIGO 2024 는 한 발 더 나아가 보편적 칼륨 제한에서
@@ -115,11 +115,17 @@ SODIUM_STAGE_UNKNOWN_NOTE = (
 # 반대편 근거는 KSN2 p96 하나인데, 그것은 **수분 관리 장의 실천 팁 목록 괄호 안** 숫자이고
 # 2차 인용(임상영양관리지침서 제3판)이다. p114 는 나트륨 전용 섹션의 본문 권고다 — 위계가 다르다.
 # 더 엄격한 2,000 을 택한 것은 KDIGO 2024·국내 자료와 같고, KDOQI 2.3 g 보다도 안쪽이다.
+#
+# ⚠️ **화면의 출처에는 2,000 mg 을 실제로 말하는 문서만 쓴다**(2026-10-17). KDOQI 2020 은 "투석도
+# 완화하지 않는다"의 근거일 뿐 그 값은 2.3 g 이다 — "하루 2,000 mg · KDOQI 2020"으로 나란히 두면
+# KDOQI 가 2,000 이라고 말한 것처럼 읽힌다. 그래서 출처 줄에서 뺐다(근거 설명은 위 주석과 문서에).
 SODIUM_LIMIT_CITATIONS: dict[str, str] = {
     CKD_STAGE_NONDIALYSIS: "대한신장학회 영양-식생활 관리 1권 p101·105",
-    CKD_STAGE_HEMODIALYSIS: "대한신장학회 영양-식생활 관리 2권 p114 · KDOQI 2020 권고 6.5.1",
-    CKD_STAGE_PERITONEAL: "KDOQI 2020 권고 6.5.1 (CKD 5D) · KDIGO 2024",
+    CKD_STAGE_HEMODIALYSIS: "대한신장학회 영양-식생활 관리 2권 p114",
+    CKD_STAGE_PERITONEAL: "국가건강정보포털 · KDIGO 2024",
 }
+# 병기를 모를 때 — 값이 같아(2,000) 비투석·투석 근거를 함께 단다.
+SODIUM_LIMIT_CITATION_ANY_STAGE = "대한신장학회 영양-식생활 관리 1권 p101·105, 2권 p114 · KDIGO 2024"
 
 
 # 병기와 무관한 CKD 나트륨 상한. 세 병기가 같은 값이 된 뒤로(2026-09-16) 병기를 몰라도 줄 수 있다.

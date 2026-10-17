@@ -274,7 +274,7 @@ def _sodium_limit(conditions: set[str], stage: str | None) -> tuple[int | None, 
                     else "신장 질환"
                 ),
                 ckd_food_rules.SODIUM_LIMIT_CITATIONS.get(
-                    stage or "", "KDOQI 2020 권고 6.5.1 · 대한신장학회 영양-식생활 관리 1권 p101·105"
+                    stage or "", ckd_food_rules.SODIUM_LIMIT_CITATION_ANY_STAGE
                 ),
             )
         )
