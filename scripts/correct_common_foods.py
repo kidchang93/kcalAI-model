@@ -47,6 +47,10 @@ CORRECTIONS: list[tuple[str, int, str]] = [
     # 550 g 행(82 kcal/100g)이 봉지라면 한 그릇에 맞다 → 451 kcal. 나트륨도 함께 교정한다
     # (아래 NUTRIENT_OVERRIDES) — 290 mg 은 라면_국물 100g(380 mg)보다도 낮아 명백히 틀렸다.
     ("라면", 451, "1인분 (약 550g)"),
+    # 짬뽕(2026-10-17)도 라면과 같다 — 동명 '짬뽕' 5행 중 kcal 중앙 순위인 637 ml 행이 골라져
+    # 465 kcal·나트륨 797 mg 이 됐다. 중국집 한 그릇은 같은 CSV 의 짬뽕 1000 ml(D403-172000000-0001),
+    # 삼선·굴짬뽕 900 g 크기다 → 1000 ml 행을 통째로 쓴다(86 kcal/100ml). 영양소는 NUTRIENT_OVERRIDES.
+    ("짬뽕", 860, "1인분 (약 1000ml)"),
     ("제육볶음", 430, "1인분 (약 200g)"),
     ("떡볶이", 360, "1인분 (약 250g)"),
     ("돈가스", 560, "1인분 (약 200g)"),
@@ -114,15 +118,39 @@ _NULLED = (
 # 쓰는데, 동명 행 자체가 그 음식을 대표하지 못하면 결과도 틀린 채로 남는다.
 #
 # 여기 값은 **같은 식약처 CSV 안의 다른 행**에서 가져온다 — 밖에서 주워온 숫자를 넣지 않는다.
-# 지정한 영양소는 backfill 대상(`sodium_mg IS NULL`)에서 빠지므로 덮어써지지 않는다.
-NUTRIENT_OVERRIDES: dict[str, dict[str, int]] = {
-    # 라면 550 g 행의 나트륨 283 mg/100g × 5.5 = 1,557 mg. 실측 경고가 이름 매칭에만 기대던
-    # 것을 수치로도 서게 한다(1인분 600 mg 이 '높음' 경계).
-    "라면": {"sodium_mg": 1557},
+# 값 = 그 행의 100g(ml) 기준값 × 우리 1인분 무게 / 100 (backfill 과 같은 무게 비율).
+#
+# ⚠️ **넣으면 영양소 7종을 전부 넣는다.** backfill 은 `sodium_mg IS NULL` 인 행만 채우므로, 나트륨만
+# 넣으면 그 행의 칼륨·인·매크로는 영영 빈다 — 라면이 2026-07-25 부터 10-17 까지 그 상태였다
+# (칼륨·인 경고가 라면에서 침묵).
+NUTRIENT_OVERRIDES: dict[str, dict[str, float]] = {
+    # 라면 550 g 행(D103-148000000-0001) × 5.5. 나트륨 1,557 mg — 실측 경고가 이름 매칭에만
+    # 기대던 것을 수치로도 서게 한다(1인분 600 mg 이 '높음' 경계).
+    "라면": {
+        "carbs_g": 75.1, "protein_g": 9.5, "fat_g": 12.5, "sugar_g": 0.0,
+        "sodium_mg": 1557, "potassium_mg": 313.5, "phosphorus_mg": 110,
+    },
+    # 짬뽕 1000 ml 행(D403-172000000-0001) × 10 — 위 CORRECTIONS 와 같은 행.
+    "짬뽕": {
+        "carbs_g": 149.2, "protein_g": 43.0, "fat_g": 12.9, "sugar_g": 9.6,
+        "sodium_mg": 1950, "potassium_mg": 1330, "phosphorus_mg": 580,
+    },
+    # 육개장(2026-10-17): backfill 은 대표식품명으로도 찾아서 육개장_닭고기·돼지고기·소고기 13행이
+    # 섞인 중앙값(나트륨 684 mg)이 들어갔다. 이름이 정확히 '육개장'인 한 그릇 행 440 g
+    # (D105-245000000-0001)을 우리 1인분 400 g 에 맞춰 × 4. (119 ml 행은 반찬 그릇 크기라 쓰지 않는다)
+    "육개장": {
+        "carbs_g": 6.0, "protein_g": 14.7, "fat_g": 4.0, "sugar_g": 3.0,
+        "sodium_mg": 804, "potassium_mg": 484, "phosphorus_mg": 168,
+    },
 }
 
 
 def correct() -> None:
+    nutrients = set(_NULLED) - {"food_group"}
+    partial = {label: sorted(nutrients - set(values)) for label, values in NUTRIENT_OVERRIDES.items()}
+    if any(partial.values()):
+        raise SystemExit(f"NUTRIENT_OVERRIDES 는 영양소 7종을 전부 넣어야 한다(backfill 이 건너뛴다): {partial}")
+
     rows = [
         {
             "food_label": label,
