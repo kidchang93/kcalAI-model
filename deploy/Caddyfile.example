@@ -10,3 +10,9 @@ your.domain.com {
     }
     reverse_proxy 127.0.0.1:8000
 }
+
+# 홍보용 도메인(2026-10-17) — 지금은 api.kcalai.link 로 넘기기만 한다(302: 웹 본 주소를 옮길 때 바꿀 거라 영구 이동으로 굳히지 않는다).
+# 웹 카카오 로그인이 KAKAO_REDIRECT_URI(api.kcalai.link) 오리진에 묶여 있어, 여기서 웹을 직접 서빙하면 로그인 팝업이 깨진다.
+caretable.kr, www.caretable.kr {
+    redir https://api.kcalai.link{uri} 302
+}

@@ -203,6 +203,8 @@ sudo systemctl restart caddy
 
 Caddy가 인증서를 자동 발급·갱신한다. 확인: `https://api.kcalai.link/openapi.json`.
 
+> **홍보용 도메인 `caretable.kr`(2026-10-17)**: DNS는 Route 53(개인 계정, 영역 `Z02947492Z4V3YMKMBK1K` — 등록은 가비아, 네임서버만 Route 53). Caddy는 `caretable.kr`·`www`를 **`api.kcalai.link`로 302 넘김**만 한다(`Caddyfile.example` 두 번째 블록). 여기서 웹을 직접 서빙하지 않는 이유: 웹 카카오 로그인 콜백이 `KAKAO_REDIRECT_URI`(api.kcalai.link) 오리진의 상대 경로 `/auth`로 돌아와, 다른 오리진에서 연 팝업이 결과를 넘기지 못한다. 본 주소를 옮기려면 카카오 콘솔 Redirect URI 추가 + `KAKAO_REDIRECT_URI` 교체 + `CORS_ALLOW_ORIGINS`를 함께 바꾸고, `api.kcalai.link`는 깔린 앱·스토어 알림·약관 링크 때문에 계속 살린다. ⚠️ 고정 IP를 붙이면 두 영역(kcalai.link·caretable.kr)의 A 레코드를 모두 바꾼다.
+
 > nginx+certbot를 선호하면: nginx 설치 → `proxy_pass http://127.0.0.1:8000;` server 블록 → `certbot --nginx -d api.kcalai.link`. Caddy가 설정이 더 단순해 권장.
 
 ---
