@@ -66,6 +66,8 @@ app = FastAPI(
     description="만성질환 식이돌봄 서비스 케어테이블(CareTable)의 기능 서버",
     version="1.0.0",
     lifespan=lifespan,
+    # 운영에서는 API 지도(웹훅 경로 포함)를 공개하지 않는다(2026-10-17 보안 점검). 로컬 /docs 는 그대로다.
+    **({"docs_url": None, "redoc_url": None, "openapi_url": None} if APP_ENV == "production" else {}),
 )
 
 cors_allow_origins = [

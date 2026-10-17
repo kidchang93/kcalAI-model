@@ -104,7 +104,7 @@ chmod 644 /etc/cron.d/kcalai
 
 # 기동 대기(2초 간격 최대 15회 재시도, ~30초).
 ok=0
-curl -sf --retry 15 --retry-delay 2 --retry-all-errors -o /dev/null http://127.0.0.1:8000/openapi.json && ok=1
+curl -sf --retry 15 --retry-delay 2 --retry-all-errors -o /dev/null http://127.0.0.1:8000/api/plans && ok=1
 systemctl --no-pager --lines=5 status "${SERVICE_NAME}" || true
 
 if [ "$ok" = 1 ]; then

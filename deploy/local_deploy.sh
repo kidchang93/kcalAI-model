@@ -101,7 +101,7 @@ $MIGRATE_CMD
 ./venv/bin/python -c "import main"
 sudo systemctl restart kcalai
 # 기동에 몇 초 걸리므로 2초 간격으로 최대 15회 재시도한다(단일 sleep은 조기 오판을 유발).
-if curl -sf --retry 15 --retry-delay 2 --retry-all-errors -o /dev/null http://127.0.0.1:8000/openapi.json; then
+if curl -sf --retry 15 --retry-delay 2 --retry-all-errors -o /dev/null http://127.0.0.1:8000/api/plans; then
   echo "[remote] 헬스체크 OK"
 else
   echo "[remote] 헬스체크 실패(약 30초 대기) — journalctl -u kcalai -n 50" >&2

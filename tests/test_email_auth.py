@@ -191,17 +191,32 @@ def test_daily_cap_per_address(client, db, outbox):
     assert capped.status_code == 429
 
 
-def test_mail_failure_is_503_and_leaves_no_code(client, db, monkeypatch):
+def test_mail_failure_does_not_reveal_membership(client, db, outbox, monkeypatch):
+    # 재설정 메일은 회원에게만 간다. SMTP 장애가 회원 요청에서만 503 이 되면 가입 여부가 샌다 —
+    # 그래서 메일은 응답 뒤에 보내고, 실패해도 응답은 회원·비회원이 같다.
+    _signed_up(client, outbox)
+    _age_codes(db)
+
     def _fail(to, subject, body):
         raise mail_client.MailUnavailableError(mail_client.UNAVAILABLE_MESSAGE)
 
     monkeypatch.setattr(mail_client, "send_mail", _fail)
 
-    response = client.post("/api/auth/email/signup/code", json={"email": EMAIL})
+    member = client.post("/api/auth/email/password-reset/code", json={"email": EMAIL})
+    stranger = client.post("/api/auth/email/password-reset/code", json={"email": "nobody@example.com"})
 
-    assert response.status_code == 503
-    # 남으면 다시 누를 때 '1분에 한 번'에 걸린다.
-    assert db.scalar(select(EmailVerificationCode).where(EmailVerificationCode.email == NORMALIZED)) is None
+    assert (member.status_code, member.json()) == (stranger.status_code, stranger.json())
+    assert member.status_code == 200
+
+
+def test_code_request_does_not_wait_for_mail(db, monkeypatch):
+    # 응답이 SMTP 왕복을 기다리면 메일을 보내는 회원(~600ms)과 안 보내는 비회원이 시간으로 갈린다.
+    # 서비스는 메일을 돌려줄 뿐 보내지 않아야 한다.
+    monkeypatch.setattr(mail_client, "send_mail", lambda *args: pytest.fail("서비스가 직접 보냈다"))
+
+    mail = auth_service.request_email_code(db, EMAIL, auth_service.EMAIL_SIGNUP)
+
+    assert mail is not None and mail[0] == NORMALIZED
 
 
 @pytest.mark.parametrize("password", ["short1", "onlyletters", "12345678", "a1" * 33])

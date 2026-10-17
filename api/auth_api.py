@@ -1,7 +1,7 @@
 import os
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Header, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 
 from api.dependencies import DB, CurrentUser, extract_bearer_token
@@ -43,6 +43,7 @@ from services.auth_service import (
     verify_signup_code,
     verify_state,
 )
+from services import mail_client
 from services.mail_client import MailUnavailableError
 from services.kakao_client import (
     KakaoAuthCodeError,
@@ -198,7 +199,8 @@ def signup_with_apple(request: AppleSignupRequest, db: DB):
 
 
 # 이메일: 400(형식·코드·비밀번호 규칙·로그인 실패)은 서비스 예외를 전역 핸들러가 바꾼다.
-# 코드 요청만 429(재요청이 잦다)·503(메일을 못 보낸다)을 여기서 바꾼다.
+# 코드 요청만 429(재요청이 잦다)·503(오늘 전체 발송 한도)을 여기서 바꾼다. SMTP 장애는 503 이 아니다 —
+# 메일은 응답 뒤에 보내므로(_send_email_code) 회원·비회원이 같은 200 을 받는다.
 _EMAIL_CODE_RESPONSES = {
     400: {"model": ErrorResponse},
     429: {"model": ErrorResponse},
@@ -209,8 +211,8 @@ _EMAIL_CODE_SENT = "인증 메일을 보냈어요. 메일함을 확인해주세�
 
 
 @router.post("/auth/email/signup/code", response_model=MessageResponse, responses=_EMAIL_CODE_RESPONSES)
-def send_signup_code(request: EmailRequest, db: DB):
-    _send_email_code(db, request.email, EMAIL_SIGNUP)
+def send_signup_code(request: EmailRequest, db: DB, background_tasks: BackgroundTasks):
+    _send_email_code(db, request.email, EMAIL_SIGNUP, background_tasks)
     return {"message": _EMAIL_CODE_SENT}
 
 
@@ -257,8 +259,8 @@ def login_with_email(request: EmailLoginRequest, db: DB):
     response_model=MessageResponse,
     responses=_EMAIL_CODE_RESPONSES,
 )
-def send_password_reset_code(request: EmailRequest, db: DB):
-    _send_email_code(db, request.email, EMAIL_RESET)
+def send_password_reset_code(request: EmailRequest, db: DB, background_tasks: BackgroundTasks):
+    _send_email_code(db, request.email, EMAIL_RESET, background_tasks)
     return {"message": _EMAIL_CODE_SENT}
 
 
@@ -272,15 +274,26 @@ def reset_email_password(request: PasswordResetRequest, db: DB):
     return {"message": "비밀번호를 바꿨어요. 새 비밀번호로 로그인해주세요."}
 
 
-def _send_email_code(db: DB, email: str, purpose: str) -> None:
+def _send_email_code(db: DB, email: str, purpose: str, background_tasks: BackgroundTasks) -> None:
     try:
-        request_email_code(db, email, purpose)
+        mail = request_email_code(db, email, purpose)
     except RateLimitError as error:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(error)) from error
     except MailUnavailableError as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
         ) from error
+
+    # 응답을 돌려준 뒤에 보낸다 — 응답 시간으로 가입 여부가 새지 않게(request_email_code 주석).
+    if mail is not None:
+        background_tasks.add_task(_deliver, *mail)
+
+
+def _deliver(to: str, subject: str, body: str) -> None:
+    try:
+        mail_client.send_mail(to, subject, body)
+    except MailUnavailableError:
+        pass  # send_mail 이 원인을 남겼다. 응답은 이미 나갔다.
 
 
 def _token_response(user: User, auth_session: AuthSession, raw_token: str) -> dict:

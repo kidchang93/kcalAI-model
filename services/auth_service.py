@@ -304,12 +304,18 @@ def apple_signup(
 
 # ---- 이메일 가입 ----
 
-def request_email_code(db: Session, email: str, purpose: str) -> None:
-    """가입·재설정 코드를 보낸다. 응답은 언제나 같다 — 메일 내용만 가입 여부에 따라 다르다.
+def request_email_code(db: Session, email: str, purpose: str) -> tuple[str, str, str] | None:
+    """가입·재설정 코드를 만들고, 보낼 메일 `(받는 주소, 제목, 본문)`을 돌려준다(없으면 None).
 
+    응답은 언제나 같다 — 메일 내용만 가입 여부에 따라 다르다.
     - 가입: 미가입이면 코드, 이미 회원이면 '이미 가입된 이메일' 안내(코드 없음).
     - 재설정: 이메일 회원이면 코드, 아니면 아무것도 보내지 않는다(모르는 주소로 메일을 쏘지 않는다).
     어느 쪽이든 코드 행은 쌓인다 — 재요청 제한이 같아야 429 로도 가입 여부가 새지 않는다.
+
+    **여기서 보내지 않는다 — api 가 응답을 돌려준 뒤에 보낸다.** 응답이 SMTP 왕복을 기다리면
+    메일을 보내는 회원(~600ms)과 보내지 않는 비회원 재설정(~10ms)이 **응답 시간**으로 갈리고,
+    SMTP 장애 때 503 도 회원에게만 난다 — 둘 다 가입 여부(= 만성질환 앱을 쓴다는 사실)를
+    드러낸다(2026-10-17 운영 로그 실측).
     """
     email = normalize_email(email)
     now = datetime.now(UTC)
@@ -328,21 +334,16 @@ def request_email_code(db: Session, email: str, purpose: str) -> None:
             created_at=now,
         )
     )
-    db.flush()
-
-    try:
-        if purpose == EMAIL_SIGNUP and user is None:
-            mail_client.send_mail(email, f"[케어테이블] 인증 코드 {code}", _signup_code_body(code))
-        elif purpose == EMAIL_SIGNUP:
-            mail_client.send_mail(email, "[케어테이블] 이미 가입된 이메일이에요", _already_registered_body())
-        elif user is not None:
-            mail_client.send_mail(email, f"[케어테이블] 비밀번호 재설정 코드 {code}", _reset_code_body(code))
-    except mail_client.MailUnavailableError:
-        # 보내지 못한 코드가 남으면 재요청이 1분 막힌다.
-        db.rollback()
-        raise
-
+    # ponytail: 발송이 실패해도 코드 행은 남아 재요청이 1분 막힌다(실패는 send_mail 이 로그에 남긴다).
     db.commit()
+
+    if purpose == EMAIL_SIGNUP and user is None:
+        return email, f"[케어테이블] 인증 코드 {code}", _signup_code_body(code)
+    if purpose == EMAIL_SIGNUP:
+        return email, "[케어테이블] 이미 가입된 이메일이에요", _already_registered_body()
+    if user is not None:
+        return email, f"[케어테이블] 비밀번호 재설정 코드 {code}", _reset_code_body(code)
+    return None
 
 
 def verify_signup_code(db: Session, email: str, code: str) -> None:
