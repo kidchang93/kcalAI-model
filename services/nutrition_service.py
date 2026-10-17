@@ -93,7 +93,7 @@ def prewarm_labels(food_labels: list[str]) -> None:
 
 
 def _find_in_dataset(db: Session, food_label: str) -> FoodNutrition | None:
-    """식약처 DB 4단계 조회: 정확 → 공백 제거 → '_' 뒤 이름 정확 → pg_trgm 유사도.
+    """식약처 DB 조회: 정확 → 공백 제거 → '_' 뒤 이름 정확 → pg_trgm 유사도(앞 재료만 맞혔으면 뒤 이름).
 
     각 단계는 동의어 변형 후보 전체(expand_variants)를 대상으로 한다 —
     "계란찜"은 정확 일치 단계에서 이미 "달걀찜" 행을 찾는다.
@@ -143,6 +143,29 @@ def _find_in_dataset(db: Session, food_label: str) -> FoodNutrition | None:
         row, score = similar[0], float(similar[1])
         if best is None or score > best[0]:
             best = (score, row)
+
+    # 4단계(2026-10-17): 한국어 음식 이름은 **뒤가 요리**다(소고기쌀국수·김치볶음밥). trgm 은 문자열
+    # 앞을 공백으로 채워 세므로 앞쪽 재료가 이긴다 — "소고기쌀국수"가 소고기 0.375 · 쌀국수 0.222 로
+    # 생고기(나트륨 51 mg)가 됐다(쌀국수 1,650 mg). 유사도 결과가 요리 부분(이름 끝 두 글자)을 담고
+    # 있으면 그대로 쓰고("참치김밥"→김밥_참치), 앞 재료만 맞혔으면 라벨이 **그 이름으로 끝나는** DB 행 중
+    # 가장 긴 것(2글자 이상)으로 바꾼다. LIKE 는 '_'가 와일드카드라 right() 로 비교한다.
+    compact = food_label.replace(" ", "")
+    if best is not None and compact[-2:] in best[1].food_label.replace(" ", ""):
+        return best[1]
+
+    name = func.replace(FoodNutrition.food_label, " ", "")
+    tail_match = db.scalar(
+        select(FoodNutrition)
+        .where(
+            FoodNutrition.source.in_(DATASET_SOURCES),
+            func.length(name).between(2, len(compact) - 1),
+            func.right(compact, func.length(name)) == name,
+        )
+        .order_by(func.length(name).desc(), FoodNutrition.id.asc())
+        .limit(1)
+    )
+    if tail_match is not None:
+        return tail_match
 
     return best[1] if best is not None else None
 
