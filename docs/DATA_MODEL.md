@@ -2593,3 +2593,34 @@ Play Console › 수익 창출 설정 › 실시간 개발자 알림의 Pub/Sub 
 **운영 반영 전**: 운영 `.env` 에 `GOOGLE_PLAY_SERVICE_ACCOUNT_B64`(없으면 verify·알림 재조회 503 — 기동은 된다) · 배포는 `--migrate`(0032) · Pub/Sub push 구독의 엔드포인트 `https://api.kcalai.link/api/billing/play/notifications`, **확인 기한(ackDeadline) 30초 이상**(토큰 교환 + 조회가 최악 20초) · 서비스 계정에 Play Console 권한 · 라이선스 테스터 구매로 verify 200(`store_environment=Test`) 실측.
 
 **테스트**: `tests/test_play_purchase.py` 68건(Google 미호출 — 서비스는 `play_client.get_subscription`·`acknowledge` 를, 어댑터는 `requests.request`·`requests.Session.request` 를 대체) · `tests/test_consent_version.py` +3건(1.4·1.5 가입 통과와 받은 버전 그대로 기록, 1.3 거절). 방어 유효성은 되돌려 확인했다 — 원장 확인보다 Google 조회를 먼저 하거나, obfuscated 대조·linked 소유 확인·PENDING 거절·'만료 모름 = 지금 끝남'을 빼면 각각 1~3건이 실패한다. 전체 605건 — 로컬 3.13·운영 3.10 둘 다 통과.
+
+## 34. 출처 링크 — 의료 정보의 원문으로 가는 길 (2026-10-20 확정 — 테이블 없음)
+
+> **2026-10-20 App Store 1.4.1 반려**(Safety: Physical Harm, 1.0(10)): "건강·의료 계산, 참고 정보, 웰니스 리포트에 출처가 없다. 출처를 **링크처럼** 앱 안에 넣고, 사용자가 **쉽게 찾을 수 있게** 하라." 근거 문장(가이드 `sources`·검사 `source`·나트륨 `basis`)은 이미 있었지만 **링크가 없었고**, 질환 도감 안쪽에만 있어 심사관이 찾지 못했다.
+
+### 34-1. 원칙
+
+- **근거 문장은 바꾸지 않는다.** 문장은 쪽수까지 담은 사람용 기록이고, 링크는 그 문장에 나온 문헌을 `services/citations.py` 의 목록에서 **이름으로 찾아** 붙인다. 문장 하나에 여러 문헌이 이어 붙어도(`…1권 p101·105, 2권 p114 · KDIGO 2024`) 전부 걸린다.
+- **새 문헌을 근거 문장에 쓰면 `CITATIONS` 에도 넣는다.** 빠지면 링크만 조용히 사라져 이번 반려 상태로 돌아간다 — `tests/test_citations.py` 가 화면에 나가는 근거 문장 전부(가이드·검사·나트륨 기준선·참고치·등급 고지)를 돌려 링크 없는 문장을 잡는다.
+- **판정만 내려가는 응답**(경고 문장·추천 등급)은 문장에 문헌 이름이 없다 → 질환 코드로 근거 문헌을 붙인다(`for_conditions` — ckd: 대한신장학회 1·2권, hypertension: 대한고혈압학회 2026, diabetes: 대한당뇨병학회 2025). 근거 문서가 없는 질환은 비운다.
+- **앱이 직접 쓰는 근거는 앱이 갖는다** — 목표 칼로리 계산식(Mifflin-St Jeor)과 식약처 식품영양성분 DB. 서버 목록에는 서버가 쓰는 문헌만 둔다(옵션 A, 2026-10-20 사용자 결정).
+- 링크는 2026-10-20 에 하나씩 열어 확인했다. 학회 PDF 주소는 자주 바뀌니 깨지면 `url` 만 고친다.
+
+### 34-2. 계약 (전부 덧붙이는 필드 — 옛 앱은 무시한다)
+
+`CitationLink = {title, publisher, url}`
+
+| API | 필드 | 내용 |
+|---|---|---|
+| `GET /api/guides/{condition}` | `axes[].citations` | 그 축 `sources` 문장의 문헌 |
+| `GET /api/me/lab-panels` | `panels[].citations` | 항목 `source` 의 문헌. 혈압(사용자 입력)은 `[]` |
+| `GET /api/me/labs` | `results[].citations` | 같은 규칙 |
+| `GET /api/me/summary`·`/trends` | `nutrients.citations` | 축들의 `basis`·`notice` 의 문헌 + 칼륨·인 축이 있으면 **KDOQI 2020**(앱이 그리는 "하루 상한 없음"의 근거 — 비투석이면 basis·notice 어디에도 없다) |
+| `GET /api/me/report` | `citations` (최상위) | `nutrients.citations` + 실린 검사 항목의 문헌. 민감정보를 싣지 않은 리포트는 `[]`(질환 기준의 출처만 남으면 질환을 짐작할 수 있다) |
+| `POST /api/nutrition/warnings` | `citations` (최상위) | 질환 경고의 질환 코드로. 알러지 경고만이면 `[]` |
+| `GET /api/recommendations` | `citations` (최상위) | 사용자 질환 코드로 |
+| **`GET /api/citations`** (신규, Bearer) | `{citations}` | 서버 문헌 전체 — 앱 '근거와 출처' 화면. 공개 정보라 동의 불필요(가이드와 같은 판단) |
+
+나트륨 등급 고지(`SODIUM_TIER_NOTICE`)에 "대한고혈압학회 진료지침 2026"을 넣었다 — 상한이 누구의 기준인지 문장에 없어서 링크를 걸 수 없었다.
+
+**테스트**: `tests/test_citations.py` 49건(근거 문장 전수·다문헌 표기·순서·중복·URL 형식·가이드 축) + 응답 수준 4건(`test_day_nutrition`·`test_diabetes_food_rules`·`test_recommendation_ckd_integration`·`test_sensitive_read_gating`). 전체 660건 — 로컬 3.13·운영 3.10 둘 다 통과.

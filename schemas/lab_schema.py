@@ -2,6 +2,8 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
+from schemas.citation_schema import CitationLink
+
 
 class LabResultRequest(BaseModel):
     measured_on: date
@@ -24,6 +26,8 @@ class LabResultResponse(BaseModel):
     # 지침이 정한 정상범위·목표 문장. 근거가 없는 항목(혈압)은 null 이다.
     reference: str | None
     source_note: str
+    # `source_note` 문헌의 원문 링크 (2026-10-20 추가, DATA_MODEL 34장).
+    citations: list[CitationLink] = []
     note: str | None
     created_at: datetime
 
@@ -39,6 +43,8 @@ class LabPanelOption(BaseModel):
     unit: str
     reference: str | None
     source: str
+    # `source` 문헌의 원문 링크 (2026-10-20 추가, DATA_MODEL 34장). 사용자 입력 항목(혈압)은 빈 목록.
+    citations: list[CitationLink] = []
     conditions: list[str]
     decimals: int
     # 이 사용자의 질환에 해당하는 항목인가. 앱이 관련 항목을 앞에 두는 데 쓴다.

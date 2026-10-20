@@ -72,6 +72,12 @@ class TestCkdRecommendationIntegration:
         for item in result["items"]:
             assert {"sodium_mg", "potassium_mg", "phosphorus_mg", "protein_g"} <= item.keys()
 
+    def test_ckd_recommendation_links_the_kidney_guidelines(self, db, ckd_user):
+        """등급·식이 도움말의 근거(대한신장학회 1·2권) 원문 링크가 실린다 (DATA_MODEL 34장)."""
+        result = get_recommendation(db, ckd_user.id, REC_DATE, "lunch")
+
+        assert [link["publisher"] for link in result["citations"]] == ["대한신장학회", "대한신장학회"]
+
     def test_ckd_items_carry_display_tiers(self, db, ckd_user):
         # 신장병 사용자는 칼륨·인 등급이 실려야 한다 (docs/CKD_NUTRITION.md 3-4).
         result = get_recommendation(db, ckd_user.id, REC_DATE, "lunch")

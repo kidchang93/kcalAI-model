@@ -112,6 +112,11 @@ def test_reconsent_restores_summary_trends_report_and_guides(db, legacy_user):
     assert [lab["panel"] for lab in report["labs"]] == ["potassium"]
     assert report["nutrients"] is not None
     assert report["notice"] == medical_report_service.REPORT_NOTICE
+    # 문서 끝 '출처' — 혈액투석 기준선(2권)·칼륨 참고치(국가건강정보포털)·'상한 없음'(KDOQI)·
+    # 검사 범위(1권)의 원문 링크 (34장).
+    titles = " ".join(link["title"] for link in report["citations"])
+    for expected in ("혈액투석 환자를", "투석환자의 식이요법", "KDOQI", "투석 전 단계"):
+        assert expected in titles
 
     summaries = guide_service.list_guide_summaries(db, legacy_user.id)
     assert summaries[0]["condition"] == "ckd"
@@ -161,5 +166,7 @@ def test_routes_stay_open_and_blank_only_the_sensitive_fields(client):
     assert trends.json()["nutrients"] is None
     assert report.json()["conditions"] == []
     assert report.json()["labs"] == []
+    # 실린 기준이 없으니 출처도 없다 — 질환 기준의 출처만 남으면 질환을 짐작할 수 있다.
+    assert report.json()["citations"] == []
     assert report.json()["notice"].endswith(OUTDATED_SENTENCE)
     assert all(item["is_mine"] is False for item in guides.json()["conditions"])

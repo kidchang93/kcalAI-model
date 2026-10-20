@@ -20,7 +20,9 @@
   빈 것이 지어낸 것보다 낫다.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+
+from services import citations
 
 
 @dataclass(frozen=True)
@@ -392,6 +394,16 @@ _GUIDES: dict[str, ConditionGuide] = {
 def get_guide(condition: str) -> ConditionGuide | None:
     """질환 코드 → 가이드. 근거 문서가 없는 질환(pregnancy·cancer)은 None."""
     return _GUIDES.get(condition)
+
+
+def guide_payload(guide: ConditionGuide) -> dict:
+    """응답용 dict. 축마다 `sources` 문장에 나온 문헌의 원문 링크를 붙인다 (DATA_MODEL 34장)."""
+    payload = asdict(guide)
+
+    for axis in payload["axes"]:
+        axis["citations"] = citations.find(*axis["sources"])
+
+    return payload
 
 
 def available_conditions() -> tuple[str, ...]:

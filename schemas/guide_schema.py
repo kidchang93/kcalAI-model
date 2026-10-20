@@ -1,5 +1,7 @@
 from pydantic import BaseModel
 
+from schemas.citation_schema import CitationLink
+
 
 class GuideSectionResponse(BaseModel):
     title: str
@@ -14,6 +16,9 @@ class GuideAxisResponse(BaseModel):
     # 출처. **앱이 이 목록을 숨기면 안 된다** — 근거를 밝히는 것이 이 화면의 존재 이유이고,
     # Apple 1.4.1 이 의료 앱에 요구하는 "근거·방법론 공개"이기도 하다 (LEGAL_COMPLIANCE §6-1).
     sources: list[str]
+    # `sources` 에 나온 문헌의 원문 링크 (2026-10-20 추가, DATA_MODEL 34장). 앱은 `sources` 문장을
+    # 그대로 두고 이 링크를 함께 그린다 — 쪽수는 문장에만 있다.
+    citations: list[CitationLink] = []
     # 병존 질환에서 방향이 엇갈리는 축의 경고 (칼륨). 없으면 null.
     caution: str | None
 

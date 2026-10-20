@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session, selectinload
 from timeutil import UTC, today_kst
 from models.health_model import MealLog
 from services import (
+    citations,
     ckd_food_rules,
     consent_service,
     health_service,
@@ -131,6 +132,10 @@ def build_report(
     readable = consent_state is consent_service.ConsentState.ACTIVE
 
     recorded = [day for day in trends["days"] if day["meal_count"] > 0]
+    # get_trends 도 동의를 보고 None 을 주지만, 리포트가 싣는 민감정보는 이 함수 안에서 한 번에
+    # 판정이 보이게 둔다 — 한쪽 게이트가 빠져도 문서에 새지 않는다.
+    nutrients = trends["nutrients"] if readable else None
+    labs = _labs_for_report(db, user_id, start_date, end_date) if readable else []
 
     return {
         "start_date": start_date.isoformat(),
@@ -150,19 +155,24 @@ def build_report(
             "recorded_days": len(recorded),
             "total_days": len(trends["days"]),
         },
-        # get_trends 도 동의를 보고 None 을 주지만, 리포트가 싣는 민감정보는 이 함수 안에서 한 번에
-        # 판정이 보이게 둔다 — 한쪽 게이트가 빠져도 문서에 새지 않는다.
-        "nutrients": trends["nutrients"] if readable else None,
+        "nutrients": nutrients,
         # 검사 수치 (리비전 0027, `docs/CARE_LOOP.md` §4). 식단 요약 옆에 결과 축을 나란히
         # 놓는 것이 이 리포트의 목적이다 — 그전까지는 "무엇을 먹었나"만 있고 "그래서 수치가
         # 어떻게 됐나"가 없어, 진료에서 되짚을 근거가 절반이었다.
         #
         # ⚠️ 기간 밖의 값도 **직전 1건은 싣는다**. 검사는 3개월에 한 번인데 리포트 기간은
         # 보통 그보다 짧아, 기간으로만 자르면 대부분의 리포트에서 검사란이 비어 버린다.
-        "labs": _labs_for_report(db, user_id, start_date, end_date) if readable else [],
+        "labs": labs,
         "meals": _meals_in_range(db, user_id, start_date, end_date),
         "notice": _report_notice(consent_state),
         "range": report_range,
+        # 문서 끝 '출처' — 질환 축 기준선과 검사 정상범위의 근거 문헌 (DATA_MODEL 34장).
+        "citations": citations.merge(
+            nutrients["citations"] if nutrients else [],
+            citations.find(
+                *(panel.source for lab in labs if (panel := lab_panels.get_panel(lab["panel"])))
+            ),
+        ),
     }
 
 

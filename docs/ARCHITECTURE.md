@@ -42,6 +42,7 @@ kcalAI-model/
 │   ├── health_service.py       # 프로필·목표·끼니·체중·추이 집계, Mifflin-St Jeor
 │   ├── consent_service.py      # 동의 이력·유효성 검사(버전이 낡은 민감정보 동의는 무효), 민감정보 파기(물리 삭제)
 │   ├── guide_service.py        # /guides 목록의 is_mine — 민감정보 동의가 ACTIVE 일 때만 등록 질환을 읽는다
+│   ├── citations.py            # 근거 문헌 목록(이름·URL) — 근거 문장에서 문헌 이름을 찾아 응답에 원문 링크를 붙인다 (34장, App Store 1.4.1)
 │   ├── group_service.py        # 그룹 생성·참여, invite_code 생성, 멤버십·펫 참여, 라이프사이클(탈퇴·삭제·제거·해제, 17장)
 │   ├── pet_service.py          # 반려동물 CRUD(soft delete), 급여 기록, 접근 권한, 권장 칼로리(RER/MER, 18장)
 │   ├── account_service.py      # 회원 탈퇴 — 개인 데이터 물리 삭제 연쇄 (단일 트랜잭션, 18장)

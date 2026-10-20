@@ -1,5 +1,3 @@
-from dataclasses import asdict
-
 from fastapi import APIRouter, HTTPException
 
 from api.dependencies import DB, CurrentUser
@@ -51,5 +49,5 @@ def read_guide(condition: str, _: CurrentUser):
         # 보여줄 것이 없다는 점에서 같고, 앱은 진입점을 숨기면 된다.
         raise HTTPException(status_code=404, detail="아직 준비된 식이 가이드가 없습니다.")
 
-    # asdict 는 중첩 dataclass 까지 dict 로 풀고, tuple 필드는 스키마의 list[...] 로 검증된다.
-    return ConditionGuideResponse(**asdict(guide), notice=nutrition_guide.GUIDE_NOTICE)
+    # 중첩 dataclass 까지 dict 로 풀고 축마다 출처 링크를 붙인다. tuple 필드는 스키마의 list[...] 로 검증된다.
+    return ConditionGuideResponse(**nutrition_guide.guide_payload(guide), notice=nutrition_guide.GUIDE_NOTICE)

@@ -6,7 +6,7 @@ from database import SessionLocal
 from log_utils import get_logger
 from models.health_model import FoodNutrition
 from services.errors import NotFoundError
-from services import chronic_food_rules, ckd_food_rules, meta_service
+from services import chronic_food_rules, ckd_food_rules, citations, meta_service
 from services.food_synonyms import expand_variants
 from services.serving_size import parse_serving_size_g
 from services.gemini_nutrition_service import (
@@ -408,6 +408,10 @@ def get_record_warnings_response(db: Session, user_id: int, food_labels: list[st
         "notice": " ".join(notices) if notices else None,
         # 판정하지 못한 음식. 앱은 "확인하지 못했다"고 밝힌다 — 침묵을 안전으로 읽지 않게.
         "unmeasured": unmeasured_labels(db, user_id, food_labels, warnings),
+        # 질환 경고가 기대는 학회 지침의 원문 링크 (DATA_MODEL 34장). 알러지 경고는 지침 판정이 아니다.
+        "citations": citations.for_conditions(
+            [w["code"] for w in warnings if w["source"] == "condition"]
+        ),
     }
 
 

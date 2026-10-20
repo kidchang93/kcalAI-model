@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from schemas.citation_schema import CitationLink
+
 Sex = Literal["male", "female"]
 ActivityLevel = Literal["sedentary", "light", "moderate", "active", "very_active"]
 GoalType = Literal["loss", "maintain", "gain"]
@@ -104,6 +106,8 @@ class DayNutrients(BaseModel):
     axes: list[DayNutrientAxis]
     total_items: int
     notice: str
+    # 축들의 `basis`·`notice` 와 칼륨·인 '하루 상한 없음'의 근거 문헌 링크 (2026-10-20, DATA_MODEL 34장).
+    citations: list[CitationLink] = []
 
 
 class SummaryResponse(BaseModel):
@@ -151,6 +155,8 @@ class NutrientTrendAxis(BaseModel):
 class NutrientTrends(BaseModel):
     axes: list[NutrientTrendAxis]
     notice: str
+    # DayNutrients.citations 와 같은 규칙 (2026-10-20, DATA_MODEL 34장).
+    citations: list[CitationLink] = []
 
 
 class TrendsResponse(BaseModel):
@@ -323,6 +329,9 @@ class MedicalReportResponse(BaseModel):
     notice: str
     # 2026-10-06 추가 — 기존 필드는 그대로다.
     range: ReportRange
+    # 이 문서에 실린 기준(질환 축·검사 정상범위)의 근거 문헌 링크. 문서 끝 '출처'에 그린다
+    # (2026-10-20, DATA_MODEL 34장). 민감정보를 싣지 않은 리포트면 빈 목록이다.
+    citations: list[CitationLink] = []
 
 
 class ReportIntervalNutrient(BaseModel):

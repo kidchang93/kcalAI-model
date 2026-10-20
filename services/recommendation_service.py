@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from models.health_model import FoodNutrition
 from models.meta_model import AllergenType, ConditionType
 from models.recommendation_model import DietRecommendation
-from services import ckd_food_rules, health_service, meta_service
+from services import citations, ckd_food_rules, health_service, meta_service
 
 MAX_ITEMS = 3
 # 12장 확정 범위(30~50) 안에서 고정.
@@ -116,6 +116,8 @@ def get_recommendation(
             "tips": _condition_tips(conditions),
             # 등급을 실제로 얹었을 때만 채워지는 고지. 등급 없는 사용자에겐 None.
             "tier_notice": _tier_notice(conditions),
+            # 등급·식이 도움말이 기대는 학회 지침의 원문 링크 (DATA_MODEL 34장).
+            "citations": citations.for_conditions([condition.code for condition in conditions]),
             "cached": cached,
         }
 

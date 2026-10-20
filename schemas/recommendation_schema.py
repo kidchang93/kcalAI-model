@@ -3,6 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from schemas.citation_schema import CitationLink
 from schemas.health_schema import MealType
 
 
@@ -50,6 +51,9 @@ class RecommendationResponse(BaseModel):
     # 등급(저/중/고)을 노출할 때만 채워지는 고지. 등급이 절대 기준이 아니라는 안내다
     # (docs/CKD_NUTRITION.md 3-4). 등급이 없는 사용자에겐 None.
     tier_notice: str | None = None
+    # 등급·식이 도움말이 기대는 학회 지침의 원문 링크. 근거 문서가 있는 질환이 없으면 빈 목록
+    # (2026-10-20, DATA_MODEL 34장).
+    citations: list[CitationLink] = []
     # 캐시에서 나왔는지 여부. false 면 이번 요청에서 새로 생성한 것이다 (규칙 기반, 13장).
     cached: bool
     # 서버가 내려보낸다 — 앱 하드코딩 문구가 화면마다 어긋나는 것을 막는다.

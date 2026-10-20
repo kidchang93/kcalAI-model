@@ -118,6 +118,15 @@ def test_sugar_axis_has_no_tier(db, diabetic):
     assert sugar and all(w["tier"] is None for w in sugar)
 
 
+def test_sugar_warning_links_the_diabetes_guideline(db, diabetic):
+    """경고 문장에는 문헌 이름이 없다 — 응답이 질환의 판정 근거 링크를 따로 싣는다 (34장)."""
+    _add_food(db, "콜라", sugar_g=27)
+
+    response = nutrition_service.get_record_warnings_response(db, diabetic.id, ["콜라"])
+
+    assert [link["publisher"] for link in response["citations"]] == ["대한당뇨병학회"]
+
+
 # ── 3. 믿을 수 없는 1인분 수치는 근거로 붙이지 않는다 ──────────────────────────
 
 

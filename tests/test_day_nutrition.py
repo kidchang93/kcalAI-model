@@ -198,6 +198,21 @@ def test_nondialysis_ckd_gets_no_potassium_reference(db, user):
     assert _axis(result, "potassium")["consumed_mg"] == 426.0
 
 
+def test_nondialysis_ckd_links_basis_and_no_limit_source(db, user):
+    """비투석은 basis·notice 어디에도 KDOQI 가 없지만, 앱이 칼륨·인에 그리는 '하루 상한 없음'의
+    근거라 링크가 따라가야 한다 (DATA_MODEL 34장)."""
+    _add_condition(db, user, "ckd")
+    _set_stage(db, user, "nondialysis")
+    _add_food(db, "테스트과일ZZ", potassium_mg=426, sodium_mg=1)
+    _log_meal(db, user, [("테스트과일ZZ", 1.0)])
+
+    result = day_nutrition.get_day_nutrient_axes(db, user.id, TODAY)
+    titles = " ".join(link["title"] for link in result["citations"])
+
+    assert "투석 전 단계" in titles
+    assert "KDOQI" in titles
+
+
 def test_comorbidity_takes_the_stricter_limit(db, user):
     """투석(3,000) + 고혈압(2,000) 이면 더 엄격한 쪽을 쓴다."""
     _add_condition(db, user, "ckd")

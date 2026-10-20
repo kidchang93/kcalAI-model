@@ -3,6 +3,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
+from schemas.citation_schema import CitationLink
+
 
 class NutritionEstimateRequest(BaseModel):
     food_label: str = Field(..., min_length=1, max_length=100)
@@ -79,3 +81,6 @@ class NutritionWarningsResponse(BaseModel):
     # **1인분 경계는 지침 컷오프가 아니라 1일 상한을 끼니로 나눈 정책값**이라, 그 사실을 숨기지
     # 않는 것이 노출 원칙이다 (docs/CHRONIC_NUTRITION_SOURCES.md §4-2·§6).
     notice: str | None = None
+    # 질환 경고가 기대는 학회 지침의 원문 링크. 질환 경고가 없으면(알러지만·경고 없음) 빈 목록
+    # (2026-10-20, DATA_MODEL 34장).
+    citations: list[CitationLink] = []

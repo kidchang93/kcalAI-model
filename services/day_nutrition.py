@@ -29,7 +29,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from models.health_model import MealItem, MealLog
-from services import chronic_food_rules, ckd_food_rules, consent_service, meta_service
+from services import chronic_food_rules, ckd_food_rules, citations, consent_service, meta_service
 
 # 하루 누적 축 (tag, nutrient, label). **경고 축(`ckd_food_rules.WARNING_AXES`)과 같지 않다.**
 #
@@ -111,6 +111,7 @@ def get_day_nutrient_axes(db: Session, user_id: int, target_date: date) -> dict 
         ],
         "total_items": period["axes"][0]["days"][0]["total_items"],
         "notice": period["notice"],
+        "citations": period["citations"],
     }
 
 
@@ -212,10 +213,27 @@ def get_period_nutrient_axes(
             }
         )
 
+    notice = _notice(payloads)
+
     return {
         "axes": payloads,
-        "notice": _notice(payloads),
+        "notice": notice,
+        "citations": _citations(payloads, notice),
     }
+
+
+def _citations(payloads: list[dict], notice: str) -> list[dict]:
+    """기준선(basis)·고지문에 나온 문헌의 원문 링크 (DATA_MODEL 34장).
+
+    칼륨·인 축이 있으면 KDOQI 2020 을 함께 단다 — 앱이 상한 대신 그리는 "하루 상한 없음 ·
+    혈액검사 수치에 따라 개인별로 정함"의 근거인데, 비투석이면 basis 도 notice 도 그 문헌을
+    말하지 않는다.
+    """
+    no_limit_basis = (
+        "KDOQI 2020" if any(p["nutrient"] in ("potassium", "phosphorus") for p in payloads) else None
+    )
+
+    return citations.find(*(payload["basis"] for payload in payloads), notice, no_limit_basis)
 
 
 def _notice(payloads: list[dict]) -> str:

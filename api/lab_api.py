@@ -12,7 +12,7 @@ from schemas.lab_schema import (
     LabResultRequest,
     LabResultResponse,
 )
-from services import lab_panels, lab_service, meta_service
+from services import citations, lab_panels, lab_service, meta_service
 
 router = APIRouter()
 
@@ -40,6 +40,7 @@ def _to_response(row: LabResult) -> LabResultResponse:
         unit=row.unit,
         reference=definition.reference if definition is not None else None,
         source_note=definition.source if definition is not None else "",
+        citations=citations.find(definition.source) if definition is not None else [],
         note=row.note,
         created_at=row.created_at,
     )
@@ -51,7 +52,11 @@ def list_lab_panels(current_user: ConsentedUser, db: DB):
     mine = {row.code for row in meta_service.list_user_condition_types(db, current_user.id)}
 
     options = [
-        LabPanelOption(**asdict(panel), is_mine=bool(mine & set(panel.conditions)))
+        LabPanelOption(
+            **asdict(panel),
+            citations=citations.find(panel.source),
+            is_mine=bool(mine & set(panel.conditions)),
+        )
         for panel in lab_panels.PANELS
     ]
 
