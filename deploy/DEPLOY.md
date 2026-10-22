@@ -198,15 +198,15 @@ curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --d
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
 sudo apt-get update && sudo apt-get install -y caddy
 
-# 설정: deploy/Caddyfile.example 을 참고해 도메인을 넣고 배치
+# 설정: deploy/Caddyfile.example 이 운영 구성 그대로다(caretable.kr·www·api.kcalai.link)
+sudo caddy validate --config /opt/kcalAI-model/deploy/Caddyfile.example --adapter caddyfile
 sudo cp /opt/kcalAI-model/deploy/Caddyfile.example /etc/caddy/Caddyfile
-sudo sed -i 's/your.domain.com/api.kcalai.link/' /etc/caddy/Caddyfile
-sudo systemctl restart caddy
+sudo systemctl reload caddy
 ```
 
-Caddy가 인증서를 자동 발급·갱신한다. 확인: `https://api.kcalai.link/api/plans`.
+Caddy가 인증서를 자동 발급·갱신한다. 확인: `https://caretable.kr/api/plans`·`https://api.kcalai.link/api/plans` 200, `https://api.kcalai.link/` → `https://caretable.kr/` 302.
 
-> **홍보용 도메인 `caretable.kr`(2026-10-17)**: DNS는 Route 53(개인 계정, 영역 `Z02947492Z4V3YMKMBK1K` — 등록은 가비아, 네임서버만 Route 53). Caddy는 `caretable.kr`·`www`를 **`api.kcalai.link`로 302 넘김**만 한다(`Caddyfile.example` 두 번째 블록). 여기서 웹을 직접 서빙하지 않는 이유: 웹 카카오 로그인 콜백이 `KAKAO_REDIRECT_URI`(api.kcalai.link) 오리진의 상대 경로 `/auth`로 돌아와, 다른 오리진에서 연 팝업이 결과를 넘기지 못한다. 본 주소를 옮기려면 카카오 콘솔 Redirect URI 추가 + `KAKAO_REDIRECT_URI` 교체 + `CORS_ALLOW_ORIGINS`를 함께 바꾸고, `api.kcalai.link`는 깔린 앱·스토어 알림·약관 링크 때문에 계속 살린다. 고정 IP는 2026-10-22 에 붙였다 — IP가 다시 바뀌면 두 영역(kcalai.link·caretable.kr)의 A 레코드를 모두 바꾼다.
+> **웹 본 주소 `caretable.kr`(2026-10-22, 10-17 엔 302 넘김만 했다)**: DNS는 Route 53(개인 계정, 영역 `Z02947492Z4V3YMKMBK1K` — 등록은 가비아, 네임서버만 Route 53). Caddy는 `caretable.kr`에서 웹과 API를 **직접 서빙**하고, `www`는 `caretable.kr`로, `api.kcalai.link`는 **`/api/*`만 서빙하고 웹 화면 경로는 `caretable.kr`로 302**(경로 유지 — 약관·지원·초대 링크가 그대로 열린다). 웹 카카오 로그인은 페이지가 카카오로 갔다가 `KAKAO_REDIRECT_URI` 오리진의 상대 경로 `/auth`로 돌아오므로, 이 값을 웹과 같은 오리진(`https://caretable.kr/api/auth/kakao/callback`)으로 바꿨다 — 카카오 콘솔 REST API 키 Redirect URI 에 두 도메인이 모두 등록돼 있다. 웹은 API를 상대 경로로 불러 `CORS_ALLOW_ORIGINS`는 바꿀 필요가 없었다. 웹 로그인은 오리진별 localStorage 라 옮기면 한 번 다시 로그인한다. `api.kcalai.link`는 깔린 앱(`EXPO_PUBLIC_API_ORIGIN`·초대 링크 기본값)·스토어 알림 URL 때문에 계속 살린다 — 정리하려면 다음 앱 버전에서 API 오리진을 바꾸고 옛 버전이 빠진 뒤에. 고정 IP는 2026-10-22 에 붙였다 — IP가 다시 바뀌면 두 영역(kcalai.link·caretable.kr)의 A 레코드를 모두 바꾼다.
 
 > nginx+certbot를 선호하면: nginx 설치 → `proxy_pass http://127.0.0.1:8000;` server 블록 → `certbot --nginx -d api.kcalai.link`. Caddy가 설정이 더 단순해 권장.
 
