@@ -7,17 +7,16 @@ torch/YOLO에 의존하지 않으므로(=모델 로드 없이) 단위 테스트�
 """
 
 import io
-import struct
 
 from fastapi import HTTPException, status
 from PIL import Image
 
 # 휴대폰·웹 사진으로 올 수 있는 형식만 연다 — TIFF·BMP·PPM·GIF 같은 디코더를 업로드로 닿게 두지 않는다
-# (2026-10-22: Pillow 12.3 의 CVE 24건이 대부분 그쪽). Gemini 로는 strip_metadata 가 JPEG 로 다시 저장해 보낸다.
+# (2026-10-22: Pillow 12.3 의 CVE 24건이 대부분 그쪽이었다 — 13.0 이 고친 뒤에도 다음 취약점의 문을 좁혀 둔다).
+# Gemini 로는 strip_metadata 가 JPEG 로 다시 저장해 보낸다.
 # 휴대폰 카메라의 MPO(다중 사진 JPEG)는 JPEG 로 열린다 — 'MPO' 는 열기 형식 이름이 아니라 넣으면 그 뒤 형식이 KeyError 로
 # 깨진다. HEIC 는 pillow-heif 가 없어 원래 열리지 않는다.
 ALLOWED_FORMATS = ("JPEG", "PNG", "WEBP", "AVIF")
-_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def validate_image_upload(content_type: str | None, data: bytes, max_bytes: int) -> None:
@@ -49,12 +48,6 @@ def validate_image_upload(content_type: str | None, data: bytes, max_bytes: int)
         )
 
     try:
-        # ponytail: Pillow 12.3 은 APNG 를 열 때 선언된 캔버스를 폭탄 검사보다 먼저 잡는다(CVE-2026-112399) —
-        # 13.0 이 고쳤지만 Python 3.11+ 전용이라 운영(3.10)에 못 올린다. 서버 Python 을 올려 Pillow 13 이 되면 지운다.
-        if data[:8] == _PNG_SIGNATURE:
-            width, height = struct.unpack(">II", data[16:24])  # IHDR 은 늘 첫 청크다
-            if width * height > Image.MAX_IMAGE_PIXELS:
-                raise ValueError("PNG 캔버스가 너무 크다")
         Image.open(io.BytesIO(data), formats=ALLOWED_FORMATS).verify()
     except Exception as error:  # PIL은 다양한 예외를 던진다 (UnidentifiedImageError 등).
         raise HTTPException(

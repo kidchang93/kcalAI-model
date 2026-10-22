@@ -79,7 +79,7 @@ curl -X POST http://127.0.0.1:8000/api/auth/signup/request-code \
 ### 추론·모델
 
 - [ ] 모델 로딩 위치를 바꿨다면 서버 시작 시간, 첫 요청 지연, **cwd 의존성**을 확인했는가.
-- [ ] 업로드 파일 크기·타입 검증을 거치는가. `/api/predict`는 `services/upload_validation.py`로 크기(413)·content-type(415)·디코드 가능성(400)을 확인한다. Pillow 는 허용 형식(`ALLOWED_FORMATS` — JPEG·PNG·WEBP·AVIF)으로만 열고, PNG 는 머리의 캔버스 크기를 열기 전에 본다(2026-10-22 — Pillow 13 은 Python 3.11+ 라 운영 3.10 에 못 올려 낯선 디코더를 막아 둔다). 입력 검증(4xx)은 라우트 `try` **밖**에 둬서 500으로 뭉개지지 않게 한다.
+- [ ] 업로드 파일 크기·타입 검증을 거치는가. `/api/predict`는 `services/upload_validation.py`로 크기(413)·content-type(415)·디코드 가능성(400)을 확인한다. Pillow 는 허용 형식(`ALLOWED_FORMATS` — JPEG·PNG·WEBP·AVIF)으로만 연다(2026-10-22 — 낯선 디코더를 업로드로 닿게 두지 않는다). 입력 검증(4xx)은 라우트 `try` **밖**에 둬서 500으로 뭉개지지 않게 한다.
 - [ ] 추론 결과를 `Prediction(label, score)`로 정규화해서 반환하는가.
 - [ ] 모델 실험 코드가 제품 코드와 같은 커밋에 섞이지 않았는가.
 - [ ] `runs/`에 새 `.pt` 파일을 추가하지 않았는가. 이미 70MB입니다.

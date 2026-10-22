@@ -4,7 +4,6 @@ torch/YOLO 비의존 모듈이라 모델 로드 없이 검증 로직만 단위 �
 """
 
 import io
-import zlib
 
 import pytest
 from fastapi import HTTPException
@@ -80,13 +79,3 @@ def test_rejects_formats_outside_allowlist(fmt):
         validate_image_upload("image/tiff", _image_bytes(fmt), MAX_BYTES)
     assert exc.value.status_code == 400
 
-
-def test_rejects_png_declaring_huge_canvas():
-    # 픽셀을 풀기 전에 머리(IHDR)의 크기만 보고 끊는다 — APNG 가 캔버스부터 잡는 것을 막는다.
-    # 1억 화소는 Pillow 가 경고만 하고 여는 크기라, 이 검사가 없으면 통과한다.
-    data = bytearray(_png_bytes())
-    data[16:24] = (10_000).to_bytes(4, "big") * 2
-    data[29:33] = zlib.crc32(bytes(data[12:29])).to_bytes(4, "big")  # IHDR CRC 를 맞춰 정상 PNG 로 둔다
-    with pytest.raises(HTTPException) as exc:
-        validate_image_upload("image/png", bytes(data), MAX_BYTES)
-    assert exc.value.status_code == 400
