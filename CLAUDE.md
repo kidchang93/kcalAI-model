@@ -93,7 +93,7 @@ open http://127.0.0.1:8000/docs
 | 목적 | 명령어 |
 |------|--------|
 | 테스트 | `venv/bin/python -m pytest` (의존성: `venv/bin/pip install -r requirements-dev.txt`) |
-| 운영 파이썬(3.10) 호환 | `uv run --no-project --python 3.10 --with-requirements requirements.txt --with-requirements requirements-dev.txt python -m pytest -q -p no:cacheprovider` — **배포 전 필수.** 로컬 venv 는 3.13 이라 `StrEnum`·`datetime.UTC` 같은 3.11+ 문법을 못 잡는다(2026-09-15 운영 502) |
+| 운영 파이썬(3.12) 호환 | `uv run --no-project --python 3.12 --with-requirements requirements.txt --with-requirements requirements-dev.txt python -m pytest -q -p no:cacheprovider` — **배포 전 필수.** 로컬 venv 는 3.13 이라 운영에 없는 문법을 못 잡는다(2026-09-15 운영이 3.10 일 때 `StrEnum` 으로 502 — 2026-10-22 Ubuntu 24.04·3.12 로 이전) |
 | 린트 | 없음 |
 | 포맷 | 없음 |
 
@@ -295,7 +295,7 @@ Lite 비전 쿼터는 2026-07-16에 3 → **5**로 상향(리비전 0016, 22장)
 | `release` | ~~배포 브랜치~~ **방치됨** (2026-07-12에 멈춤, master보다 22커밋 뒤). 쓰지 마세요 (서버 git pull 방식이던 `deploy/redeploy.sh`는 2026-09-14에 삭제 — 운영 서버 트리에 `.git`이 없습니다) |
 | `ck-local` | 로컬 작업 브랜치 |
 
-**배포는 `/kcal-release web` 스킬로 한다**(2026-10-05 — 사전 점검·3.10 pytest·확인 스크립트 포함). 내부에서 `bash deploy/local_deploy.sh --web --migrate` (Lightsail, 운영 웹 `https://caretable.kr` — 2026-10-22, `https://api.kcalai.link`는 API 만 서빙하고 웹 경로는 caretable.kr 로 302)를 부른다. SSH 설정은 `deploy/deploy.local.env`에 있습니다. 절차·주의는 **`deploy/DEPLOY.md`가 정본**입니다.
+**배포는 `/kcal-release web` 스킬로 한다**(2026-10-05 — 사전 점검·운영과 같은 3.12 pytest·확인 스크립트 포함). 내부에서 `bash deploy/local_deploy.sh --web --migrate` (Lightsail, 운영 웹 `https://caretable.kr` — 2026-10-22, `https://api.kcalai.link`는 API 만 서빙하고 웹 경로는 caretable.kr 로 302)를 부른다. SSH 설정은 `deploy/deploy.local.env`에 있습니다. 절차·주의는 **`deploy/DEPLOY.md`가 정본**입니다.
 
 - ⚠️ **이 스크립트는 git이 아니라 현재 작업 트리를 rsync합니다** — 브랜치도 커밋 여부도 보지 않습니다. 배포 전 `git status`로 확인하세요. 커밋하지 않은 편집도 그대로 운영에 올라갑니다.
 - **`git push`는 배포를 트리거하지 않습니다.** push는 GitHub 원격만 갱신합니다.

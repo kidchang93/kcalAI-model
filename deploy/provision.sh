@@ -4,7 +4,7 @@
 # 한 번 실행한다(재실행해도 대체로 안전: idempotent 하게 작성). sudo 권한 필요.
 #
 # 사용 전 아래 CONFIG를 확인/수정하거나 환경변수로 넘긴다:
-#   APP_USER=ubuntu APP_DIR=/opt/kcalAI-model DB_PASSWORD=... GEMINI_API_KEY=... \
+#   APP_USER=ubuntu SERVICE_USER=kcalai APP_DIR=/opt/kcalAI-model DB_PASSWORD=... GEMINI_API_KEY=... \
 #   sudo -E bash deploy/provision.sh
 #
 # secret은 스크립트에 하드코딩하지 않는다. DB_PASSWORD·GEMINI_API_KEY는 환경변수 또는
@@ -12,7 +12,9 @@
 set -euo pipefail
 
 # ---- CONFIG (환경변수로 덮어쓸 수 있음) ----
+# APP_USER = 코드를 올리고 배포하는 사용자(sudo 있음). SERVICE_USER = 앱·cron 을 실행하는 전용 계정(sudo 없음).
 APP_USER="${APP_USER:-ubuntu}"
+SERVICE_USER="${SERVICE_USER:-kcalai}"
 APP_DIR="${APP_DIR:-/opt/kcalAI-model}"
 DB_NAME="${DB_NAME:-kcal}"
 DB_USER="${DB_USER:-kcal}"
@@ -28,7 +30,24 @@ die() { echo -e "\033[1;31m[provision] $*\033[0m" >&2; exit 1; }
 log "시스템 패키지 설치"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y python3-venv python3-pip postgresql postgresql-contrib curl ca-certificates
+apt-get install -y python3-venv python3-pip postgresql postgresql-contrib curl ca-certificates fail2ban
+
+# ---- 1b. 앱 전용 계정 + SSH 정리 (2026-10-22) ----
+log "앱 전용 계정(${SERVICE_USER})·SSH 정리·fail2ban"
+id -u "$SERVICE_USER" >/dev/null 2>&1 \
+  || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$SERVICE_USER"
+# sshd 는 같은 항목의 첫 값을 쓴다 — 클라우드 이미지의 50-·60- 파일보다 먼저 읽히게 01- 로 둔다.
+cat > /etc/ssh/sshd_config.d/01-kcalai.conf <<'SSHD'
+# provision.sh 가 쓴다. 키 로그인만 받고 루트·X11 은 끈다.
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+X11Forwarding no
+SSHD
+sshd -t
+systemctl try-reload-or-restart ssh
+# 우분투 기본 설정이 sshd 감옥을 켠다(22번은 인터넷에 열려 있어 하루 수백 번 시도가 온다).
+systemctl enable --now fail2ban
 
 # ---- 2. Postgres: 유저·DB·확장 (idempotent) ----
 log "Postgres 유저·DB 준비"
@@ -77,9 +96,12 @@ GEMINI_MODEL=gemini-flash-latest
 CORS_ALLOW_ORIGINS=${DOMAIN}
 PREDICT_MAX_UPLOAD_MB=10
 ENV
-  chown "$APP_USER:$APP_USER" "$APP_DIR/.env"
   log "⚠️  HEALTH_ENCRYPTION_KEY 를 안전한 곳에 백업하세요 — 분실 시 민감정보 복호화 불가."
 fi
+# 배포 사용자는 읽고 고치고, 앱 계정은 그룹으로 읽기만 한다. cron 로그 폴더만 앱 계정이 쓴다.
+chown "$APP_USER:$SERVICE_USER" "$APP_DIR/.env"
+chmod 640 "$APP_DIR/.env"
+install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 750 "$APP_DIR/task-logs"
 
 # ---- 5. DB 마이그레이션 ----
 log "alembic upgrade head"
@@ -87,7 +109,7 @@ sudo -u "$APP_USER" bash -c "cd '$APP_DIR' && ./venv/bin/alembic upgrade head"
 
 # ---- 6. systemd 서비스 ----
 log "systemd 서비스 등록·기동"
-sed -e "s#__APP_USER__#${APP_USER}#g" -e "s#__APP_DIR__#${APP_DIR}#g" \
+sed -e "s#__SERVICE_USER__#${SERVICE_USER}#g" -e "s#__APP_DIR__#${APP_DIR}#g" \
   "$APP_DIR/deploy/kcalai.service" > "/etc/systemd/system/${SERVICE_NAME}.service"
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}"
@@ -98,7 +120,7 @@ systemctl restart "${SERVICE_NAME}"
 # 사용자는 서비스를 잃는다. 서버를 다시 세울 때 이 단계가 빠지면 같은 일이 반복되므로
 # 프로비저닝에 포함한다 (2026-07-26: 실제로 등록이 0건인 채 운영되고 있었다).
 log "정기 배치(cron) 등록"
-sed -e "s#__APP_USER__#${APP_USER}#g" -e "s#__APP_DIR__#${APP_DIR}#g" \
+sed -e "s#__SERVICE_USER__#${SERVICE_USER}#g" -e "s#__APP_DIR__#${APP_DIR}#g" \
   "$APP_DIR/deploy/kcalai.cron" > /etc/cron.d/kcalai
 chmod 644 /etc/cron.d/kcalai
 

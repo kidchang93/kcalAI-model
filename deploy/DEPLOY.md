@@ -3,9 +3,9 @@
 FastAPI 서버(Gemini 비전 + 식약처 DB)를 **AWS Lightsail Ubuntu**에 올린다. Postgres는 같은
 인스턴스에 동거, uvicorn은 **systemd**로 상시 구동, HTTPS는 **Caddy**(자동 Let's Encrypt).
 
-- 스택: Ubuntu 22.04/24.04 · Python venv(경량 requirements, torch 없음 ~200MB) · Postgres 16 · systemd · Caddy
+- 스택: **Ubuntu 24.04 · Python 3.12**(2026-10-22 — 그 전엔 22.04·3.10) · Python venv(경량 requirements, torch 없음 ~200MB) · Postgres 16 · systemd · Caddy
 - 인스턴스: **2GB RAM, 서울 리전(ap-northeast-2)** 권장. (torch 제거로 2GB면 충분.)
-- **운영: `https://api.kcalai.link`** (Lightsail 고정 IP `kcalai-static` 43.201.177.139 — 2026-10-22, `REMOTE_DIR=/opt/kcalAI-model`). 같은 오리진에서 웹앱(`/`)과 API(`/api/*`)를 함께 서빙한다.
+- **운영: `https://caretable.kr`**(웹 `/` + API `/api/*`) · `https://api.kcalai.link`(깔린 앱이 쓰는 API — 웹 경로는 caretable.kr 로 302) — Lightsail `kcalai-2404`, 고정 IP `kcalai-static` 43.201.177.139(2026-10-22), `REMOTE_DIR=/opt/kcalAI-model`.
 
 > ### 배포는 **git이 아니라 작업 트리**를 올린다
 >
@@ -176,10 +176,12 @@ bash kcalAI-model/deploy/local_deploy.sh --provision
 ```
 
 수행 내용(원격 provision.sh):
-- apt: `python3-venv postgresql` 등, Postgres 유저(`kcal`)·DB(`kcal`)·`pg_trgm` 생성
+- apt: `python3-venv postgresql fail2ban` 등, Postgres 유저(`kcal`)·DB(`kcal`)·`pg_trgm` 생성
+- **앱 전용 계정 `kcalai`**(sudo·셸 없음, 2026-10-22) — 앱(systemd)과 cron 이 이 계정으로 돈다. 코드·venv 는 배포 계정(`ubuntu`)이 올리고, `.env` 는 `ubuntu:kcalai 640`, `task-logs/` 는 `kcalai` 소유다. 서비스는 보호 옵션(`ProtectSystem=strict` 등 — `systemd-analyze security kcalai` 3.7)을 켜고 쓰기는 `task-logs/` 만 연다
+- **SSH 정리**(`/etc/ssh/sshd_config.d/01-kcalai.conf` — 루트·비밀번호·X11 끔) + **fail2ban**(sshd 감옥)
 - 경량 venv + `pip install -r requirements.txt`
-- **`.env` 생성** — `AUTH_CODE_PEPPER`·`HEALTH_ENCRYPTION_KEY` 난수 생성, `GEMINI_API_KEY`·DB 비번은 프롬프트
-- `alembic upgrade head`, `kcalai` systemd 등록·기동(재부팅 자동복구, 127.0.0.1:8000)
+- **`.env` 생성** — `AUTH_CODE_PEPPER`·`HEALTH_ENCRYPTION_KEY` 난수 생성, `GEMINI_API_KEY`·DB 비번은 프롬프트(이미 있으면 보존 — 서버를 옮길 때는 옛 `.env` 를 먼저 복사해 둔다, 8장)
+- `alembic upgrade head`, `kcalai` systemd·cron 등록·기동(재부팅 자동복구, 127.0.0.1:8000)
 
 > ⚠️ **`HEALTH_ENCRYPTION_KEY`를 안전한 곳에 백업**한다(서버 `.env`에 있음). 분실 시 민감정보 복호화 불가.
 
@@ -247,7 +249,8 @@ FastAPI가 `webapp/`를 `/`로 서빙하므로, 서브도메인(`https://api.kca
 | 로그 | `journalctl -u kcalai -f` |
 | 재시작 | `sudo systemctl restart kcalai` |
 | 상태 | `systemctl status kcalai` |
-| 애플리케이션 로그 | `tail -f /opt/kcalAI-model/task-logs/info_log.txt` (구조적 request/predict 로그) |
+| 애플리케이션 로그 | `sudo tail -f /opt/kcalAI-model/task-logs/info_log.txt` (구조적 request/predict 로그 — `kcalai` 소유라 sudo) |
+| 서버에서 스크립트 실행 | `cd /opt/kcalAI-model && sudo -u kcalai venv/bin/python scripts/<이름>.py` — import 가 `task-logs/` 에 로그 파일을 열어 배포 계정(`ubuntu`)으로는 권한 오류가 난다 |
 | DB 백업 | `sudo -u postgres pg_dump kcal > backup.sql` (정기 cron 권장) |
 | 정기 배치 확인 | `cat /etc/cron.d/kcalai` · 실행 이력은 `tail /opt/kcalAI-model/task-logs/cron_billing.log` |
 
@@ -271,7 +274,7 @@ FastAPI가 `webapp/`를 `/`로 서빙하므로, 서브도메인(`https://api.kca
 
 ```bash
 cd /opt/kcalAI-model
-sed -e 's#__APP_USER__#ubuntu#g' -e 's#__APP_DIR__#/opt/kcalAI-model#g' \
+sed -e 's#__SERVICE_USER__#kcalai#g' -e 's#__APP_DIR__#/opt/kcalAI-model#g' \
   deploy/kcalai.cron | sudo tee /etc/cron.d/kcalai >/dev/null
 sudo chmod 644 /etc/cron.d/kcalai && sudo chown root:root /etc/cron.d/kcalai
 ```
@@ -298,3 +301,25 @@ EXPO_PUBLIC_CALORIE_API_URL=https://api.kcalai.link/api/predict
 > **웹만 배포하면 네이티브 앱은 그대로다.** API 계약을 바꾸는 변경은 스토어 배포까지 나가야 반영된다 —
 > 구버전 앱이 남아 있는 동안 서버가 하위호환을 유지하는지 확인할 것 (예: 동의 버전 필드는 선택 필드로
 > 두어 구버전 앱이 폴백된다, `docs/DATA_MODEL.md` 18장).
+
+---
+
+## 8. 서버 교체 — 새 인스턴스로 옮기기 (2026-10-22 22.04 → 24.04 에서 한 순서)
+
+고정 IP 를 옮겨 붙이면 DNS·카카오 허용 IP·스토어 알림 URL 을 하나도 바꾸지 않는다. 옛 인스턴스는 지우지 않고
+며칠 두면 IP 를 되돌려 붙이는 것이 곧 롤백이다.
+
+1. 새 인스턴스(같은 리전·AZ·키) + 방화벽 22·80·443 → 코드 rsync(`local_deploy.sh` 와 같은 제외 목록).
+2. **옛 서버의 `.env` 와 `webapp/` 를 그대로 복사**한다(로컬을 거쳐 파이프 — 화면에 내지 않는다). `.env` 가 있으면
+   `provision.sh` 가 새로 만들지 않아 `HEALTH_ENCRYPTION_KEY` 가 유지된다.
+3. `provision.sh` 를 비대화형으로 — DB 비밀번호는 서버 안에서 `.env` 의 `DATABASE_URL` 을 읽어 넘긴다.
+   **곧바로 `/etc/cron.d/kcalai` 를 치워 둔다** — 두 서버가 같은 배치를 동시에 돌리지 않게, 전환 때 되살린다.
+4. DB 리허설: 새 DB 를 지우고(`dropdb`·`createdb -O kcal`·`pg_trgm`) 옛 서버 `pg_dump -Fc` 를
+   `pg_restore --no-owner --role=kcal` 로 붓는다(`COMMENT ON EXTENSION` 오류 1건은 무해). 테이블별 행 수를 대조한다.
+5. Caddy 설치(4장) + **옛 서버의 `/var/lib/caddy/.local/share/caddy` 를 복사**(인증서·ACME 계정) — 전환 순간 HTTPS 가
+   끊기지 않는다. `curl --resolve <도메인>:443:<새 IP>` 로 실제 도메인 이름 그대로 리허설한다.
+6. 전환: 옛 서버 `kcalai` 정지 → 최종 덤프·복원 → 행 수 대조 → `aws lightsail detach-static-ip` / `attach-static-ip`
+   → cron 되살리기 → 카카오 진단(`scripts/check_kakao_config.py`)·로그인·결제 알림 확인. 같은 IP 에 다른 호스트 키가
+   나오므로 로컬에서 `ssh-keygen -R <고정 IP>` 를 해야 `local_deploy.sh` 가 다시 붙는다.
+7. 옛 인스턴스는 며칠 뒤 스냅샷을 남기고 지운다.
+
