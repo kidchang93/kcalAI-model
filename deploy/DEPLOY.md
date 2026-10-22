@@ -5,7 +5,7 @@ FastAPI 서버(Gemini 비전 + 식약처 DB)를 **AWS Lightsail Ubuntu**에 올�
 
 - 스택: Ubuntu 22.04/24.04 · Python venv(경량 requirements, torch 없음 ~200MB) · Postgres 16 · systemd · Caddy
 - 인스턴스: **2GB RAM, 서울 리전(ap-northeast-2)** 권장. (torch 제거로 2GB면 충분.)
-- **운영: `https://api.kcalai.link`** (Lightsail 15.165.77.96, `REMOTE_DIR=/opt/kcalAI-model`). 같은 오리진에서 웹앱(`/`)과 API(`/api/*`)를 함께 서빙한다.
+- **운영: `https://api.kcalai.link`** (Lightsail 고정 IP `kcalai-static` 43.201.177.139 — 2026-10-22, `REMOTE_DIR=/opt/kcalAI-model`). 같은 오리진에서 웹앱(`/`)과 API(`/api/*`)를 함께 서빙한다.
 
 > ### 배포는 **git이 아니라 작업 트리**를 올린다
 >
@@ -121,12 +121,15 @@ CLI로 대신할 수 없는 단계다.
    - SSH 키: 새로 만들거나 기존 키 사용(다운로드한 .pem 보관)
 2. **고정 IP(Static IP) 할당** — Networking > Create static IP > 인스턴스에 attach.
    재부팅해도 IP가 유지된다. (도메인 A 레코드가 이 IP를 가리킨다.)
+   ⚠️ IP가 바뀌면 **카카오 콘솔 허용 IP 두 곳**을 함께 고친다 — 앱 › 플랫폼 키 › REST API 키 › 허용 IP(로그인),
+   앱 › **어드민 키 › 호출 허용 IP 주소**(탈퇴 unlink). 붙이기 **전에** 새 IP를 두 곳에 *추가*해 두면 로그인이 끊기지 않는다.
+   확인은 서버에서 `venv/bin/python scripts/check_kakao_config.py`(어드민 키 쪽만 본다 — 로그인 쪽은 실제 로그인으로 확인).
 3. **방화벽 포트** — 인스턴스 > Networking > IPv4 Firewall:
    - `22`(SSH), `80`(HTTP), `443`(HTTPS) **열기**
    - `8000`은 **열지 않는다** — uvicorn은 127.0.0.1에만 바인딩되고 Caddy 뒤에 있다.
    - `5432`(Postgres)도 **열지 않는다** — 로컬 동거.
 4. **도메인 / DNS** (HTTPS에 필요):
-   - 보유 도메인의 **A 레코드**를 위 고정 IP로 설정. (현재: `api.kcalai.link → 15.165.77.96`)
+   - 보유 도메인의 **A 레코드**를 위 고정 IP로 설정. (현재: `api.kcalai.link`·`caretable.kr`·`www.caretable.kr` → 43.201.177.139, TTL 300)
    - 도메인이 없으면 Let's Encrypt HTTPS를 못 받는다 → HTTP로만 테스트하거나 도메인을 먼저 확보.
 5. **Gemini API 키** — Google AI Studio/Cloud 콘솔에서 발급. provision 때 입력한다(스크립트에 하드코딩 금지).
 6. **스냅샷** — 프로비저닝이 끝나 정상 동작하면 인스턴스 스냅샷을 찍어 둔다(복구 지점).
@@ -203,7 +206,7 @@ sudo systemctl restart caddy
 
 Caddy가 인증서를 자동 발급·갱신한다. 확인: `https://api.kcalai.link/api/plans`.
 
-> **홍보용 도메인 `caretable.kr`(2026-10-17)**: DNS는 Route 53(개인 계정, 영역 `Z02947492Z4V3YMKMBK1K` — 등록은 가비아, 네임서버만 Route 53). Caddy는 `caretable.kr`·`www`를 **`api.kcalai.link`로 302 넘김**만 한다(`Caddyfile.example` 두 번째 블록). 여기서 웹을 직접 서빙하지 않는 이유: 웹 카카오 로그인 콜백이 `KAKAO_REDIRECT_URI`(api.kcalai.link) 오리진의 상대 경로 `/auth`로 돌아와, 다른 오리진에서 연 팝업이 결과를 넘기지 못한다. 본 주소를 옮기려면 카카오 콘솔 Redirect URI 추가 + `KAKAO_REDIRECT_URI` 교체 + `CORS_ALLOW_ORIGINS`를 함께 바꾸고, `api.kcalai.link`는 깔린 앱·스토어 알림·약관 링크 때문에 계속 살린다. ⚠️ 고정 IP를 붙이면 두 영역(kcalai.link·caretable.kr)의 A 레코드를 모두 바꾼다.
+> **홍보용 도메인 `caretable.kr`(2026-10-17)**: DNS는 Route 53(개인 계정, 영역 `Z02947492Z4V3YMKMBK1K` — 등록은 가비아, 네임서버만 Route 53). Caddy는 `caretable.kr`·`www`를 **`api.kcalai.link`로 302 넘김**만 한다(`Caddyfile.example` 두 번째 블록). 여기서 웹을 직접 서빙하지 않는 이유: 웹 카카오 로그인 콜백이 `KAKAO_REDIRECT_URI`(api.kcalai.link) 오리진의 상대 경로 `/auth`로 돌아와, 다른 오리진에서 연 팝업이 결과를 넘기지 못한다. 본 주소를 옮기려면 카카오 콘솔 Redirect URI 추가 + `KAKAO_REDIRECT_URI` 교체 + `CORS_ALLOW_ORIGINS`를 함께 바꾸고, `api.kcalai.link`는 깔린 앱·스토어 알림·약관 링크 때문에 계속 살린다. 고정 IP는 2026-10-22 에 붙였다 — IP가 다시 바뀌면 두 영역(kcalai.link·caretable.kr)의 A 레코드를 모두 바꾼다.
 
 > nginx+certbot를 선호하면: nginx 설치 → `proxy_pass http://127.0.0.1:8000;` server 블록 → `certbot --nginx -d api.kcalai.link`. Caddy가 설정이 더 단순해 권장.
 
