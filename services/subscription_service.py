@@ -5,8 +5,9 @@ import json
 import re
 import uuid
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 from log_utils import get_logger
 from models.group_model import Group, GroupMember, GroupPet
 from models.pet_model import Pet
-from models.subscription_model import Plan, UserSubscription, VisionUsageDaily
+from models.subscription_model import Plan, StoreTransaction, UserSubscription, VisionUsageDaily
 from services import appstore_client, play_client
 from services.errors import BadRequestError
 from timeutil import KST, UTC, today_kst
@@ -428,8 +429,8 @@ def verify_appstore_purchase(db: Session, user_id: int, transaction_id: str) -> 
     """앱이 받은 transactionId 를 Apple 에 다시 물어 플러스를 붙인다 (32-3).
 
     실패: BadRequestError(거래 없음·번들·상품 불일치 → 400) · AppStoreConflictError(남의 구독 → 409) ·
-    AppStoreUnavailableError(키 미설정·Apple 조회 실패 → 503). **결제 원장(payments)에는 쓰지 않는다** —
-    대금·영수증·환불은 Apple 이 하고 기록도 Apple 이 갖는다.
+    AppStoreUnavailableError(키 미설정·Apple 조회 실패 → 503). 토스 원장(payments)에는 쓰지 않고, 이 구독의 거래
+    이력을 스토어 원장(store_transactions, 35장)에 남긴다.
     """
     found = appstore_client.get_transaction(transaction_id)
 
@@ -469,6 +470,7 @@ def verify_appstore_purchase(db: Session, user_id: int, transaction_id: str) -> 
         raise AppStoreConflictError(APPSTORE_CONFLICT_MESSAGE)
 
     status = appstore_client.get_subscription_status(original_id, environment)
+    history = appstore_client.get_transaction_history(original_id, environment)
     subscription = get_subscription(db, user_id)
 
     if status is None:
@@ -480,6 +482,10 @@ def verify_appstore_purchase(db: Session, user_id: int, transaction_id: str) -> 
         )
 
     try:
+        # 원장 INSERT 가 위 구독 변경을 먼저 flush 한다 — UNIQUE 위반은 여기서도 날 수 있어 try 안에 둔다.
+        _record_store_transactions(
+            db, user_id, PROVIDER_APPSTORE, _appstore_ledger_rows(history, original_id, environment)
+        )
         db.commit()
     except IntegrityError:
         # 같은 구독을 두 회원이 동시에 확인했다 — UNIQUE 가 늦게 온 쪽을 막았다.
@@ -521,8 +527,12 @@ def handle_appstore_notification(db: Session, signed_payload: str | None) -> str
         logger.error(f"appstore notification original unknown to apple original={original_id}")
         return "not-found"
 
+    history = appstore_client.get_transaction_history(original_id, environment)
     _apply_appstore_state(
         subscription, original_id, environment, status.transaction, status.status, status.renewal
+    )
+    _record_store_transactions(
+        db, subscription.user_id, PROVIDER_APPSTORE, _appstore_ledger_rows(history, original_id, environment)
     )
     db.commit()
     logger.info(
@@ -630,7 +640,7 @@ def verify_play_purchase(
 
     실패: BadRequestError(플러스 상품 아님·구매 없음·결제 대기 → 400) · PlayConflictError(남의 구독 → 409) ·
     PlayUnavailableError(키 미설정·Google 조회 실패 → 503). acknowledge 는 서버가 한다 — 3일 안에 안 하면 Google 이
-    자동 환불한다. **결제 원장(payments)에는 쓰지 않는다** (32-3 과 같다).
+    자동 환불한다. 토스 원장(payments)에는 쓰지 않고 최근 결제 주문을 스토어 원장(store_transactions, 35장)에 남긴다.
     """
     # 앱이 말한 상품부터 거른다 — 플러스가 아니면 Google 을 부를 이유가 없다. 실제 상품은 Google 응답으로 다시 본다.
     if product_id not in PLUS_PRODUCT_IDS:
@@ -668,6 +678,10 @@ def verify_play_purchase(
             logger.info(f"play verify owned by other user_id={user_id} token={masked}")
             raise PlayConflictError(APPSTORE_CONFLICT_MESSAGE)
 
+    # 주문 조회는 acknowledge **전에** 한다 — 원장을 못 쓰면 구독도 쓰지 않는데(503), 확인을 먼저 해 버리면 돈은
+    # 나가고 플러스는 없는 상태가 남는다. 확인 전이면 끝내 실패해도 Google 이 3일 뒤 자동 환불한다.
+    ledger_rows = _play_ledger_rows(purchase)
+
     # 이미 끝난 구독은 확인할 것이 없다(대개 확인하지 않아 자동 환불된 구매다).
     if purchase.get("acknowledgementState") == _PLAY_ACK_PENDING and state != "EXPIRED":
         if not play_client.acknowledge(item["productId"], purchase_token):
@@ -677,6 +691,8 @@ def verify_play_purchase(
     _apply_play_state(subscription, purchase_token, purchase)
 
     try:
+        # 원장 INSERT 가 위 구독 변경을 먼저 flush 한다 — UNIQUE 위반은 여기서도 날 수 있어 try 안에 둔다.
+        _record_store_transactions(db, user_id, PROVIDER_PLAY, ledger_rows)
         db.commit()
     except IntegrityError:
         # 같은 토큰을 두 회원이 동시에 확인했다 — UNIQUE 가 늦게 온 쪽을 막았다.
@@ -719,7 +735,9 @@ def handle_play_notification(db: Session, body: object) -> str:
     if _play_plus_item(purchase) is None or _play_state(purchase) in _PLAY_PENDING_STATES:
         return "ignored"
 
+    ledger_rows = _play_ledger_rows(purchase)
     _apply_play_state(subscription, purchase_token, purchase)
+    _record_store_transactions(db, subscription.user_id, PROVIDER_PLAY, ledger_rows)
     db.commit()
     logger.info(
         f"play notification applied user_id={subscription.user_id} "
@@ -790,10 +808,14 @@ def _apply_play_state(subscription: UserSubscription, purchase_token: str, purch
     subscription.cancel_at_period_end = not auto_renew
     subscription.store_purchase_token = purchase_token
     subscription.store_product_id = item.get("productId")
-    # 라이선스 테스터의 테스트 카드 구매면 testPurchase 가 (빈 객체로) 온다.
-    subscription.store_environment = "Test" if "testPurchase" in purchase else "Production"
+    subscription.store_environment = _play_environment(purchase)
     # Play 플러스에는 체험 오퍼가 없다 (33-1).
     subscription.is_trial = False
+
+
+def _play_environment(purchase: dict) -> str:
+    # 라이선스 테스터의 테스트 카드 구매면 testPurchase 가 (빈 객체로) 온다.
+    return "Test" if "testPurchase" in purchase else "Production"
 
 
 def _from_google_time(value: object) -> datetime | None:
@@ -814,6 +836,149 @@ def _from_google_time(value: object) -> datetime | None:
         return None
 
     return parsed.astimezone(UTC)
+
+
+# ---- 스토어 결제 원장 (DATA_MODEL 35장) ----
+# user_subscriptions 는 현재 상태만 덮어쓴다. 결제 1건마다의 이력은 store_transactions 에 남는다 — 값은 위 확인·알림이
+# 우리 키로 다시 물은 응답에서만 온다. 원장 조회가 실패하면 구독도 쓰지 않는다(503 → 앱·스토어가 다시 부른다).
+
+# orders.get 의 state → 원장 status. 환불 대기는 아직 돈이 돌아가지 않았으니 paid 다.
+_PLAY_ORDER_STATUS = {
+    "PROCESSED": "paid",
+    "PENDING_REFUND": "paid",
+    "REFUNDED": "refunded",
+    "PARTIALLY_REFUNDED": "partially_refunded",
+    "PENDING": "pending",
+    "CANCELED": "canceled",
+}
+# 탈퇴로 삭제 처리된 결제 기록의 보존 기간 — 전자상거래법 시행령 제6조(대금결제·재화 공급 기록 5년), 처리방침 8항.
+STORE_LEDGER_RETENTION_YEARS = 5
+# 같은 거래를 다시 받으면 이 값들만 새로 쓴다. user_id·deleted_at 은 빠져 있다(_record_store_transactions).
+_LEDGER_REFRESHED = (
+    "product_id", "environment", "status", "purchased_at", "period_end", "amount", "currency", "refunded_at",
+)
+
+
+def _appstore_ledger_rows(history: list[dict], original_id: str, environment: str) -> list[dict]:
+    # 거래 이력은 그 Apple ID 의 이 앱 거래 전부다 — 이 구독(originalTransactionId)의 것만 이 회원 원장에 넣는다.
+    return [
+        {
+            "transaction_id": str(transaction["transactionId"]),
+            "product_id": transaction.get("productId"),
+            "environment": environment,
+            "status": "refunded" if transaction.get("revocationDate") else "paid",
+            "purchased_at": _from_apple_ms(transaction.get("purchaseDate")),
+            "period_end": _from_apple_ms(transaction.get("expiresDate")),
+            "amount": _apple_amount(transaction.get("price")),
+            "currency": transaction.get("currency"),
+            "refunded_at": _from_apple_ms(transaction.get("revocationDate")),
+        }
+        for transaction in history
+        if transaction.get("transactionId") and str(transaction.get("originalTransactionId")) == original_id
+    ]
+
+
+def _apple_amount(price: object) -> Decimal | None:
+    # Apple price 는 밀리 단위 정수다(4,900원 → 4900000).
+    if not isinstance(price, int) or isinstance(price, bool):
+        return None
+
+    return Decimal(price) / 1000
+
+
+def _play_ledger_rows(purchase: dict) -> list[dict]:
+    """플러스 line item 의 최근 결제 주문을 orders.get 으로 받아 원장 행으로 만든다. 주문 번호가 없으면 빈 목록.
+
+    shortcut: 최근 주문만 본다 — 갱신은 RTDN 마다 새 주문이 최근 주문이 되어 남고, 환불은 대개 해지와 함께 와
+    재조회가 그 주문을 다시 본다. 지난 주문 하나만 따로 환불되면 원장에 안 잡힌다 — 필요해지면 RTDN 의
+    voidedPurchaseNotification.orderId 로 그 주문을 다시 조회한다.
+    """
+    item = _play_plus_item(purchase) or {}
+    order_id = item.get("latestSuccessfulOrderId") or purchase.get("latestOrderId")
+
+    if not isinstance(order_id, str) or not order_id:
+        return []
+
+    order = play_client.get_order(order_id)
+
+    if order is None:
+        return []
+
+    line = next((li for li in order.get("lineItems") or [] if isinstance(li, dict)), {})
+    history = order.get("orderHistory") or {}
+    partial = [event for event in history.get("partialRefundEvents") or [] if isinstance(event, dict)]
+    refunded_at = (history.get("refundEvent") or {}).get("eventTime") or (
+        partial[-1].get("processTime") or partial[-1].get("createTime") if partial else None
+    )
+    total = order.get("total") or {}
+    state = str(order.get("state") or "")
+
+    return [
+        {
+            "transaction_id": order_id,
+            "product_id": line.get("productId") or item.get("productId"),
+            "environment": _play_environment(purchase),
+            "status": _PLAY_ORDER_STATUS.get(state, state.lower() or "unknown"),
+            "purchased_at": _from_google_time(order.get("createTime")),
+            "period_end": _from_google_time((line.get("subscriptionDetails") or {}).get("servicePeriodEndTime")),
+            "amount": _google_money(total),
+            "currency": total.get("currencyCode"),
+            "refunded_at": _from_google_time(refunded_at),
+        }
+    ]
+
+
+def _google_money(money: dict) -> Decimal | None:
+    # Money = units(정수 문자열) + nanos(10⁻⁹). 0 은 proto3 JSON 이 빼고 보낸다 — 통화만 있으면 0 원이다.
+    if not isinstance(money, dict) or not money.get("currencyCode"):
+        return None
+
+    try:
+        return Decimal(str(money.get("units") or 0)) + Decimal(int(money.get("nanos") or 0)) / 10**9
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _record_store_transactions(db: Session, user_id: int, provider: str, rows: list[dict]) -> None:
+    """원장 upsert — 같은 거래를 다시 받으면 상태(환불 등)만 새로 쓴다. **user_id·deleted_at 은 덮지 않는다** — 탈퇴로
+    삭제 처리된 옛 행을 같은 Apple ID·Google 계정으로 다시 가입한 새 회원에게 잇거나 되살리지 않는다."""
+    # 한 INSERT 안에 같은 키가 두 번 있으면 ON CONFLICT DO UPDATE 가 실패한다.
+    unique_rows = {row["transaction_id"]: row for row in rows}
+
+    if not unique_rows:
+        return
+
+    statement = pg_insert(StoreTransaction).values(
+        [{**row, "user_id": user_id, "provider": provider} for row in unique_rows.values()]
+    )
+    db.execute(
+        statement.on_conflict_do_update(
+            index_elements=["provider", "transaction_id"],
+            set_={**{column: statement.excluded[column] for column in _LEDGER_REFRESHED}, "updated_at": func.now()},
+        )
+    )
+
+
+def purge_expired_store_transactions(db: Session, now: datetime | None = None) -> int:
+    """삭제 처리된(탈퇴 회원) 결제 기록 중 결제일로부터 보존 기간이 지난 행을 물리 삭제한다. 정기 배치용(멱등).
+
+    탈퇴하지 않은 회원의 기록은 지우지 않는다 — 그 회원의 계정 정보이고, 탈퇴하면 그때부터 이 규칙을 탄다.
+    """
+    now = now or datetime.now(UTC)
+
+    try:
+        cutoff = now.replace(year=now.year - STORE_LEDGER_RETENTION_YEARS)
+    except ValueError:  # 2월 29일
+        cutoff = now.replace(year=now.year - STORE_LEDGER_RETENTION_YEARS, day=28)
+
+    deleted = db.execute(
+        delete(StoreTransaction).where(
+            StoreTransaction.deleted_at.is_not(None),
+            func.coalesce(StoreTransaction.purchased_at, StoreTransaction.created_at) < cutoff,
+        )
+    ).rowcount
+    db.commit()
+    return deleted
 
 
 # 402 문구에 요금제·업그레이드를 쓰지 않는다(2026-09-29) — 출시는 무료이고 유료화는 인앱 결제로

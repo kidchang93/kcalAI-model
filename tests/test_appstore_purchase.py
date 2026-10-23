@@ -9,6 +9,7 @@
 
 import base64
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 import jwt
 import pytest
@@ -24,7 +25,7 @@ from database import get_db
 from factories import make_user
 from main import add_service_error_handlers
 from models.auth_model import User
-from models.subscription_model import UserSubscription
+from models.subscription_model import StoreTransaction, UserSubscription
 from services import account_service, appstore_client, billing_service, subscription_service
 from services.appstore_client import AppStoreUnavailableError, SubscriptionStatus
 from services.subscription_service import AppStoreConflictError
@@ -64,7 +65,10 @@ class _AppleStub:
         self.transactions: dict[str, tuple[dict, str]] = {}
         self.statuses: dict[str, SubscriptionStatus] = {}
         self.status_calls: list[tuple[str, str]] = []
+        self.histories: dict[str, list[dict]] = {}
+        self.history_calls: list[tuple[str, str]] = []
         self.error: Exception | None = None
+        self.history_error: Exception | None = None
 
     def get_transaction(self, transaction_id: str):
         if self.error is not None:
@@ -77,10 +81,19 @@ class _AppleStub:
             raise self.error
         return self.statuses.get(original_id)
 
+    def get_transaction_history(self, original_id: str, environment: str):
+        self.history_calls.append((original_id, environment))
+        if self.error is not None:
+            raise self.error
+        if self.history_error is not None:
+            raise self.history_error
+        return self.histories.get(original_id, [])
+
     def sell(self, user_id: int, original: str, *, apple_status: int = 1, renewal: dict | None = None,
              environment: str = "Production", **overrides) -> None:
         transaction = _transaction(user_id, original, **overrides)
         self.transactions[original] = (transaction, environment)
+        self.histories[original] = [transaction]
         self.statuses[original] = SubscriptionStatus(
             status=apple_status, transaction=transaction, renewal=renewal or {"autoRenewStatus": 1}
         )
@@ -91,6 +104,7 @@ def apple(monkeypatch) -> _AppleStub:
     stub = _AppleStub()
     monkeypatch.setattr(appstore_client, "get_transaction", stub.get_transaction)
     monkeypatch.setattr(appstore_client, "get_subscription_status", stub.get_subscription_status)
+    monkeypatch.setattr(appstore_client, "get_transaction_history", stub.get_transaction_history)
     return stub
 
 
@@ -274,6 +288,7 @@ def test_notification_for_unknown_transaction_does_not_call_apple(db, apple):
 
     assert result == "unknown"
     assert apple.status_calls == []
+    assert apple.history_calls == []
 
 
 @pytest.mark.parametrize("payload", [None, "", "garbage", _jws({"data": "x"}), _jws({"no": "data"})])
@@ -551,3 +566,163 @@ def test_missing_keys_is_503_without_calling_apple(monkeypatch):
 
     with pytest.raises(AppStoreUnavailableError):
         appstore_client.get_transaction("81")
+
+
+# ---- 7) 스토어 원장 — 결제 1건마다 1행 (35장) ----
+
+def _history_item(user_id: int, original: str, transaction_id: str, purchased: datetime, **overrides) -> dict:
+    return _transaction(
+        user_id, original, transactionId=transaction_id, purchaseDate=_ms(purchased),
+        expiresDate=_ms(purchased + timedelta(days=30)), price=4900000, currency="KRW", **overrides,
+    )
+
+
+def _ledger(db, user_id: int) -> list[StoreTransaction]:
+    return list(db.scalars(
+        select(StoreTransaction)
+        .where(StoreTransaction.user_id == user_id)
+        .order_by(StoreTransaction.purchased_at, StoreTransaction.id)
+    ))
+
+
+def test_verify_records_every_transaction_of_the_subscription(db, apple):
+    user = make_user(db, "appstore-30")
+    apple.sell(user.id, "2000000030")
+    start = datetime(2026, 10, 13, 11, 31, tzinfo=UTC)
+    apple.histories["2000000030"] = [
+        _history_item(user.id, "2000000030", "2000000030", start),
+        _history_item(user.id, "2000000030", "2000000031", start + timedelta(days=30)),
+        # 거래 이력은 그 Apple ID 의 거래 전부다 — 다른 구독의 거래는 이 회원 원장에 넣지 않는다.
+        _history_item(user.id, "2999999930", "2999999931", start),
+    ]
+
+    subscription_service.verify_appstore_purchase(db, user.id, "2000000030")
+
+    rows = _ledger(db, user.id)
+    assert [row.transaction_id for row in rows] == ["2000000030", "2000000031"]
+    first = rows[0]
+    assert (first.provider, first.status, first.environment) == ("appstore", "paid", "Production")
+    assert (first.amount, first.currency) == (Decimal("4900"), "KRW")
+    assert (first.purchased_at, first.period_end) == (start, start + timedelta(days=30))
+    assert first.refunded_at is None
+
+
+def test_notification_marks_refund_on_the_same_row(db, apple):
+    user = make_user(db, "appstore-31")
+    apple.sell(user.id, "2000000032")
+    start = datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
+    apple.histories["2000000032"] = [_history_item(user.id, "2000000032", "2000000032", start)]
+    subscription_service.verify_appstore_purchase(db, user.id, "2000000032")
+    refunded = start + timedelta(days=1)
+    apple.histories["2000000032"] = [
+        _history_item(user.id, "2000000032", "2000000032", start, revocationDate=_ms(refunded))
+    ]
+
+    subscription_service.handle_appstore_notification(db, _notification("2000000032"))
+
+    rows = _ledger(db, user.id)
+    assert len(rows) == 1
+    assert (rows[0].status, rows[0].refunded_at) == ("refunded", refunded)
+
+
+def test_history_failure_writes_neither_plus_nor_ledger(db, apple):
+    """원장을 못 쓰면 구독도 쓰지 않는다 — 503 이면 앱이 finishTransaction 하지 않고 다시 확인한다."""
+    user = make_user(db, "appstore-32")
+    apple.sell(user.id, "2000000033")
+    apple.history_error = AppStoreUnavailableError("down")
+
+    with pytest.raises(AppStoreUnavailableError):
+        subscription_service.verify_appstore_purchase(db, user.id, "2000000033")
+
+    assert subscription_service.get_user_plan(db, user.id).code == "lite"
+    assert _ledger(db, user.id) == []
+
+
+def test_delete_account_soft_deletes_ledger_and_never_relinks_it(db, apple, monkeypatch):
+    monkeypatch.setattr(account_service, "unlink", lambda kakao_id: None)
+    monkeypatch.setattr(account_service, "revoke_token", lambda token: None)
+    user = make_user(db, "appstore-33")
+    apple.sell(user.id, "2000000034")
+    first = _history_item(user.id, "2000000034", "2000000034", datetime(2026, 10, 1, tzinfo=UTC))
+    apple.histories["2000000034"] = [first]
+    subscription_service.verify_appstore_purchase(db, user.id, "2000000034")
+    row = _ledger(db, user.id)[0]
+
+    account_service.delete_account(db, user)
+
+    db.refresh(row)
+    assert row.user_id is None, "탈퇴 회원의 결제 기록이 회원과 이어져 있다"
+    assert row.deleted_at is not None, "삭제 처리 표시가 없다 — 분리 보관·5년 뒤 파기의 대상이 되지 않는다"
+    # 같은 Apple ID 로 새로 가입한 회원이 같은 구독을 확인해도(토큰 없는 구매) 옛 행은 새 회원에게 이어지지 않는다.
+    other = make_user(db, "appstore-34")
+    apple.sell(other.id, "2000000034", appAccountToken=None)
+    apple.histories["2000000034"] = [
+        first,
+        _history_item(other.id, "2000000034", "2000000035", datetime(2026, 10, 31, tzinfo=UTC)),
+    ]
+
+    subscription_service.verify_appstore_purchase(db, other.id, "2000000034")
+
+    db.refresh(row)
+    assert (row.user_id is None, row.deleted_at is not None) == (True, True)
+    assert [item.transaction_id for item in _ledger(db, other.id)] == ["2000000035"]
+    assert _ledger(db, other.id)[0].deleted_at is None
+
+
+def _ledger_row(db, transaction_id: str, purchased: datetime, *, user_id: int | None = None,
+                deleted: bool = False) -> StoreTransaction:
+    row = StoreTransaction(
+        user_id=user_id, provider="appstore", transaction_id=transaction_id, environment="Production",
+        status="paid", purchased_at=purchased, deleted_at=datetime.now(UTC) if deleted else None,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def test_purge_destroys_only_deleted_rows_past_five_years(db):
+    now = datetime(2031, 10, 23, 9, 0, tzinfo=UTC)
+    member = make_user(db, "appstore-35")
+    expired = _ledger_row(db, "2000000040", datetime(2026, 10, 22, tzinfo=UTC), deleted=True)
+    within = _ledger_row(db, "2000000041", datetime(2026, 10, 24, tzinfo=UTC), deleted=True)
+    # 탈퇴하지 않은 회원의 기록은 오래돼도 남는다 — 그 회원의 계정 정보다.
+    active = _ledger_row(db, "2000000042", datetime(2020, 1, 1, tzinfo=UTC), user_id=member.id)
+    ids = (expired.id, within.id, active.id)
+
+    assert subscription_service.purge_expired_store_transactions(db, now) >= 1
+
+    survived = set(db.scalars(select(StoreTransaction.id).where(StoreTransaction.id.in_(ids))))
+    assert survived == {within.id, active.id}
+    # 멱등 — 다시 돌려도 남은 것은 그대로다.
+    subscription_service.purge_expired_store_transactions(db, now)
+    assert set(db.scalars(select(StoreTransaction.id).where(StoreTransaction.id.in_(ids)))) == survived
+
+
+def test_purge_cutoff_on_leap_day_does_not_crash(db):
+    subscription_service.purge_expired_store_transactions(db, datetime(2032, 2, 29, tzinfo=UTC))
+
+
+def test_transaction_history_follows_revision_pages(monkeypatch, iap_keys):
+    base = f"{appstore_client.BASE_URLS['Sandbox']}/inApps/v2/history/77"
+    pages = {
+        base: {"signedTransactions": [_jws({"transactionId": "1"})], "hasMore": True, "revision": "rev/1"},
+        f"{base}?revision=rev%2F1": {"signedTransactions": [_jws({"transactionId": "2"})], "hasMore": False},
+    }
+    calls = []
+
+    def fake_get(url, headers, timeout):
+        calls.append(url)
+        return _Response(200, pages[url])
+
+    monkeypatch.setattr(appstore_client.requests, "get", fake_get)
+
+    history = appstore_client.get_transaction_history("77", "Sandbox")
+
+    assert [item["transactionId"] for item in history] == ["1", "2"]
+    assert calls == list(pages)
+
+
+def test_transaction_history_not_found_is_empty(monkeypatch, iap_keys):
+    monkeypatch.setattr(appstore_client.requests, "get", lambda *a, **k: _Response(404, {"errorCode": 4040010}))
+
+    assert appstore_client.get_transaction_history("77", "Production") == []

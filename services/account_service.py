@@ -1,4 +1,4 @@
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from models.auth_model import AuthSession, EmailVerificationCode, KakaoLinkCode, User
@@ -17,7 +17,13 @@ from models.health_model import (
 )
 from models.pet_model import Pet, PetFeedingLog
 from models.recommendation_model import DietRecommendation
-from models.subscription_model import BillingKey, Payment, UserSubscription, VisionUsageDaily
+from models.subscription_model import (
+    BillingKey,
+    Payment,
+    StoreTransaction,
+    UserSubscription,
+    VisionUsageDaily,
+)
 from services.apple_client import revoke_token
 from services.kakao_client import unlink
 
@@ -63,6 +69,13 @@ def delete_account(db: Session, user: User) -> None:
     #      않는다. 조회는 user_id 일치로만 하므로(payment_service) 익명화된 행은 노출되지 않는다.
     #      fail_reason 은 우리가 만든 한국어 문구라 개인정보가 없다(23장).
     db.execute(update(Payment).where(Payment.user_id == user_id).values(user_id=None))
+    #      스토어 결제 원장(App Store·Google Play, 35장)은 **소프트 딜리트**한다 — 삭제 표시를 찍고 회원과 끊어 분리
+    #      보관하고, 결제일로부터 5년 뒤 정리 배치(purge_expired_store_transactions)가 물리 삭제한다(처리방침 8·9항).
+    db.execute(
+        update(StoreTransaction)
+        .where(StoreTransaction.user_id == user_id)
+        .values(user_id=None, deleted_at=func.now())
+    )
 
     # 2) 동의·민감정보 — 동의 이력도 개인정보이므로 함께 파기한다 (18장 잠정 결정).
     db.execute(delete(UserConsent).where(UserConsent.user_id == user_id))

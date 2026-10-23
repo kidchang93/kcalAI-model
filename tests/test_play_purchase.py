@@ -10,6 +10,7 @@
 import base64
 import json
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 import jwt
 import pytest
@@ -25,7 +26,7 @@ from api.dependencies import get_current_user
 from database import get_db
 from factories import make_user
 from main import add_service_error_handlers
-from models.subscription_model import UserSubscription
+from models.subscription_model import StoreTransaction, UserSubscription
 from services import billing_service, play_client, subscription_service
 from services.play_client import PlayUnavailableError
 from services.subscription_service import PlayConflictError
@@ -72,7 +73,10 @@ class _GoogleStub:
         self.purchases: dict[str, dict] = {}
         self.get_calls: list[str] = []
         self.acks: list[tuple[str, str]] = []
+        self.orders: dict[str, dict] = {}
+        self.order_calls: list[str] = []
         self.error: Exception | None = None
+        self.order_error: Exception | None = None
 
     def get_subscription(self, purchase_token: str):
         self.get_calls.append(purchase_token)
@@ -86,8 +90,17 @@ class _GoogleStub:
             raise self.error
         return True
 
-    def sell(self, user_id: int, purchase_token: str, **kwargs) -> None:
+    def get_order(self, order_id: str):
+        self.order_calls.append(order_id)
+        if self.order_error is not None:
+            raise self.order_error
+        return self.orders.get(order_id)
+
+    def sell(self, user_id: int, purchase_token: str, *, order: dict | None = None, **kwargs) -> None:
         self.purchases[purchase_token] = _purchase(user_id, **kwargs)
+        if order is not None:
+            self.purchases[purchase_token]["lineItems"][0]["latestSuccessfulOrderId"] = order["orderId"]
+            self.orders[order["orderId"]] = order
 
 
 @pytest.fixture
@@ -95,6 +108,7 @@ def google(monkeypatch) -> _GoogleStub:
     stub = _GoogleStub()
     monkeypatch.setattr(play_client, "get_subscription", stub.get_subscription)
     monkeypatch.setattr(play_client, "acknowledge", stub.acknowledge)
+    monkeypatch.setattr(play_client, "get_order", stub.get_order)
     return stub
 
 
@@ -719,3 +733,135 @@ def test_access_token_exchanges_scoped_jwt_with_short_timeout_and_is_reused(monk
     body = calls[0]["data"].decode() if isinstance(calls[0]["data"], bytes) else calls[0]["data"]
     assertion = dict(pair.split("=", 1) for pair in body.split("&"))["assertion"]
     assert jwt.decode(assertion, options={"verify_signature": False})["scope"] == play_client.SCOPE
+
+
+# ---- 스토어 원장 — 결제 주문 1건마다 1행 (35장) ----
+
+PAID_AT = datetime(2026, 10, 15, 3, 39, 40, tzinfo=UTC)
+
+
+def _order(order_id: str, *, state: str = "PROCESSED", created: datetime = PAID_AT, **history) -> dict:
+    """orders.get 모양 (2026-10-23 테스트 주문 실측과 같은 필드)."""
+    return {
+        "orderId": order_id,
+        "state": state,
+        "createTime": _rfc3339(created),
+        "total": {"currencyCode": "KRW", "units": "4900"},
+        "tax": {"currencyCode": "KRW"},
+        "lineItems": [{
+            "productId": MONTHLY,
+            "total": {"currencyCode": "KRW", "units": "4900"},
+            "subscriptionDetails": {"basePlanId": "monthly", "servicePeriodEndTime": _rfc3339(created + timedelta(days=30))},
+        }],
+        "orderHistory": {"processedEvent": {"eventTime": _rfc3339(created)}, **history},
+    }
+
+
+def _ledger(db, user_id: int) -> list[StoreTransaction]:
+    return list(db.scalars(
+        select(StoreTransaction)
+        .where(StoreTransaction.user_id == user_id)
+        .order_by(StoreTransaction.purchased_at, StoreTransaction.id)
+    ))
+
+
+def test_verify_records_the_paid_order(db, google):
+    user = make_user(db, "play-40")
+    google.sell(user.id, "playtoken-0040", order=_order("GPA.0000-0000-0000-00040"), testPurchase={})
+
+    _verify(db, user.id, "playtoken-0040")
+
+    [row] = _ledger(db, user.id)
+    assert (row.provider, row.transaction_id, row.status, row.environment) == (
+        "play", "GPA.0000-0000-0000-00040", "paid", "Test"
+    )
+    assert (row.amount, row.currency, row.product_id) == (Decimal("4900"), "KRW", MONTHLY)
+    assert (row.purchased_at, row.period_end) == (PAID_AT, PAID_AT + timedelta(days=30))
+
+
+def test_order_lookup_failure_happens_before_acknowledge(db, google):
+    """원장을 못 쓰면 구독도 쓰지 않는다. 확인(acknowledge)을 먼저 하면 돈은 나가고 플러스는 없는 상태가 남는다."""
+    user = make_user(db, "play-41")
+    google.sell(user.id, "playtoken-0041", order=_order("GPA.0000-0000-0000-00041"))
+    google.order_error = PlayUnavailableError("down")
+
+    with pytest.raises(PlayUnavailableError):
+        _verify(db, user.id, "playtoken-0041")
+
+    assert google.acks == []
+    assert subscription_service.get_user_plan(db, user.id).code == "lite"
+    assert _ledger(db, user.id) == []
+
+
+def test_missing_order_does_not_block_plus(db, google):
+    user = make_user(db, "play-42")
+    google.sell(user.id, "playtoken-0042", order=_order("GPA.0000-0000-0000-00042"))
+    del google.orders["GPA.0000-0000-0000-00042"]
+
+    _verify(db, user.id, "playtoken-0042")
+
+    assert subscription_service.get_user_plan(db, user.id).code == "plus"
+    assert _ledger(db, user.id) == []
+
+
+def test_notifications_add_renewals_and_mark_refunds(db, google):
+    user = make_user(db, "play-43")
+    google.sell(user.id, "playtoken-0043", order=_order("GPA.0000-0000-0000-00043"))
+    _verify(db, user.id, "playtoken-0043")
+    renewed = PAID_AT + timedelta(days=30)
+    google.sell(user.id, "playtoken-0043", acknowledged=True,
+                order=_order("GPA.0000-0000-0000-00043..1", created=renewed))
+    subscription_service.handle_play_notification(db, _push("playtoken-0043", notification_type=2))
+    refunded = renewed + timedelta(days=1)
+    google.orders["GPA.0000-0000-0000-00043..1"] = _order(
+        "GPA.0000-0000-0000-00043..1", created=renewed, state="REFUNDED",
+        refundEvent={"eventTime": _rfc3339(refunded), "refundReason": "OTHER"},
+    )
+
+    subscription_service.handle_play_notification(db, _push("playtoken-0043", notification_type=12))
+
+    rows = _ledger(db, user.id)
+    assert [(row.transaction_id, row.status) for row in rows] == [
+        ("GPA.0000-0000-0000-00043", "paid"), ("GPA.0000-0000-0000-00043..1", "refunded")
+    ]
+    assert rows[1].refunded_at == refunded
+
+
+def test_unknown_token_notification_never_looks_up_orders(db, google):
+    subscription_service.handle_play_notification(db, _push("playtoken-unknown-order"))
+
+    assert google.order_calls == []
+
+
+@pytest.mark.parametrize(
+    ("money", "expected"),
+    [
+        ({"currencyCode": "KRW", "units": "4900"}, Decimal("4900")),
+        ({"currencyCode": "USD", "units": "3", "nanos": 990000000}, Decimal("3.99")),
+        ({"currencyCode": "KRW"}, Decimal("0")),  # proto3 JSON 은 0 을 뺀다
+        ({}, None),
+        ({"currencyCode": "KRW", "units": "x"}, None),
+    ],
+)
+def test_google_money(money, expected):
+    assert subscription_service._google_money(money) == expected
+
+
+def test_get_order_calls_orders_get(monkeypatch, oauth):
+    seen = {}
+
+    def fake_request(method, url, headers, timeout):
+        seen.update(method=method, url=url)
+        return _Response(200, {"orderId": "GPA.1"})
+
+    monkeypatch.setattr(play_client.requests, "request", fake_request)
+
+    assert play_client.get_order("GPA.1") == {"orderId": "GPA.1"}
+    assert seen == {"method": "GET", "url": f"{play_client.BASE_URL}/{play_client.GOOGLE_PLAY_PACKAGE_NAME}/orders/GPA.1"}
+
+
+@pytest.mark.parametrize("status_code", [404, 410])
+def test_missing_order_is_none(monkeypatch, oauth, status_code):
+    monkeypatch.setattr(play_client.requests, "request", lambda *a, **k: _Response(status_code, {}))
+
+    assert play_client.get_order("GPA.1") is None

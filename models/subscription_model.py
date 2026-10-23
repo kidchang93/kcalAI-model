@@ -1,6 +1,18 @@
 from datetime import date, datetime
+from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, text
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from crypto import EncryptedString
@@ -144,3 +156,43 @@ class Payment(Base):
     fail_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
     fail_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[CreatedAt]
+
+
+class StoreTransaction(Base):
+    """스토어 결제 원장 — App Store 거래·Google Play 주문 1건마다 1행 (DATA_MODEL.md 35장).
+
+    `user_subscriptions` 는 회원당 한 행을 덮어써 "지금 상태"만 남는다. 언제 얼마가 청구됐고 언제 환불됐는지는
+    여기 남는다. 값은 전부 우리 키로 스토어에 다시 물은 응답에서 온다 — 앱이 보낸 값·알림 본문이 아니다.
+    `payments`(토스 원장)와 테이블을 나눈 이유: 환불 스크립트·웹훅이 `payments` 를 토스 주문으로 읽는다.
+
+    탈퇴하면 **소프트 딜리트**한다 — `deleted_at` 을 찍고 `user_id` 를 끊어(users 행이 지워지므로) 서비스 어디에서도
+    보이지 않게 하고, 결제일로부터 5년(전자상거래법 시행령 제6조, 처리방침 8항)이 지나면 정리 배치가 물리 삭제한다
+    (`subscription_service.purge_expired_store_transactions`).
+    """
+
+    __tablename__ = "store_transactions"
+    __table_args__ = (UniqueConstraint("provider", "transaction_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # NULL = 탈퇴 회원의 행(deleted_at 이 함께 찍힌다).
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True, nullable=True)
+    # appstore | play
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Apple transactionId(갱신마다 새 값) · Google orderId(GPA.… — 갱신마다 ..0, ..1 이 붙는다)
+    transaction_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    product_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Production | Sandbox(App Store) | Test(Play 라이선스 테스터) — 매출은 Production 만 센다.
+    environment: Mapped[str] = mapped_column(String(20), nullable=False)
+    # paid | refunded | partially_refunded | pending | canceled (Google 주문만 pending·canceled·부분 환불이 있다)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    purchased_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 이 결제로 산 이용 기간의 끝(Apple expiresDate · Google servicePeriodEndTime).
+    period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 구매자가 낸 금액(세금 포함) — Apple price(밀리 단위)·Google total 을 통화 단위로 옮긴 값.
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 3), nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 탈퇴로 삭제 처리된 시각. 값이 있으면 분리 보관 중인 행이다 — 조회하지 않고 보존 기간이 지나면 파기한다.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[CreatedAt]
+    updated_at: Mapped[UpdatedAt]

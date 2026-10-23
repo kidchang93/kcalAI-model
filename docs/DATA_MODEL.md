@@ -2418,7 +2418,7 @@ PUT /api/me/next-visit  {"questions": ""}                    → questions null 
 - **서버 인증**: 인앱 결제 키(ES256, `APPLE_IAP_KEY_ID`·`APPLE_IAP_ISSUER_ID`·`APPLE_IAP_PRIVATE_KEY_B64`) JWT(`aud=appstoreconnect-v1`, `bid`=번들 ID). Apple 응답은 우리 키로 인증한 HTTPS 조회 결과라 그 안의 JWS 페이로드를 그대로 읽는다 — **서명 검증 라이브러리를 들이지 않는다**(본문을 믿는 경로가 없으므로).
 - **`app_account_token`** = HMAC(`AUTH_CODE_PEPPER`, `appstore:{user_id}`) 앞 16바이트로 만든 UUID. 같은 Apple ID 로 다른 회원 계정에서 '구매 복원'을 눌러 남의 구독을 가져가는 것을 막는다 → **409** "다른 계정에서 구독한 이용권이에요. 처음 구독한 계정으로 로그인해주세요." 같은 `originalTransactionId` 가 이미 다른 회원에게 붙어 있어도 409.
 - **샌드박스**: App Review 는 운영 서버에 샌드박스 구매로 들어온다. 운영→샌드박스 순서로 조회하지 않으면 '구매가 안 된다'로 반려된다(가장 흔한 IAP 반려 사유). **출시 전 앱에는 운영이 401 을 준다**(2026-10-13 실측 — 같은 키로 샌드박스는 정상) — 그래서 운영 401 도 샌드박스로 넘어간다. 키가 틀렸으면 샌드박스도 401 이라 503 이다.
-- 실패: 400(플러스 상품이 아님·번들 불일치·거래 없음) · 409(위) · 503(Apple 조회 실패·키 미설정). **결제 원장(`payments`)에 행을 쓰지 않는다** — 대금 수령·영수증·환불은 Apple 이 하고 기록도 Apple 이 갖는다(토스 원장은 토스 전용으로 남긴다).
+- 실패: 400(플러스 상품이 아님·번들 불일치·거래 없음) · 409(위) · 503(Apple 조회 실패·키 미설정). **결제 원장(`payments`)에 행을 쓰지 않는다** — 대금 수령·영수증·환불은 Apple 이 한다(토스 원장은 토스 전용으로 남긴다). **2026-10-23: 결제 1건마다의 이력은 스토어 원장 `store_transactions` 에 남긴다 — 35장.**
 
 ### 32-4. 갱신·해지·환불 알림 — 본문을 믿지 않는다 (29장 규약 그대로)
 
@@ -2542,7 +2542,7 @@ Interval = { start_date, end_date, total_days, recorded_days, kcal_daily_avg: nu
 - **상태 매핑**(`subscriptionState`): `ACTIVE` → active(단 `autoRenewingPlan.autoRenewEnabled=false` 면 canceled — 기간까지는 플러스) · `IN_GRACE_PERIOD` → past_due(이용권 유지) · `ON_HOLD`·`PAUSED` → past_due · `CANCELED`·`EXPIRED` → canceled · `PENDING`·`PENDING_PURCHASE_CANCELED` → 부여하지 않음(400). `current_period_end` = lineItems 의 가장 늦은 `expiryTime`(만료·환불이면 지난 시각 → 읽을 때 무료). **만료 시각을 모르면 지금 끝난 것으로 둔다**(32-9 와 같다).
 - 같은 회원이 월간↔연간을 바꾸거나 다시 구독하면 Google 은 **새 토큰**(`linkedPurchaseToken` = 옛 토큰)을 준다. 새 토큰의 verify 가 오면 옛 토큰 행을 같은 회원으로 보고 새 토큰으로 갈아 끼운다. 옛 토큰이 다른 회원 것이면 409.
 - 어댑터는 Google 의 200·204(acknowledge 성공)·404·410(토큰 없음·만료) 만 답이 정해진 응답으로 본다. 401·403(서비스 계정 권한 — Play Console 에 '재무 데이터 보기'·'주문 및 구독 관리'가 없을 때)·429·5xx·네트워크 실패는 503. 로그에 토큰·키를 남기지 않는다(토큰은 앞 8자만).
-- **결제 원장(`payments`)에 쓰지 않는다** — 32-3 과 같다.
+- **결제 원장(`payments`)에 쓰지 않는다** — 32-3 과 같다. 결제 주문 이력은 스토어 원장 `store_transactions` 에 남긴다(35장).
 
 ### 33-4. 실시간 개발자 알림 (RTDN)
 
@@ -2624,3 +2624,54 @@ Play Console › 수익 창출 설정 › 실시간 개발자 알림의 Pub/Sub 
 나트륨 등급 고지(`SODIUM_TIER_NOTICE`)에 "대한고혈압학회 진료지침 2026"을 넣었다 — 상한이 누구의 기준인지 문장에 없어서 링크를 걸 수 없었다.
 
 **테스트**: `tests/test_citations.py` 49건(근거 문장 전수·다문헌 표기·순서·중복·URL 형식·가이드 축) + 응답 수준 4건(`test_day_nutrition`·`test_diabetes_food_rules`·`test_recommendation_ckd_integration`·`test_sensitive_read_gating`). 전체 660건 — 로컬 3.13·운영 3.10 둘 다 통과.
+
+## 35. 스토어 결제 원장 — 결제 1건마다 1행 (2026-10-23 — 리비전 0033 `store_transactions`)
+
+> 사용자 요청(2026-10-23): "결제 이력도 남아야 한다." 32·33장은 `user_subscriptions` **한 행을 덮어써** 지금 상태만 남겼다 — 언제 얼마가 청구됐고 언제 환불됐는지가 우리 DB 에 없었다(스토어 콘솔에만).
+> ⚠️ **처리방침 1.5 와 충돌한다** — "인앱 구독의 결제 기록은 Apple 또는 Google이 보관하며, 회사는 결제 정보를 보관하지 않습니다"·"플러스 구독 정보는 회원 탈퇴 시 파기". 그래서 **처리방침 1.6**(앱 `constants/legal.ts`, 서버 `PRIVACY_VERSION`)을 함께 만들었고, **1.6 시행일(`PRIVACY_EFFECTIVE_DATE`)에 이 원장과 함께 배포한다** — 그 전에 배포하지 않는다.
+
+### 35-1. 무엇을 남기나
+
+| 컬럼 | App Store | Google Play |
+|---|---|---|
+| `transaction_id` | `transactionId`(갱신마다 새 값) | `orderId`(`GPA.…`, 갱신마다 `..0`·`..1`) |
+| `product_id` | `productId` | 주문 `lineItems[0].productId` |
+| `environment` | 조회한 환경(`Production`·`Sandbox`) | `Production`·`Test`(구독 응답의 `testPurchase`) |
+| `status` | `paid` · `refunded`(`revocationDate` 있음) | `PROCESSED`·`PENDING_REFUND` → `paid` · `REFUNDED` → `refunded` · `PARTIALLY_REFUNDED` → `partially_refunded` · `PENDING` → `pending` · `CANCELED` → `canceled` |
+| `purchased_at` | `purchaseDate` | `createTime` |
+| `period_end` | `expiresDate` | `subscriptionDetails.servicePeriodEndTime` |
+| `amount`·`currency` | `price`(밀리 단위 — 4900000 = 4,900원)·`currency` | `total`(세금 포함 낸 금액, Money `units`+`nanos`)·`currencyCode` |
+| `refunded_at` | `revocationDate` | `orderHistory.refundEvent.eventTime`(부분 환불이면 마지막 `partialRefundEvents` 시각) |
+
+`(provider, transaction_id)` UNIQUE — 같은 거래를 몇 번 다시 받아도 한 행이고 상태(환불 등)만 갱신된다. 카드 번호 등 결제 수단은 여전히 받지 않는다(스토어가 주지 않는다).
+
+### 35-2. 언제 쓰나 — 32·33장의 재조회에 얹는다
+
+- **App Store**: 구매 확인·알림마다 `GET /inApps/v2/history/{originalTransactionId}`(거래 이력, `revision` 페이지 끝까지)를 불러 **그 구독의 거래 전부**를 upsert 한다. 알림 하나를 놓쳐도 다음 알림·확인이 빈 거래를 채운다(자기치유). 거래 이력은 그 Apple ID 의 이 앱 거래 전부라 **`originalTransactionId` 가 이 구독인 것만** 넣는다.
+- **Google Play**: 구매 확인·RTDN 마다 플러스 line item 의 `latestSuccessfulOrderId`(없으면 `latestOrderId`)로 `orders.get` 을 불러 그 주문을 upsert 한다. 갱신은 RTDN 마다 새 주문이 최근 주문이 되어 남고, 환불은 대개 해지와 함께 와(REVOKED) 재조회가 그 주문을 다시 본다. ⚠️ **지난 주문 하나만 따로 환불되면 안 잡힌다**(`shortcut:` 주석 — 필요해지면 RTDN `voidedPurchaseNotification.orderId` 로 재조회). 서비스 계정에 Play Console **'재무 데이터 보기'** 권한이 필요하다(없으면 403 → 503).
+- 본문을 믿지 않는 규약(29장)은 그대로다 — 원장 값은 전부 우리 키로 다시 물은 응답에서 온다. 원장에 없는 거래·토큰의 알림은 여전히 스토어를 부르지 않는다.
+
+### 35-3. 실패하면 — 원장을 못 쓰면 구독도 쓰지 않는다
+
+거래 이력·주문 조회가 503 이면 구독 행도 커밋하지 않는다 → 앱은 finishTransaction 하지 않고 다시 확인하고, 스토어는 알림을 재전송한다(24장 "원장이 먼저다"와 같은 판단). **Google 은 주문 조회를 acknowledge 전에 한다** — 확인부터 하면 끝내 원장을 못 쓸 때 돈은 나가고 플러스는 없는 상태가 남는다. 확인 전이면 Google 이 3일 뒤 자동 환불한다. 주문이 없다(404·410)는 답은 막지 않는다 — 플러스는 붙이고 에러 로그를 남긴다(Google 이 스스로 알려 준 주문 번호라 다음 RTDN 에서 다시 본다).
+
+### 35-4. 탈퇴 — 소프트 딜리트, 결제일로부터 5년 뒤 파기 (2026-10-23 사용자 결정)
+
+사용자 결정: "탈퇴할 때 기록도 지워 주되, 소프트 딜리트로 서버에 남겨 둔다." 탈퇴하면 `deleted_at` 을 찍고 `user_id` 를 NULL 로 끊는다(users 행이 물리 삭제되므로 FK 를 남길 수 없다). 어떤 API 도 이 테이블을 읽지 않으니 삭제 처리된 행은 어디에도 보이지 않는다. 다시 받은 거래로 upsert 할 때 **`user_id`·`deleted_at` 은 덮지 않는다** — 같은 Apple ID·Google 계정으로 새로 가입한 회원에게 탈퇴 회원의 결제 기록을 잇거나 되살리지 않는다.
+
+- **파기**: `subscription_service.purge_expired_store_transactions` 가 `deleted_at` 이 있고 결제일(`purchased_at`, 없으면 `created_at`)이 **5년**(`STORE_LEDGER_RETENTION_YEARS`, 전자상거래법 시행령 제6조 대금결제 기록) 지난 행을 물리 삭제한다. cron 줄을 새로 만들지 않고 매일 도는 `scripts/purge_expired_auth.py`(UTC 20:00)에 얹었다. 탈퇴하지 않은 회원의 기록은 지우지 않는다.
+- **처리방침 1.6** 이 이를 사실대로 적는다 — 8항 "회원 탈퇴 후에도 결제일로부터 5년이 지날 때까지 보존 … 회원 정보와의 연결을 끊고 삭제 처리하여 서비스에서 더 이상 조회되지 않게 하고, 다른 개인정보와 분리하여 보관하다가 보존 기간이 지나면 파기", 9항 파기 절차에 그 예외. **'파기'라고 쓰지 않는다** — 소프트 딜리트는 개인정보 보호법 제21조의 파기가 아니라서, 파기라고 쓰면 거짓 고지다. 분리 보관 인정 여부 등은 `LEGAL_COMPLIANCE.md` 5-3.
+- `payments`(토스 원장)는 그대로 익명화만 한다(토스 실결제 0건).
+
+### 35-6. 처리방침 1.6 과 배포 순서
+
+1. 처리방침 1.6 공지(시행 7일 전 — 15항). 공지가 늦어지면 `PRIVACY_EFFECTIVE_DATE` 를 민다.
+2. **시행일에** `/kcal-release web` 으로 서버(`--migrate` 0033)와 웹(1.6 문서)을 함께 배포한다. 서버 `PRIVACY_VERSION`=1.6, 이미 깔린 앱 빌드가 보내는 1.5 는 `_ACCEPTED_PREVIOUS_VERSIONS` 로 받는다.
+3. 앱 번들의 처리방침 문구는 다음 네이티브 빌드(iOS 1.0.1·Android 다음 버전)부터 1.6 이다. 그 빌드가 깔리면 1.5 를 받는 집합에서 뺀다.
+
+### 35-5. 하지 않은 것
+
+- 앱 화면(결제 내역)에 보여 주지 않는다 — `/payments` 는 토스 원장이고 진입점이 숨겨져 있다.
+- 배포 전 구매의 소급: App Store 는 다음 알림·확인 때 거래 이력 전체가 들어온다. Google 은 그때의 최근 주문만 들어온다(2026-10-23 기준 Play 실결제 0건 — 테스트 주문 1건뿐).
+
+**테스트**: `tests/test_appstore_purchase.py` +8건(구독 거래만 기록·환불은 같은 행·이력 실패 시 구독도 안 씀·**탈퇴 소프트 딜리트와 재연결·되살림 금지**·**5년 지난 삭제 행만 파기(활성 회원 기록은 남김)**·윤년·이력 페이지 넘김·없음) · `tests/test_play_purchase.py` +13건(주문 기록·**주문 조회는 acknowledge 전**·주문 없음은 막지 않음·갱신 추가와 환불 표시·모르는 토큰은 주문 미조회·Money 파싱·어댑터) · `test_account_service` FK 대조에 `store_transactions` · `test_consent_version` 처리방침 1.6(1.5 가입도 받음). 방어 유효성은 되돌려 확인했다 — `user_id` 를 덮거나, 주문 조회를 acknowledge 뒤로 옮기거나, 다른 구독 거래를 거르지 않거나, 탈퇴 때 `deleted_at` 을 안 찍거나, 파기에서 `deleted_at` 조건을 빼면 각각 실패한다. 2026-10-23 실제 응답(샌드박스 구독 거래 10건·Play 테스트 주문 1건)으로 행 변환을 확인했다(DB 미기록). 전체 690건 — 로컬 3.13·운영 3.12 둘 다 통과.

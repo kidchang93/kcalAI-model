@@ -30,10 +30,10 @@ kcalAI-model/
 │   ├── auth_service.py         # 카카오 연동코드·OAuth state 서명, 카카오·Apple 가입·로그인, 세션 생성·검증·폐기 (21장)
 │   ├── kakao_client.py         # 카카오 OAuth — 인가 URL·토큰 교환(client_secret)·프로필·연결끊기(unlink)
 │   ├── apple_client.py         # Sign in with Apple — identity token 검증(JWKS)·code 교환·토큰 폐기(revoke)
-│   ├── appstore_client.py      # App Store Server API — 거래·구독 상태 조회(ES256 JWT, 운영→샌드박스 폴백), JWS 페이로드 무검증 읽기. **키·토큰 미로깅**
-│   ├── play_client.py          # Google Play Developer API — subscriptionsv2.get·subscriptions.acknowledge(서비스 계정 OAuth, google-auth). **키·OAuth 토큰 미로깅, 구매 토큰은 앞 8자만**
+│   ├── appstore_client.py      # App Store Server API — 거래·구독 상태·거래 이력 조회(ES256 JWT, 운영→샌드박스 폴백), JWS 페이로드 무검증 읽기. **키·토큰 미로깅**
+│   ├── play_client.py          # Google Play Developer API — subscriptionsv2.get·subscriptions.acknowledge·orders.get(서비스 계정 OAuth, google-auth). **키·OAuth 토큰 미로깅, 구매 토큰은 앞 8자만**
 │   ├── mail_client.py          # 메일 발송(SMTP, stdlib) — 이메일 가입·비밀번호 재설정 인증 코드
-│   ├── subscription_service.py # 요금제 한도 판정·비전 일일 쿼터(원자적 UPSERT), PlanLimitError (20장), 만료 강등 해석 get_effective_plan (24장), App Store 구독 확인·알림·app_account_token (32장), Google Play 구독 확인·RTDN (33장)
+│   ├── subscription_service.py # 요금제 한도 판정·비전 일일 쿼터(원자적 UPSERT), PlanLimitError (20장), 만료 강등 해석 get_effective_plan (24장), App Store 구독 확인·알림·app_account_token (32장), Google Play 구독 확인·RTDN (33장), 스토어 결제 원장 store_transactions (35장)
 │   ├── medical_report_service.py # 진료 리포트 — 요금제별 기간 자르기(resolve_report_range)·구간 비교(build_compare) (32-5)
 │   ├── visit_service.py        # 진료 일정 — 예정 1건 + 지난 진료 닫기·이력 (31장·32-6)
 │   ├── payment_service.py      # 결제 내역 조회·응답 조립 (23장)
@@ -239,16 +239,18 @@ App Store 4.8(소셜 로그인만 있으면 대안 필수) 때문에 iOS 에 붙
        ├─ bundleId·productId(plus.monthly/yearly) 확인 → 400
        ├─ appAccountToken ≠ 이 회원 토큰 · originalTransactionId 가 남의 것 → AppStoreConflictError → 409
        ├─ appstore_client.get_subscription_status()   status·최신 거래·갱신 정보
-       └─ user_subscriptions: plan=plus, provider=appstore, period_end=expires/유예/환불 시각, next_billing_at=NULL
+       ├─ appstore_client.get_transaction_history()   그 구독의 거래 전부(35장) — 실패하면 아무것도 쓰지 않는다(503)
+       ├─ user_subscriptions: plan=plus, provider=appstore, period_end=expires/유예/환불 시각, next_billing_at=NULL
+       └─ store_transactions: 거래 1건마다 1행 upsert (금액·결제 시각·환불)
   ← 200 MySubscriptionResponse (앱은 이때만 finishTransaction) / 503 AppStoreUnavailableError(키 미설정·Apple 장애)
 
 Apple ── POST /api/billing/appstore/notifications {signedPayload}  무인증
   └─ handle_appstore_notification()   본문은 originalTransactionId 만 꺼낸다(서명 미검증)
        ├─ 원장에 없음 → Apple 미호출, 200 {}        (증폭 차단, 29장과 같은 규약)
-       └─ 있음 → 원장의 환경으로 get_subscription_status() 재조회 → 갱신 → 200 {} / 실패 503(Apple 재전송)
+       └─ 있음 → 원장의 환경으로 get_subscription_status()·get_transaction_history() 재조회 → 갱신 → 200 {} / 실패 503(Apple 재전송)
 ```
 
-**결제 원장(`payments`)에 쓰지 않는다** — 대금·영수증·환불은 Apple 이 한다. 갱신 배치(`charge_due_subscriptions`)는 `provider='toss'` 만 청구하므로 IAP 구독은 대상이 아니다. 만료는 토스와 같이 `get_effective_plan` 이 **읽을 때 해석**한다.
+**토스 원장(`payments`)에 쓰지 않는다** — 대금·영수증·환불은 Apple 이 한다. 결제 이력은 스토어 원장 `store_transactions`(35장)에 남는다. 갱신 배치(`charge_due_subscriptions`)는 `provider='toss'` 만 청구하므로 IAP 구독은 대상이 아니다. 만료는 토스와 같이 `get_effective_plan` 이 **읽을 때 해석**한다.
 
 ### Google Play 구독 (`POST /api/billing/play/*`) — 2026-10-14, DATA_MODEL 33장
 
@@ -261,14 +263,16 @@ Apple ── POST /api/billing/appstore/notifications {signedPayload}  무인증
        ├─ play_client.get_subscription()        subscriptionsv2.get. 404·410 → 400
        ├─ 플러스 line item 없음 → 400 · PENDING → 400
        ├─ obfuscatedExternalAccountId ≠ 이 회원 · 토큰/linkedPurchaseToken 이 남의 것 → PlayConflictError → 409
+       ├─ play_client.get_order(latestSuccessfulOrderId)   **acknowledge 전에** — 실패하면 확인도 원장도 없다(503, 35-3)
        ├─ acknowledgementState=PENDING(만료 아님) → play_client.acknowledge()
-       └─ user_subscriptions: plan=plus, provider=play, store_purchase_token=새 토큰, period_end=expiryTime, next_billing_at=NULL
+       ├─ user_subscriptions: plan=plus, provider=play, store_purchase_token=새 토큰, period_end=expiryTime, next_billing_at=NULL
+       └─ store_transactions: 그 주문 1행 upsert (낸 금액·결제 시각·환불)
   ← 200 MySubscriptionResponse (앱은 이때만 finishTransaction) / 503 PlayUnavailableError(키 미설정·권한·Google 장애)
 
 Pub/Sub ── POST /api/billing/play/notifications {message:{data}}   무인증
   └─ handle_play_notification()   data(base64 JSON)에서 우리 packageName 의 subscriptionNotification.purchaseToken 만
        ├─ 원장에 없음 → Google 미호출, 200 {}
-       └─ 있음 → get_subscription() 재조회 → 갱신 → 200 {} / 실패 503(Pub/Sub 재전송). notificationType 은 보지 않는다
+       └─ 있음 → get_subscription()·get_order() 재조회 → 갱신 → 200 {} / 실패 503(Pub/Sub 재전송). notificationType 은 보지 않는다
 ```
 
 ### 진료 리포트 기간 (`GET /api/me/report`) — 2026-10-06, DATA_MODEL 32-5

@@ -47,8 +47,11 @@ GROUP_ACTIVITY_SHARE = "group_activity_share"
 # 2026-10-14: terms·privacy 1.4 → 1.5(Google Play 결제 — 구글 계정 결제·Play 스토어 해지·Google 환불 정책, 구독 정보의
 # Google 처리·국외 이전, DATA_MODEL 33-6). 가입은 1.4 도 받는다(_ACCEPTED_PREVIOUS_VERSIONS) — 심사 중인 iOS 빌드 10 이
 # 1.4 를 보낸다. 재동의는 요구하지 않는다(약관 버전은 가입 때만 검증한다).
+# 2026-10-23 작성: privacy 1.5 → 1.6(플러스 결제 기록 — store_transactions 수집·탈퇴 후 결제일로부터 5년 분리 보관·파기,
+# DATA_MODEL 35장). 약관은 1.5 그대로다. 시행일(앱 constants/legal.ts PRIVACY_EFFECTIVE_DATE)에 원장과 함께 배포한다.
+# 1.5 를 보내는 이미 깔린 앱 빌드는 받는다(_ACCEPTED_PREVIOUS_VERSIONS). 재동의는 요구하지 않는다(가입 때만 검증).
 TERMS_VERSION = "1.5"
-PRIVACY_VERSION = "1.5"
+PRIVACY_VERSION = "1.6"
 SENSITIVE_HEALTH_VERSION = "v1.2"
 GROUP_ACTIVITY_SHARE_VERSION = "v1.0"
 
@@ -78,10 +81,11 @@ _CURRENT_VERSIONS = {
 
 # 현재 버전과 함께 **받아 주는** 직전 버전 — 받은 버전 그대로 기록하므로 증빙은 거짓이 되지 않는다. 앱 심사·배포가
 # 서버보다 늦는 동안만 둔다: 1.4 는 App Store 심사 중인 iOS 빌드 10 이 보낸다(33-6). 1.5 를 보내는 빌드가 깔리면 뺀다.
+# privacy 1.5 는 처리방침 1.6 시행 뒤에도 이미 깔린 iOS 1.0·Android 빌드가 보낸다 — 1.6 빌드가 깔리면 뺀다.
 # `is_current` 는 여전히 False 다(낡은 것은 낡은 것이다).
 _ACCEPTED_PREVIOUS_VERSIONS = {
     TERMS: frozenset({"1.4"}),
-    PRIVACY: frozenset({"1.4"}),
+    PRIVACY: frozenset({"1.4", "1.5"}),
 }
 
 # 앱이 옛 문서를 보여주고 있을 때의 사용자 메시지. 앱을 최신으로 올리면 해소된다.

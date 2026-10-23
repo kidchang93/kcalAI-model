@@ -168,6 +168,7 @@ def test_delete_account_covers_every_user_referencing_table(db):
         "meal_logs",
         "payments",
         "pets",
+        "store_transactions",
         "user_allergies",
         "user_conditions",
         "user_consents",

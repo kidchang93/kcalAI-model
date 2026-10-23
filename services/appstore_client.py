@@ -41,6 +41,8 @@ BASE_URLS = {
 ERROR_TRANSACTION_ID_NOT_FOUND = 4040010
 
 APPSTORE_TIMEOUT_SECONDS = 10
+# 거래 이력 한 페이지는 최대 20건 — 월간 구독 80년치다. Apple 이 hasMore 를 끝없이 주는 경우의 안전판.
+HISTORY_MAX_PAGES = 50
 # Apple 상한은 1시간이지만 호출 직전에 만들어 한 번 쓴다.
 TOKEN_TTL_SECONDS = 300
 
@@ -131,6 +133,37 @@ def get_subscription_status(
             )
 
     return None
+
+
+def get_transaction_history(original_transaction_id: str, environment: str) -> list[dict]:
+    """`/inApps/v2/history/{id}` — 그 고객(Apple ID)의 이 앱 거래 전부(첫 결제·갱신·환불된 거래 포함). 원장(35장)용.
+
+    페이지(`revision`)를 끝까지 넘긴다. 거래가 없으면(400·404) 받은 데까지만 돌려준다.
+    """
+    transactions: list[dict] = []
+    query = ""
+
+    for _ in range(HISTORY_MAX_PAGES):
+        status_code, body = _get(
+            environment, f"/inApps/v2/history/{quote(original_transaction_id, safe='')}{query}"
+        )
+
+        if status_code != 200:
+            logger.error(f"appstore history not found env={environment} errorCode={body.get('errorCode')}")
+            return transactions
+
+        transactions += [
+            _decode_response(token, environment) for token in body.get("signedTransactions") or []
+        ]
+        revision = body.get("revision")
+
+        if not body.get("hasMore") or not isinstance(revision, str):
+            return transactions
+
+        query = f"?revision={quote(revision, safe='')}"
+
+    logger.error(f"appstore history page cap reached env={environment}")
+    return transactions
 
 
 def _decode_response(token: object, environment: str) -> dict:

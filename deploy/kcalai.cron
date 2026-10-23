@@ -26,5 +26,6 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 0 19 * * * __SERVICE_USER__ cd __APP_DIR__ && { date -Is; venv/bin/python scripts/charge_due_subscriptions.py; } >> task-logs/cron_billing.log 2>&1
 
 # 만료 인증 데이터 정리 — 매일 UTC 20:00 (KST 05:00).
-# kakao_link_codes·auth_sessions 무한 누적 방지. 멱등하며 돈과 무관하다.
+# kakao_link_codes·auth_sessions 무한 누적 방지 + 탈퇴 회원의 결제 기록(store_transactions)을 결제일로부터 5년 뒤 파기
+# (처리방침 8항). 멱등하며 돈과 무관하다.
 0 20 * * * __SERVICE_USER__ cd __APP_DIR__ && { date -Is; venv/bin/python scripts/purge_expired_auth.py; } >> task-logs/cron_purge.log 2>&1
