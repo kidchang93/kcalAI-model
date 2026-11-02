@@ -254,6 +254,12 @@ FastAPI가 `webapp/`를 `/`로 서빙하므로, 서브도메인(`https://api.kca
 | DB 백업 | `sudo -u postgres pg_dump kcal > backup.sql` (정기 cron 권장) |
 | 정기 배치 확인 | `cat /etc/cron.d/kcalai` · 실행 이력은 `tail /opt/kcalAI-model/task-logs/cron_billing.log` |
 
+### 가동 감시 — 2026-11-02 등록
+
+Route 53 상태 확인이 `https://api.kcalai.link/api/health`(깔린 앱이 쓰는 주소)를 30초마다 본다 → CloudWatch 경보 `caretable-api-down`(us-east-1) → SNS `daiw-alerts`(DAIW·소리허브와 같은 계정·같은 토픽) → 메일, Amazon Q → Slack(`렉땡글` 워크스페이스). 구성은 `deploy/monitoring.sh`, 비용은 상태 확인 월 약 $1.
+
+`/api/health`는 DB까지 닿는지만 보고 요청 로그(`info_log.txt`)에 남기지 않는다 — 검사기가 16대라 하루 4만 건이 넘어 파일 로그를 밀어낸다(uvicorn 접속 로그는 journald에 남는다). 경보가 오면 `journalctl -u kcalai -n 100`과 `task-logs/error_log.txt`를 본다.
+
 ### 정기 배치 (cron) — 2026-07-26 등록
 
 정의는 리포의 **`deploy/kcalai.cron`** 이고 `provision.sh` 7단계가 `/etc/cron.d/kcalai` 로 설치한다.

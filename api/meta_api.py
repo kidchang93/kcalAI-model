@@ -1,4 +1,5 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, status
+from sqlalchemy.exc import SQLAlchemyError
 
 from api.dependencies import DB, CurrentUser
 from schemas.common_schema import ErrorResponse
@@ -6,6 +7,18 @@ from schemas.meta_schema import MetaOptionsResponse
 from services import ckd_food_rules, meta_service
 
 router = APIRouter()
+
+
+@router.get("/health")
+def health_check(db: DB):
+    # 외부 가동 확인(Route 53 → CloudWatch 경보)이 부른다. 인증 없이 DB까지 닿는지만 본다.
+    try:
+        meta_service.ping(db)
+    except SQLAlchemyError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="DB에 연결할 수 없어요"
+        ) from error
+    return {"status": "ok"}
 
 
 @router.get(

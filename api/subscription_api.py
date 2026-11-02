@@ -14,7 +14,7 @@ router = APIRouter()
 
 @router.get("/plans", response_model=PlansResponse)
 def list_available_plans(db: DB):
-    # 유일한 무인증 GET 이다 (7장의 Bearer 규약 예외). 가격표는 비밀이 아니고, 가입 화면이
+    # 무인증 GET 이다 (7장의 Bearer 규약 예외, 가동 확인 /api/health 도 그렇다). 가격표는 비밀이 아니고, 가입 화면이
     # 로그인 이전에 요금제를 그려야 한다.
     return list_plans_view(db)
 

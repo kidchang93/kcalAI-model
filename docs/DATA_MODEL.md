@@ -1407,7 +1407,7 @@ Pro에서 펫 3마리를 만든 뒤 Lite로 내려가도 **기존 3마리는 그
 
 | 메서드 | 경로 | 역할 | 인증 |
 |---|---|---|---|
-| `GET` | `/api/plans` | 요금제 목록 | **무인증** — 7장 Bearer 규약의 유일한 예외. 가격표는 비밀이 아니고, 가입 화면이 로그인 전에 그려야 한다 |
+| `GET` | `/api/plans` | 요금제 목록 | **무인증** — 7장 Bearer 규약의 예외(가동 확인 `GET /api/health`도 그렇다). 가격표는 비밀이 아니고, 가입 화면이 로그인 전에 그려야 한다 |
 | `GET` | `/api/me/subscription` | 내 요금제 + 오늘 사용량 + `resets_at`(다음 KST 자정) | Bearer |
 | `PUT` | `/api/me/subscription` | 요금제 변경. body `{plan_code}` | Bearer |
 

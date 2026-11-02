@@ -135,10 +135,12 @@ async def log_request_metrics(request: Request, call_next):
     started = time.perf_counter()
     response = await call_next(request)
     duration_ms = (time.perf_counter() - started) * 1000
-    logger.info(
-        f"request method={request.method} path={request.url.path} "
-        f"status={response.status_code} duration_ms={duration_ms:.1f}"
-    )
+    # 가동 확인은 하루 4만 건이 넘는다(Route 53 검사기 16대 × 30초). 남기면 약 6MB에서 도는 파일 로그가 1~2일 치로 줄어든다.
+    if request.url.path != "/api/health":
+        logger.info(
+            f"request method={request.method} path={request.url.path} "
+            f"status={response.status_code} duration_ms={duration_ms:.1f}"
+        )
     return response
 
 

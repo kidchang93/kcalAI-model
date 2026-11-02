@@ -1,8 +1,12 @@
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from models.consent_model import UserAllergy, UserCondition, UserHealthProfile
 from models.meta_model import AllergenType, ConditionType
+
+
+def ping(db: Session) -> None:
+    db.execute(text("SELECT 1"))
 
 
 def list_condition_options(db: Session) -> list[ConditionType]:
