@@ -7,7 +7,7 @@
 ## 프롬프트에 항상 포함할 컨텍스트
 
 ```
-저장소: /Users/kidchang/Desktop/ck/privacy/kcal/kcalAI-model
+저장소: /Users/kidchang/Desktop/ck/privacy/midnightmochi/kcal/kcalAI-model
 먼저 읽을 것:
   - CLAUDE.md            (특히 "알려진 불일치", "절대 하지 말아야 할 것")
   - docs/ARCHITECTURE.md (레이어 의존성 방향)
