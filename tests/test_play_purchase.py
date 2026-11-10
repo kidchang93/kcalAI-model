@@ -34,7 +34,7 @@ from timeutil import UTC
 
 MONTHLY = "com.kcalai.kcalairn.plus.monthly"
 YEARLY = "com.kcalai.kcalairn.plus.yearly"
-CONFLICT_MESSAGE = "다른 계정에서 구독한 이용권이에요. 처음 구독한 계정으로 로그인해주세요."
+CONFLICT_MESSAGE = "다른 계정에서 구독한 이용권이에요. 마지막으로 구독한 계정으로 로그인해주세요."
 
 
 def _rfc3339(moment: datetime) -> str:
@@ -263,17 +263,69 @@ def test_linked_purchase_token_is_replaced_on_the_same_member(db, google):
     assert google.get_calls == []
 
 
-def test_linked_purchase_token_of_another_member_is_409(db, google):
+def test_repurchase_linked_to_another_members_token_moves_to_the_buyer(db, google):
+    """같은 구글 계정으로 다른 회원 계정에서 다시 사면(새 구매의 obfuscated 가 산 회원) 산 회원에게 옮긴다 (32-10).
+    예전엔 산 회원은 '남의 옛 토큰', 옛 회원은 '남의 표식'으로 둘 다 409 라 확인(acknowledge)도 못 했다."""
     owner = make_user(db, "play-14")
-    other = make_user(db, "play-15")
+    buyer = make_user(db, "play-15")
     google.sell(owner.id, "playtoken-0014-old")
     _verify(db, owner.id, "playtoken-0014-old")
-    google.sell(other.id, "playtoken-0014-new", linkedPurchaseToken="playtoken-0014-old")
+    google.sell(buyer.id, "playtoken-0014-new", linkedPurchaseToken="playtoken-0014-old")
+
+    # 옛 회원이 새 구매를 복원하려 해도 표식이 산 회원 것이라 409 다.
+    with pytest.raises(PlayConflictError):
+        _verify(db, owner.id, "playtoken-0014-new")
+
+    _verify(db, buyer.id, "playtoken-0014-new")
+
+    moved = _subscription(db, buyer.id)
+    assert (moved.plan_code, moved.provider, moved.store_purchase_token) == ("plus", "play", "playtoken-0014-new")
+    released = _subscription(db, owner.id)
+    assert (released.plan_code, released.provider, released.store_purchase_token) == ("lite", None, None)
+    assert subscription_service.get_user_plan(db, owner.id).code == "lite"
+    assert google.acks[-1] == (MONTHLY, "playtoken-0014-new")
+
+
+def test_linked_token_of_another_member_without_a_buyer_mark_is_409(db, google):
+    """obfuscated 가 비어 있으면(Play 스토어에서 다시 구독하는 등 앱 밖 구매) 누가 샀는지 알 수 없다 — 옛 토큰 주인 것이다."""
+    owner = make_user(db, "play-14b")
+    other = make_user(db, "play-15b")
+    google.sell(owner.id, "playtoken-0014b-old")
+    _verify(db, owner.id, "playtoken-0014b-old")
+    google.sell(other.id, "playtoken-0014b-new", linkedPurchaseToken="playtoken-0014b-old",
+                externalAccountIdentifiers={})
 
     with pytest.raises(PlayConflictError):
-        _verify(db, other.id, "playtoken-0014-new")
+        _verify(db, other.id, "playtoken-0014b-new")
 
-    assert _subscription(db, owner.id).store_purchase_token == "playtoken-0014-old"
+    assert _subscription(db, owner.id).store_purchase_token == "playtoken-0014b-old"
+    assert (MONTHLY, "playtoken-0014b-new") not in google.acks
+
+
+def test_notification_for_the_old_token_does_not_touch_the_previous_owner_once_moved(db, google, monkeypatch):
+    """옛 토큰의 알림이 Google 을 기다리는 사이에 산 회원의 확인이 구독을 옮기면, 알림은 옛 회원 행에 쓰지 않는다."""
+    owner = make_user(db, "play-14c")
+    buyer = make_user(db, "play-15c")
+    google.sell(owner.id, "playtoken-0014c-old")
+    _verify(db, owner.id, "playtoken-0014c-old")
+    google.sell(buyer.id, "playtoken-0014c-new", linkedPurchaseToken="playtoken-0014c-old")
+    google_get = google.get_subscription
+    moved = []
+
+    def get_while_the_buyer_verifies(purchase_token: str):
+        result = google_get(purchase_token)
+        if purchase_token == "playtoken-0014c-old" and not moved:
+            moved.append(True)
+            _verify(db, buyer.id, "playtoken-0014c-new")
+        return result
+
+    monkeypatch.setattr(play_client, "get_subscription", get_while_the_buyer_verifies)
+
+    assert subscription_service.handle_play_notification(db, _push("playtoken-0014c-old")) == "unknown"
+
+    released = _subscription(db, owner.id)
+    assert (released.plan_code, released.provider, released.store_purchase_token) == ("lite", None, None)
+    assert _subscription(db, buyer.id).store_purchase_token == "playtoken-0014c-new"
 
 
 @pytest.mark.parametrize(

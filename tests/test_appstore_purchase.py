@@ -32,7 +32,7 @@ from services.subscription_service import AppStoreConflictError
 from timeutil import UTC
 
 MONTHLY = "com.kcalai.kcalairn.plus.monthly"
-CONFLICT_MESSAGE = "다른 계정에서 구독한 이용권이에요. 처음 구독한 계정으로 로그인해주세요."
+CONFLICT_MESSAGE = "다른 계정에서 구독한 이용권이에요. 마지막으로 구독한 계정으로 로그인해주세요."
 
 
 def _ms(moment: datetime) -> int:
@@ -726,3 +726,166 @@ def test_transaction_history_not_found_is_empty(monkeypatch, iap_keys):
     monkeypatch.setattr(appstore_client.requests, "get", lambda *a, **k: _Response(404, {"errorCode": 4040010}))
 
     assert appstore_client.get_transaction_history("77", "Production") == []
+
+
+# ---- 7) 같은 Apple ID 로 다른 회원 계정에서 다시 산 구독은 산 회원에게 옮긴다 (32-10) ----
+# 2026-11-10 실측: 처음 회원(만료)의 Apple ID 로 다른 회원이 다시 사자 산 회원은 '남의 구독', 처음 회원은 '남의 표식'으로
+# 둘 다 409 였다 — 낸 돈을 어느 계정도 확인할 수 없었다.
+
+def _first_buys(db, apple, first_id: int, original: str, purchased: datetime) -> None:
+    apple.sell(first_id, original)
+    apple.histories[original] = [_history_item(first_id, original, original, purchased)]
+    subscription_service.verify_appstore_purchase(db, first_id, original)
+
+
+def _rebuy(apple, buyer_id: int, original: str, transaction_id: str, purchased: datetime) -> None:
+    """같은 구독(originalTransactionId)에 이어지는 새 구매 — appAccountToken 만 산 회원 것으로 바뀐다."""
+    purchase = _history_item(buyer_id, original, transaction_id, purchased)
+    apple.transactions[transaction_id] = (purchase, "Production")
+    apple.statuses[original] = SubscriptionStatus(status=1, transaction=purchase, renewal={"autoRenewStatus": 1})
+    apple.histories[original] = [*apple.histories[original], purchase]
+
+
+def test_repurchase_from_another_account_moves_the_subscription_to_the_buyer(db, apple):
+    first = make_user(db, "appstore-40")
+    second = make_user(db, "appstore-41")
+    now = datetime.now(UTC)
+    _first_buys(db, apple, first.id, "2000000040", now - timedelta(days=40))
+    _rebuy(apple, second.id, "2000000040", "2000000041", now)
+
+    subscription_service.verify_appstore_purchase(db, second.id, "2000000041")
+
+    moved = _subscription(db, second.id)
+    assert (moved.plan_code, moved.provider, moved.store_original_transaction_id) == ("plus", "appstore", "2000000040")
+    assert subscription_service.get_user_plan(db, second.id).code == "plus"
+    released = _subscription(db, first.id)
+    assert (released.plan_code, released.provider, released.store_original_transaction_id) == ("lite", None, None)
+    assert (released.store_product_id, released.current_period_end) == (None, None)
+    # 결제 기록은 낸 회원을 따라간다 — 예전 결제는 처음 회원, 새 결제는 산 회원.
+    assert [row.transaction_id for row in _ledger(db, first.id)] == ["2000000040"]
+    assert [row.transaction_id for row in _ledger(db, second.id)] == ["2000000041"]
+
+
+def test_previous_owner_cannot_restore_a_purchase_made_from_another_account(db, apple):
+    """앱이 보낸 거래가 아니라 **최신 거래의 표식**을 본다 — 자기 옛 거래 번호를 보내도 남이 다시 산 구독은 409."""
+    first = make_user(db, "appstore-42")
+    second = make_user(db, "appstore-43")
+    now = datetime.now(UTC)
+    _first_buys(db, apple, first.id, "2000000042", now - timedelta(days=40))
+    _rebuy(apple, second.id, "2000000042", "2000000043", now)
+
+    for transaction_id in ("2000000043", "2000000042"):
+        with pytest.raises(AppStoreConflictError):
+            subscription_service.verify_appstore_purchase(db, first.id, transaction_id)
+
+    assert _subscription(db, first.id).store_original_transaction_id == "2000000042"
+    assert _ledger(db, second.id) == []
+
+
+def test_notification_that_beat_the_buyers_verify_is_handed_over_with_its_ledger_rows(db, apple):
+    """알림은 표식을 보지 않고 지금 붙어 있는 회원에게 반영한다(pepper 를 바꿔도 갱신이 끊기지 않게) — 옮기는 것은
+    산 회원의 확인이고, 그때 알림이 옛 회원 번호로 적어 둔 새 결제 행도 함께 넘어간다."""
+    first = make_user(db, "appstore-44")
+    second = make_user(db, "appstore-45")
+    now = datetime.now(UTC)
+    _first_buys(db, apple, first.id, "2000000044", now - timedelta(days=40))
+    _rebuy(apple, second.id, "2000000044", "2000000045", now)
+
+    assert subscription_service.handle_appstore_notification(db, _notification("2000000044")) == "updated"
+    assert [row.transaction_id for row in _ledger(db, first.id)] == ["2000000044", "2000000045"]
+
+    subscription_service.verify_appstore_purchase(db, second.id, "2000000045")
+
+    assert [row.transaction_id for row in _ledger(db, first.id)] == ["2000000044"]
+    assert [row.transaction_id for row in _ledger(db, second.id)] == ["2000000045"]
+    assert subscription_service.get_user_plan(db, first.id).code == "lite"
+    assert subscription_service.get_user_plan(db, second.id).code == "plus"
+    # 그 뒤의 알림(갱신)은 옮겨 받은 회원에게 간다.
+    assert subscription_service.handle_appstore_notification(db, _notification("2000000044")) == "updated"
+    assert subscription_service.get_user_plan(db, second.id).code == "plus"
+    assert subscription_service.get_user_plan(db, first.id).code == "lite"
+
+
+def test_subscription_follows_the_latest_purchase_not_a_replayed_one(db, apple):
+    first = make_user(db, "appstore-46")
+    second = make_user(db, "appstore-47")
+    now = datetime.now(UTC)
+    _first_buys(db, apple, first.id, "2000000046", now - timedelta(days=40))
+    _rebuy(apple, second.id, "2000000046", "2000000047", now)
+    subscription_service.verify_appstore_purchase(db, second.id, "2000000047")
+    _rebuy(apple, first.id, "2000000046", "2000000048", now + timedelta(minutes=1))
+
+    # 옮겨 받았던 회원이 자기 옛 거래 번호를 다시 보내도, 최신 구매가 남의 것이면 되찾지 못한다.
+    with pytest.raises(AppStoreConflictError):
+        subscription_service.verify_appstore_purchase(db, second.id, "2000000047")
+
+    subscription_service.verify_appstore_purchase(db, first.id, "2000000048")
+
+    assert _subscription(db, first.id).store_original_transaction_id == "2000000046"
+    assert subscription_service.get_user_plan(db, first.id).code == "plus"
+    assert subscription_service.get_user_plan(db, second.id).code == "lite"
+
+
+def test_moving_the_apple_subscription_leaves_the_previous_owners_play_plus(db, apple):
+    """옛 회원 행이 지금 Google Play 구독으로 플러스면(33-8 — 행은 회원당 하나) Apple 식별자만 떼고 플러스는 둔다."""
+    first = make_user(db, "appstore-48")
+    second = make_user(db, "appstore-49")
+    now = datetime.now(UTC)
+    _first_buys(db, apple, first.id, "2000000049", now - timedelta(days=40))
+    row = _subscription(db, first.id)
+    row.provider = "play"
+    row.store_purchase_token = "playtoken-appstore-48"
+    row.current_period_end = now + timedelta(days=30)
+    db.commit()
+    _rebuy(apple, second.id, "2000000049", "2000000050", now)
+
+    subscription_service.verify_appstore_purchase(db, second.id, "2000000050")
+
+    db.refresh(row)
+    assert (row.plan_code, row.provider, row.store_purchase_token) == ("plus", "play", "playtoken-appstore-48")
+    assert row.store_original_transaction_id is None
+    assert subscription_service.get_user_plan(db, first.id).code == "plus"
+
+
+def test_old_transaction_with_another_members_token_cannot_claim_a_tokenless_resubscription(db, apple):
+    """최신 거래에 토큰이 없어도(App Store 설정에서 다시 구독) 남의 토큰이 찍힌 옛 거래 번호로는 가져가지 못한다."""
+    buyer = make_user(db, "appstore-50")
+    other = make_user(db, "appstore-51")
+    apple.sell(buyer.id, "2000000051")
+    resubscribed = _transaction(buyer.id, "2000000051", transactionId="2000000052", appAccountToken=None)
+    apple.statuses["2000000051"] = SubscriptionStatus(
+        status=1, transaction=resubscribed, renewal={"autoRenewStatus": 1}
+    )
+
+    with pytest.raises(AppStoreConflictError):
+        subscription_service.verify_appstore_purchase(db, other.id, "2000000051")
+
+    assert subscription_service.get_user_plan(db, other.id).code == "lite"
+
+
+def test_notification_does_not_write_to_the_previous_owner_once_the_subscription_moved(db, apple, monkeypatch):
+    """알림이 Apple 을 기다리는 사이에 산 회원의 확인이 구독을 옮기면, 알림은 처음 읽어 둔 옛 회원 행에 쓰지 않는다
+    (2026-11-10 실측에서 알림과 확인은 2초 차이였다 — 겹칠 수 있다)."""
+    first = make_user(db, "appstore-52")
+    second = make_user(db, "appstore-53")
+    now = datetime.now(UTC)
+    _first_buys(db, apple, first.id, "2000000053", now - timedelta(days=40))
+    _rebuy(apple, second.id, "2000000053", "2000000054", now)
+    apple_history = apple.get_transaction_history
+    moved = []
+
+    def history_while_the_buyer_verifies(original_id: str, environment: str):
+        result = apple_history(original_id, environment)
+        if not moved:
+            moved.append(True)
+            subscription_service.verify_appstore_purchase(db, second.id, "2000000054")
+        return result
+
+    monkeypatch.setattr(appstore_client, "get_transaction_history", history_while_the_buyer_verifies)
+
+    subscription_service.handle_appstore_notification(db, _notification("2000000053"))
+
+    assert _subscription(db, first.id).store_original_transaction_id is None
+    assert subscription_service.get_user_plan(db, first.id).code == "lite"
+    assert _subscription(db, second.id).store_original_transaction_id == "2000000053"
+    assert subscription_service.get_user_plan(db, second.id).code == "plus"

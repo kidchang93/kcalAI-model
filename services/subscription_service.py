@@ -384,8 +384,9 @@ def my_subscription_view(db: Session, user_id: int) -> dict:
 # 유료 부여 경로는 토스 confirm(실제 청구)과 **Apple 이 확인해 준 구독**뿐이다. 앱이 보낸 transactionId 와
 # 알림 본문은 조회 키일 뿐이고, 상태·기간은 우리 키로 Apple 에 다시 물은 응답만 쓴다.
 
+# 구독은 가장 최근에 산 회원 것이라(32-10) '처음 구독한 계정'이 아니다 — 처음 회원이 이 문구를 받는 경우도 있다.
 APPSTORE_CONFLICT_MESSAGE = (
-    "다른 계정에서 구독한 이용권이에요. 처음 구독한 계정으로 로그인해주세요."
+    "다른 계정에서 구독한 이용권이에요. 마지막으로 구독한 계정으로 로그인해주세요."
 )
 APPSTORE_NOT_FOUND_MESSAGE = "구매 내역을 찾을 수 없어요. 구매를 다시 확인해주세요."
 APPSTORE_NOT_PLUS_MESSAGE = "케어테이블 플러스 구매 내역이 아니에요."
@@ -451,11 +452,19 @@ def verify_appstore_purchase(db: Session, user_id: int, transaction_id: str) -> 
     if not original_id:
         raise BadRequestError(APPSTORE_NOT_FOUND_MESSAGE)
 
+    status = appstore_client.get_subscription_status(original_id, environment)
+    # 이 구독은 **가장 최근에 산 회원** 것이다(32-10). 같은 Apple ID 로 다른 회원 계정에서 다시 사면 거래는 같은
+    # originalTransactionId 로 이어지고 appAccountToken 만 산 회원 것으로 바뀐다 — 그래서 앱이 보낸 거래가 아니라
+    # 최신 거래의 토큰을 본다(옛 거래 번호를 다시 보내 되찾아 갈 수 없다). 상태 조회가 비면 확인한 거래로 본다.
+    latest = transaction if status is None else status.transaction
     # 토큰이 **비어 있으면** 통과시킨다 — 앱 밖(App Store 프로모션·오퍼 코드)에서 시작한 구매에는 토큰이
     # 없다. 그때 소유권은 아래 originalTransactionId UNIQUE(먼저 확인한 회원)가 지킨다.
-    token = transaction.get("appAccountToken")
+    token = latest.get("appAccountToken")
+    mine = app_account_token(user_id)
 
-    if token and str(token).lower() != app_account_token(user_id):
+    # 앱이 보낸 거래의 토큰도 본다 — 최신 거래에 토큰이 없을 때(App Store 설정에서 다시 구독) 남의 토큰이 찍힌
+    # 옛 거래 번호로 가져갈 수 없다.
+    if any(mark and str(mark).lower() != mine for mark in (transaction.get("appAccountToken"), token)):
         logger.info(f"appstore verify token mismatch user_id={user_id} original={original_id}")
         raise AppStoreConflictError(APPSTORE_CONFLICT_MESSAGE)
 
@@ -464,14 +473,20 @@ def verify_appstore_purchase(db: Session, user_id: int, transaction_id: str) -> 
             UserSubscription.store_original_transaction_id == original_id
         )
     )
+    previous_owner_id = owner_id if owner_id not in (None, user_id) else None
 
-    if owner_id is not None and owner_id != user_id:
+    # 다른 회원 행에 붙어 있는데 이 회원이 샀다는 표식(토큰)이 없으면 누가 샀는지 알 수 없다 — 먼저 확인한 회원 것이다.
+    if previous_owner_id is not None and not token:
         logger.info(f"appstore verify owned by other user_id={user_id} original={original_id}")
         raise AppStoreConflictError(APPSTORE_CONFLICT_MESSAGE)
 
-    status = appstore_client.get_subscription_status(original_id, environment)
     history = appstore_client.get_transaction_history(original_id, environment)
     subscription = get_subscription(db, user_id)
+
+    if previous_owner_id is not None:
+        # Apple 조회와 이 회원 행 준비(자기치유 커밋)가 끝난 뒤에 뗀다 — 떼기만 하고 붙이지 못한 상태를 커밋하지 않는다.
+        _release_store_subscription(db, previous_owner_id, PROVIDER_APPSTORE)
+        logger.info(f"appstore verify moved user_id={user_id} from={previous_owner_id} original={original_id}")
 
     if status is None:
         # 거래는 있는데 구독 상태 조회가 비었다. 확인한 거래만으로 기간을 정한다(자동갱신은 모름).
@@ -486,6 +501,26 @@ def verify_appstore_purchase(db: Session, user_id: int, transaction_id: str) -> 
         _record_store_transactions(
             db, user_id, PROVIDER_APPSTORE, _appstore_ledger_rows(history, original_id, environment)
         )
+
+        if previous_owner_id is not None:
+            # 알림은 지금 붙어 있는 회원에게 쓴다 — 확인보다 먼저 왔다면 이 회원이 낸 결제가 옛 회원 번호로 적혀 있다.
+            bought_here = [
+                str(item["transactionId"])
+                for item in history
+                if item.get("transactionId")
+                and str(item.get("originalTransactionId")) == original_id
+                and str(item.get("appAccountToken") or "").lower() == mine
+            ]
+            db.execute(
+                update(StoreTransaction)
+                .where(
+                    StoreTransaction.provider == PROVIDER_APPSTORE,
+                    StoreTransaction.user_id == previous_owner_id,
+                    StoreTransaction.transaction_id.in_(bought_here),
+                )
+                .values(user_id=user_id)
+            )
+
         db.commit()
     except IntegrityError:
         # 같은 구독을 두 회원이 동시에 확인했다 — UNIQUE 가 늦게 온 쪽을 막았다.
@@ -497,6 +532,30 @@ def verify_appstore_purchase(db: Session, user_id: int, transaction_id: str) -> 
         f"status={subscription.status}"
     )
     return subscription
+
+
+def _release_store_subscription(db: Session, owner_id: int, provider: str) -> None:
+    """같은 스토어 계정으로 다른 회원이 다시 사서 구독이 옮겨 갈 때(32-10), 옛 회원 행에서 그 구독을 뗀다."""
+    previous = db.scalar(select(UserSubscription).where(UserSubscription.user_id == owner_id))
+
+    if provider == PROVIDER_APPSTORE:
+        previous.store_original_transaction_id = None
+    else:
+        previous.store_purchase_token = None
+
+    # 그 행이 이 스토어 구독으로 플러스였을 때만 무료로 내린다 — 다른 스토어 구독이 쓴 상태(33-8)는 그 스토어 것이다.
+    if previous.provider == provider:
+        previous.plan_code = DEFAULT_PLAN_CODE
+        previous.provider = None
+        previous.status = STATUS_ACTIVE
+        previous.current_period_end = None
+        previous.cancel_at_period_end = False
+        previous.store_product_id = None
+        previous.store_environment = None
+        previous.is_trial = False
+
+    # 스토어 식별자는 UNIQUE 다 — 새 회원 행에 붙이기 전에 옛 행에서 지운 것이 먼저 나가야 한다.
+    db.flush()
 
 
 def handle_appstore_notification(db: Session, signed_payload: str | None) -> str:
@@ -528,6 +587,17 @@ def handle_appstore_notification(db: Session, signed_payload: str | None) -> str
         return "not-found"
 
     history = appstore_client.get_transaction_history(original_id, environment)
+    # Apple 을 기다리는 사이에 다른 회원의 확인이 이 구독을 옮겨 갔을 수 있다(32-10). 붙어 있는 회원을 잠그고 다시
+    # 읽는다 — 처음 읽은 행에 그대로 쓰면 옮겨 준 구독이 옛 회원에게 되살아난다.
+    subscription = db.scalar(
+        select(UserSubscription)
+        .where(UserSubscription.store_original_transaction_id == original_id)
+        .with_for_update()
+    )
+
+    if subscription is None:
+        return "unknown"
+
     _apply_appstore_state(
         subscription, original_id, environment, status.transaction, status.status, status.renewal
     )
@@ -670,13 +740,17 @@ def verify_play_purchase(
         raise PlayConflictError(APPSTORE_CONFLICT_MESSAGE)
 
     # 월간↔연간 변경·재구독은 새 토큰을 주고 linkedPurchaseToken 이 옛 토큰이다. 옛 토큰이 이 회원 것이면 아래에서
-    # 같은 행의 토큰을 새것으로 갈아 끼우고, 다른 회원 것이면 409 다.
+    # 같은 행의 토큰을 새것으로 갈아 끼운다. 다른 회원 것인데 이 구매를 **이 회원이 샀다는 표식**(obfuscated)이 있으면
+    # 같은 구글 계정으로 다른 회원 계정에서 다시 산 것이라 산 회원에게 옮기고(32-10), 표식이 없으면 409 다.
     linked = purchase.get("linkedPurchaseToken")
+    linked_owner_id = _play_token_owner(db, linked) if isinstance(linked, str) and linked else None
+    previous_owner_id = linked_owner_id if account and linked_owner_id not in (None, user_id) else None
 
-    for token in (purchase_token, linked if isinstance(linked, str) else None):
-        if token and _play_token_owner(db, token) not in (None, user_id):
-            logger.info(f"play verify owned by other user_id={user_id} token={masked}")
-            raise PlayConflictError(APPSTORE_CONFLICT_MESSAGE)
+    if _play_token_owner(db, purchase_token) not in (None, user_id) or (
+        previous_owner_id is None and linked_owner_id not in (None, user_id)
+    ):
+        logger.info(f"play verify owned by other user_id={user_id} token={masked}")
+        raise PlayConflictError(APPSTORE_CONFLICT_MESSAGE)
 
     # 주문 조회는 acknowledge **전에** 한다 — 원장을 못 쓰면 구독도 쓰지 않는데(503), 확인을 먼저 해 버리면 돈은
     # 나가고 플러스는 없는 상태가 남는다. 확인 전이면 끝내 실패해도 Google 이 3일 뒤 자동 환불한다.
@@ -688,6 +762,11 @@ def verify_play_purchase(
             raise BadRequestError(APPSTORE_NOT_FOUND_MESSAGE)
 
     subscription = get_subscription(db, user_id)
+
+    if previous_owner_id is not None:
+        _release_store_subscription(db, previous_owner_id, PROVIDER_PLAY)
+        logger.info(f"play verify moved user_id={user_id} from={previous_owner_id} token={masked}")
+
     _apply_play_state(subscription, purchase_token, purchase)
 
     try:
@@ -736,6 +815,17 @@ def handle_play_notification(db: Session, body: object) -> str:
         return "ignored"
 
     ledger_rows = _play_ledger_rows(purchase)
+    # Google 을 기다리는 사이에 이 토큰의 구독이 다른 회원에게 옮겨 갔을 수 있다(32-10) — App Store 알림과 같은 이유로
+    # 붙어 있는 회원을 잠그고 다시 읽는다.
+    subscription = db.scalar(
+        select(UserSubscription)
+        .where(UserSubscription.store_purchase_token == purchase_token)
+        .with_for_update()
+    )
+
+    if subscription is None:
+        return "unknown"
+
     _apply_play_state(subscription, purchase_token, purchase)
     _record_store_transactions(db, subscription.user_id, PROVIDER_PLAY, ledger_rows)
     db.commit()
